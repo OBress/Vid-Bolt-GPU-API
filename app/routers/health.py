@@ -6,7 +6,6 @@ from app import __version__
 from app.config import get_settings, Settings
 from app.dependencies import verify_api_key
 from app.models.common import HealthResponse, StatusResponse
-from app.services.storage import StorageService
 
 router = APIRouter(tags=["Health"])
 
@@ -36,24 +35,20 @@ async def health_check(
     "/api/v1/status",
     response_model=StatusResponse,
     summary="Detailed Status",
-    description="Detailed status including R2 connection. Requires authentication.",
+    description="Detailed service status. Requires authentication.",
     dependencies=[Depends(verify_api_key)],
 )
 async def detailed_status(
     settings: Settings = Depends(get_settings),
 ) -> StatusResponse:
-    """Return detailed status including R2 connectivity.
+    """Return detailed service status.
 
     This endpoint requires authentication and provides more
     detailed information about the service status.
     """
-    # Test R2 connection
-    storage = StorageService(settings)
-    r2_connected = storage.test_connection()
-
     return StatusResponse(
         status="healthy",
         version=__version__,
         mock_mode=settings.mock_mode,
-        r2_connected=r2_connected,
     )
+

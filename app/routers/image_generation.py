@@ -6,7 +6,7 @@ import time
 from fastapi import APIRouter
 
 from app.dependencies import APIKeyDep, StorageDep, GeneratorDep
-from app.models.common import ErrorResponse
+from app.models.common import ErrorResponse, get_dimensions
 from app.models.image_generation import ImageGenerateRequest, ImageGenerateResponse
 from app.services.mock_generator import ImageGenerationParams
 
@@ -55,19 +55,20 @@ async def generate_image(
         f"Image generation request",
         extra={
             "job_id": request.job_id,
-            "width": request.width,
-            "height": request.height,
+            "aspect_ratio": request.aspect_ratio,
             "prompt_length": len(request.prompt),
         },
     )
+
+    # Calculate dimensions
+    width, height = get_dimensions(request.aspect_ratio)
 
     # Prepare generation parameters
     params = ImageGenerationParams(
         job_id=request.job_id,
         prompt=request.prompt,
-        negative_prompt=request.negative_prompt,
-        width=request.width,
-        height=request.height,
+        width=width,
+        height=height,
         seed=request.seed,
         num_inference_steps=request.num_inference_steps,
     )
@@ -76,17 +77,13 @@ async def generate_image(
     result = await generator.generate_image(params)
 
     # Upload output
-    if request.output_url:
-        r2_url = await storage.upload_to_url(
-            data=result.image_data,
-            url=request.output_url,
-            content_type="image/png",
-        )
-        r2_key = None
-    else:
-        r2_key, r2_url = storage.upload_image(result.image_data, request.job_id)
+    save_url = await storage.upload_to_url(
+        data=result.image_data,
+        url=request.save_url,
+        content_type="image/png",
+    )
 
-    generation_time_ms = int((time.time() - start_time) * 1000)
+    generation_time = round(time.time() - start_time, 2)
 
 
 
@@ -95,16 +92,12 @@ async def generate_image(
         extra={
             "job_id": request.job_id,
             "seed": result.seed,
-            "generation_time_ms": generation_time_ms,
+            "generation_time_s": generation_time,
         },
     )
 
     return ImageGenerateResponse(
         status="completed",
-        r2_key=r2_key,
-        r2_url=r2_url,
-        width=result.width,
-        height=result.height,
-        seed=result.seed,
-        generation_time_ms=generation_time_ms,
+        generation_time=generation_time,
+        save_url=save_url,
     )

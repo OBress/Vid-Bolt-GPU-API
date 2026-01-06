@@ -12,11 +12,6 @@ from PIL import Image
 # Set test environment variables before importing app
 os.environ["MOCK_MODE"] = "true"
 os.environ["API_KEY"] = "test-api-key-12345"
-os.environ["R2_ACCOUNT_ID"] = "test-account-id"
-os.environ["R2_ACCESS_KEY_ID"] = "test-access-key"
-os.environ["R2_SECRET_ACCESS_KEY"] = "test-secret-key"
-os.environ["R2_BUCKET_NAME"] = "test-bucket"
-os.environ["R2_PUBLIC_URL_BASE"] = "https://test-cdn.example.com"
 os.environ["LOG_LEVEL"] = "WARNING"
 
 from app.main import app
@@ -63,7 +58,7 @@ def sample_jpeg_bytes() -> bytes:
 
 @pytest.fixture
 def mock_storage(sample_image_bytes) -> Generator[MagicMock, None, None]:
-    """Mock the StorageService to avoid actual R2 calls."""
+    """Mock the StorageService to avoid actual HTTP calls."""
     # We patch the dependency type in routers
     with patch("app.dependencies.get_storage_service") as mock_get_storage:
         storage_instance = MagicMock()
@@ -71,21 +66,6 @@ def mock_storage(sample_image_bytes) -> Generator[MagicMock, None, None]:
         # Async methods
         storage_instance.download_from_url = AsyncMock(return_value=sample_image_bytes)
         storage_instance.upload_to_url = AsyncMock(return_value="https://custom-output.com/result.png")
-        
-        # Sync methods
-        storage_instance.upload_image.return_value = (
-            "outputs/images/test-job-id.png",
-            "https://test-cdn.example.com/outputs/images/test-job-id.png",
-        )
-        storage_instance.upload_video.return_value = (
-            "outputs/videos/test-job-id.mp4",
-            "https://test-cdn.example.com/outputs/videos/test-job-id.mp4",
-        )
-        storage_instance.upload_input_image.return_value = (
-            "inputs/test-job-id/source.png",
-            "https://test-cdn.example.com/inputs/test-job-id/source.png",
-        )
-        storage_instance.test_connection.return_value = True
         
         # Apply override
         app.dependency_overrides[app.dependencies.get_storage_service] = lambda: storage_instance

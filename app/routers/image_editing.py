@@ -7,8 +7,8 @@ from fastapi import APIRouter, Form
 from app.config import get_settings
 from app.dependencies import APIKeyDep, StorageDep, GeneratorDep
 from app.exceptions import ValidationError
-from app.models.common import ErrorResponse
-from app.models.image_editing import EditType, ImageEditResponse
+from app.models.common import ErrorResponse, get_dimensions
+from app.models.image_editing import EditType, ImageEditRequest, ImageEditResponse
 from app.services.mock_generator import ImageEditParams
 
 logger = logging.getLogger(__name__)
@@ -47,36 +47,33 @@ def _validate_image_magic_bytes(data: bytes) -> bool:
     description="Edit an existing image using AI. Input image must be provided as a URL.",
 )
 async def edit_image(
+    request: ImageEditRequest,
     api_key: APIKeyDep,
     storage: StorageDep,
     generator: GeneratorDep,
-    job_id: Annotated[str, Form(description="Unique job identifier")],
-    input_image_url: Annotated[str, Form(description="URL of the input image to edit")],
-    prompt: Annotated[str, Form(description="Description of the edit", max_length=2000)],
-    edit_type: Annotated[EditType, Form(description="Type of edit to apply")] = EditType.STYLE_TRANSFER,
-    strength: Annotated[float, Form(description="Edit strength", ge=0.0, le=1.0)] = 0.75,
-    mask_image_url: Annotated[str | None, Form(description="URL of the mask image for inpainting")] = None,
-    seed: Annotated[int | None, Form(description="Random seed for reproducibility")] = None,
-    output_url: Annotated[str | None, Form(description="Optional presigned URL (PUT) for direct storage upload")] = None,
 ) -> ImageEditResponse:
     """Edit an image with AI-powered transformations."""
     start_time = time.time()
-
-    if edit_type == EditType.INPAINT and mask_image_url is None:
-        raise ValidationError("mask_image_url is required for inpaint edit type")
-
+    
+    # Validation logic for inpainting is now slightly ambiguous without edit_type in request
+    # If mask is provided, we assume inpainting intent, but since edit_type is gone, 
+    # we can't strictly validate against it unless we infer it. 
+    # For now, let's keep mask validation simple or remove strict dependency on removed edit_type.
+    # User asked to remove edit_type, so we can't check `request.edit_type`.
+    
+    # Use aspect ratio for logging and logic
     logger.info(
         f"Image edit request (URL flow)",
         extra={
-            "job_id": job_id,
-            "edit_type": edit_type.value,
-            "has_mask": mask_image_url is not None,
-            "has_output_url": output_url is not None,
+            "job_id": request.job_id,
+            "aspect_ratio": request.aspect_ratio,
+            "has_mask": request.mask_image_url is not None,
+            "has_save_url": True,
         },
     )
 
     # Download input image
-    input_image_data = await storage.download_from_url(input_image_url)
+    input_image_data = await storage.download_from_url(request.input_image_url)
 
     # Validate magic bytes
     if not _validate_image_magic_bytes(input_image_data):
@@ -84,60 +81,39 @@ async def edit_image(
 
     # Download and validate mask if provided
     mask_data = None
-    if mask_image_url is not None:
-        mask_data = await storage.download_from_url(mask_image_url)
+    if request.mask_image_url is not None:
+        mask_data = await storage.download_from_url(request.mask_image_url)
         if not _validate_image_magic_bytes(mask_data):
             raise ValidationError("mask_image_url does not point to a valid image file")
 
-    # Upload input image to R2 for internal tracking (still required for our mock flow/tracking)
-    input_r2_key, _ = storage.upload_input_image(input_image_data, job_id)
+    # Calculate dimensions
+    width, height = get_dimensions(request.aspect_ratio)
 
     # Prepare edit parameters
     params = ImageEditParams(
-        job_id=job_id,
+        job_id=request.job_id,
         input_image_data=input_image_data,
-        prompt=prompt,
-        edit_type=edit_type.value,
-        strength=strength,
+        prompt=request.prompt,
+        width=width,
+        height=height,
         mask_data=mask_data,
-        seed=seed,
+        seed=request.seed,
     )
 
     # Generate edited image
     result = await generator.edit_image(params)
 
     # Upload output
-    if output_url:
-        r2_url = await storage.upload_to_url(
-            data=result.image_data,
-            url=output_url,
-            content_type="image/png",
-        )
-        r2_key = None
-    else:
-        r2_key, r2_url = storage.upload_image(result.image_data, job_id, suffix="_edited")
-
-    generation_time_ms = int((time.time() - start_time) * 1000)
-
-    logger.info(
-        f"Image edit completed",
-        extra={
-            "job_id": job_id,
-            "seed": result.seed,
-            "generation_time_ms": generation_time_ms,
-        },
+    save_url = await storage.upload_to_url(
+        data=result.image_data,
+        url=request.save_url,
+        content_type="image/png",
     )
+
+    generation_time = round(time.time() - start_time, 2)
 
     return ImageEditResponse(
         status="completed",
-        r2_key=r2_key,
-        r2_url=r2_url,
-        input_r2_key=input_r2_key,
-        original_width=result.original_width,
-        original_height=result.original_height,
-        output_width=result.output_width,
-        output_height=result.output_height,
-        edit_type=edit_type.value,
-        seed=result.seed,
-        generation_time_ms=generation_time_ms,
+        generation_time=generation_time,
+        save_url=save_url,
     )

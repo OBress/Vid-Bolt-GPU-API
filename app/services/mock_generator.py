@@ -18,7 +18,6 @@ class ImageGenerationParams:
 
     job_id: str
     prompt: str
-    negative_prompt: str | None
     width: int
     height: int
     seed: int | None
@@ -42,8 +41,8 @@ class ImageEditParams:
     job_id: str
     input_image_data: bytes
     prompt: str
-    edit_type: str
-    strength: float
+    width: int
+    height: int
     mask_data: bytes | None
     seed: int | None
 
@@ -69,7 +68,8 @@ class VideoGenerationParams:
     prompt: str
     duration_seconds: float
     fps: int
-    motion_strength: float
+    width: int
+    height: int
     seed: int | None
     end_image_data: bytes | None = None
 
@@ -157,8 +157,6 @@ class MockGenerator:
             f"Mock editing image",
             extra={
                 "job_id": params.job_id,
-                "edit_type": params.edit_type,
-                "strength": params.strength,
                 "seed": seed,
             },
         )
@@ -168,9 +166,10 @@ class MockGenerator:
         await asyncio.sleep(delay)
 
         # Generate placeholder edited image
+        # Note: We pass default values for removed parameters if the placeholder requires them
         image_data, orig_w, orig_h, out_w, out_h = self.placeholder.create_edited_image(
             input_image_data=params.input_image_data,
-            edit_type=params.edit_type,
+            edit_type="style_transfer",  # Defaulting to style_transfer since it was removed
             prompt=params.prompt,
             job_id=params.job_id,
             seed=seed,

@@ -64,23 +64,13 @@ class InvalidFileTypeError(APIError):
         super().__init__(message)
 
 
-class R2UploadError(APIError):
-    """Raised when R2 upload fails."""
+class UploadError(APIError):
+    """Raised when upload to presigned URL fails."""
 
     status_code: ClassVar[int] = 500
-    error_code: ClassVar[str] = "R2_UPLOAD_FAILED"
+    error_code: ClassVar[str] = "UPLOAD_FAILED"
 
     def __init__(self, message: str = "Failed to upload file to storage"):
-        super().__init__(message)
-
-
-class R2ConnectionError(APIError):
-    """Raised when R2 connection fails."""
-
-    status_code: ClassVar[int] = 500
-    error_code: ClassVar[str] = "R2_CONNECTION_ERROR"
-
-    def __init__(self, message: str = "Failed to connect to storage"):
         super().__init__(message)
 
 

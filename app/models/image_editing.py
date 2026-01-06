@@ -5,6 +5,8 @@ from typing import Literal
 
 from pydantic import BaseModel, Field
 
+from app.models.common import AspectRatio
+
 
 class EditType(str, Enum):
     """Available image editing types."""
@@ -16,36 +18,49 @@ class EditType(str, Enum):
     UPSCALE = "upscale"
 
 
+class ImageEditRequest(BaseModel):
+    """Request body for image editing."""
+
+    job_id: str = Field(..., description="Unique job identifier")
+    input_image_url: str = Field(..., description="URL of the input image to edit")
+    prompt: str = Field(..., description="Description of the edit", max_length=2000)
+    aspect_ratio: AspectRatio = Field(
+        default=AspectRatio.r_16_9,
+        description="Aspect ratio of the edited image",
+    )
+    mask_image_url: str | None = Field(default=None, description="URL of the mask image for inpainting")
+    seed: int | None = Field(default=None, description="Random seed for reproducibility")
+    save_url: str = Field(..., description="Presigned URL (PUT) for direct storage upload")
+
+    model_config = {
+        "json_schema_extra": {
+            "examples": [
+                {
+                    "job_id": "550e8400-e29b-41d4-a716-446655440001",
+                    "input_image_url": "https://example.com/input.png",
+                    "prompt": "Convert to oil painting style",
+                    "aspect_ratio": "16:9",
+                    "save_url": "https://example.com/upload/edited.png",
+                }
+            ]
+        }
+    }
+
+
 class ImageEditResponse(BaseModel):
     """Response for successful image editing."""
 
     status: Literal["completed"] = "completed"
-    r2_key: str = Field(..., description="Storage key for edited image in R2")
-    r2_url: str = Field(..., description="Public CDN URL for the edited image")
-    input_r2_key: str = Field(..., description="Storage key for input image in R2")
-    original_width: int = Field(..., description="Original image width")
-    original_height: int = Field(..., description="Original image height")
-    output_width: int = Field(..., description="Edited image width")
-    output_height: int = Field(..., description="Edited image height")
-    edit_type: str = Field(..., description="Type of edit applied")
-    seed: int = Field(..., description="Seed used for generation")
-    generation_time_ms: int = Field(..., description="Processing time in milliseconds")
+    generation_time: float = Field(..., description="Processing time in seconds")
+    save_url: str = Field(..., description="The URL where the edited image was saved")
 
     model_config = {
         "json_schema_extra": {
             "examples": [
                 {
                     "status": "completed",
-                    "r2_key": "outputs/images/550e8400-e29b-41d4-a716-446655440001_edited.png",
-                    "r2_url": "https://cdn.vid-bolt.com/outputs/images/550e8400-e29b-41d4-a716-446655440001_edited.png",
-                    "input_r2_key": "inputs/550e8400-e29b-41d4-a716-446655440001/source.png",
-                    "original_width": 1280,
-                    "original_height": 720,
-                    "output_width": 1280,
-                    "output_height": 720,
-                    "edit_type": "style_transfer",
-                    "seed": 42,
-                    "generation_time_ms": 3500,
+                    "generation_time": 3.5,
+                    "save_url": "https://example.com/upload/edited.png",
                 }
             ]
         }

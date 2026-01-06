@@ -13,22 +13,20 @@ def test_generate_image_success(client, api_key_headers, mock_storage, sample_jo
         json={
             "job_id": sample_job_id,
             "prompt": "A beautiful sunset",
-            "width": 1024,
-            "height": 1024,
+            "aspect_ratio": "1:1",
+            "save_url": "https://example.com/save.png",
         },
     )
 
     assert response.status_code == 200
     data = response.json()
     assert data["status"] == "completed"
-    assert "r2_url" in data
-    assert "r2_key" in data
-    assert data["width"] == 1024
-    assert data["height"] == 1024
-    assert "generation_time_ms" in data
+    assert "save_url" in data
+    assert data["save_url"] == "https://example.com/save.png"
+    assert "generation_time" in data
 
     # Verify storage call
-    mock_storage.upload_image.assert_called_once()
+    mock_storage.upload_to_url.assert_called_once()
 
 
 def test_generate_image_with_output_url(client, api_key_headers, mock_storage, sample_job_id):
@@ -40,15 +38,14 @@ def test_generate_image_with_output_url(client, api_key_headers, mock_storage, s
         json={
             "job_id": sample_job_id,
             "prompt": "A beautiful sunset",
-            "output_url": custom_url,
+            "save_url": custom_url,
         },
     )
 
     assert response.status_code == 200
     data = response.json()
     assert data["status"] == "completed"
-    assert data["r2_url"] == custom_url
-    assert data["r2_key"] is None  # Should be None when output_url is used
+    assert data["save_url"] == custom_url
 
     # Verify storage call
     mock_storage.upload_to_url.assert_called_once()
@@ -57,14 +54,14 @@ def test_generate_image_with_output_url(client, api_key_headers, mock_storage, s
 
 
 def test_generate_image_validation_error(client, api_key_headers):
-    """Test validation error for invalid dimensions."""
+    """Test validation error for invalid aspect ratio."""
     response = client.post(
         "/api/v1/image/generate",
         headers=api_key_headers,
         json={
             "job_id": "test-job",
             "prompt": "sunset",
-            "width": 100,  # Too small (min 512)
+            "aspect_ratio": "invalid-ratio",
         },
     )
 

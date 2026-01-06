@@ -10,7 +10,7 @@ This API provides endpoints for:
 - **Image Editing**: Edit existing images (inpaint, outpaint, style transfer, etc.)
 - **Video Generation**: Create videos from images with motion
 
-All generated outputs are uploaded to Cloudflare R2 and accessible via CDN URLs.
+All generated outputs are uploaded via presigned URLs provided by the calling client.
 
 ## Prerequisites
 
@@ -39,7 +39,7 @@ make install-dev
 # Copy example environment file
 cp .env.example .env
 
-# Edit .env with your values (R2 credentials, API key, etc.)
+# Edit .env with your values (API key, etc.)
 ```
 
 ### 3. Run the Server
@@ -66,7 +66,7 @@ Once running, access the interactive documentation:
 # No authentication required
 curl http://localhost:8000/health
 
-# With authentication (includes R2 status)
+# With authentication
 curl -H "X-API-Key: your-api-key" http://localhost:8000/api/v1/status
 ```
 
@@ -129,11 +129,6 @@ make format  # Auto-format code
 | ---------------------------- | --------------------------- | ----------- |
 | `MOCK_MODE`                  | Enable mock implementations | `true`      |
 | `API_KEY`                    | API authentication key      | Required    |
-| `R2_ACCOUNT_ID`              | Cloudflare account ID       | Required    |
-| `R2_ACCESS_KEY_ID`           | R2 access key               | Required    |
-| `R2_SECRET_ACCESS_KEY`       | R2 secret key               | Required    |
-| `R2_BUCKET_NAME`             | R2 bucket name              | Required    |
-| `R2_PUBLIC_URL_BASE`         | CDN base URL                | Required    |
 | `COMFY_HOST`                 | ComfyUI host                | `127.0.0.1` |
 | `COMFY_PORT`                 | ComfyUI port                | `8188`      |
 | `MAX_IMAGE_SIZE_MB`          | Max upload size             | `10`        |
@@ -163,7 +158,7 @@ When `MOCK_MODE=true` (default), the API:
 - Simulates processing delays (2-10 seconds depending on operation)
 - Generates placeholder images with gradient backgrounds and text overlays
 - Creates simple MP4 videos with static backgrounds
-- Still uploads to R2 for realistic testing
+- Uses presigned URLs from the client for output storage
 
 ## License
 

@@ -20,13 +20,6 @@ class Settings(BaseSettings):
     # API Authentication
     api_key: str = ""
 
-    # Cloudflare R2 Storage
-    r2_account_id: str = ""
-    r2_access_key_id: str = ""
-    r2_secret_access_key: str = ""
-    r2_bucket_name: str = "vid-bolt-outputs"
-    r2_public_url_base: str = ""
-
     # ComfyUI Settings (future use)
     comfy_host: str = "127.0.0.1"
     comfy_port: int = 8188
@@ -45,11 +38,6 @@ class Settings(BaseSettings):
     def max_image_size_bytes(self) -> int:
         """Get max image size in bytes."""
         return self.max_image_size_mb * 1024 * 1024
-
-    @property
-    def r2_endpoint_url(self) -> str:
-        """Get the R2 endpoint URL."""
-        return f"https://{self.r2_account_id}.r2.cloudflarestorage.com"
 
 
 @lru_cache
