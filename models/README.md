@@ -6,15 +6,22 @@ This directory contains AI model weights used by the GPU API for generation task
 
 ```
 models/
-├── README.md               # This file
-├── z-image-turbo/          # Z-Image Turbo model (6B parameters)
-│   ├── transformer/        # DiT transformer weights
-│   ├── vae/                # VAE encoder/decoder
-│   ├── text_encoder/       # Qwen2 text encoder
-│   ├── tokenizer/          # Tokenizer files
-│   └── scheduler/          # Scheduler config
-└── loras/                  # LoRA fine-tuning weights
-    └── (your-lora.safetensors)
+├── README.md                     # This file
+├── z-image-turbo/                # Z-Image Turbo (text-to-image)
+│   ├── transformer/              # DiT transformer weights
+│   ├── vae/                      # VAE encoder/decoder
+│   ├── text_encoder/             # Qwen2 text encoder
+│   ├── tokenizer/                # Tokenizer files
+│   └── scheduler/                # Scheduler config
+├── qwen-image-edit-2511/         # Qwen-Image-Edit-2511 (image editing)
+│   ├── transformer/              # DiT transformer weights
+│   ├── vae/                      # VAE encoder/decoder
+│   ├── text_encoder/             # Qwen2.5-VL text encoder
+│   └── ...                       # Other model files
+└── loras/
+    ├── z-image-turbo/            # LoRAs for Z-Image
+    └── qwen-image-edit-2511/     # LoRAs for Qwen-Image-Edit
+        └── Qwen-Image-Edit-2511-Lightning-8steps-V1.0-fp32.safetensors
 ```
 
 ---
@@ -56,6 +63,45 @@ snapshot_download(
     local_dir="models/z-image-turbo",
     local_dir_use_symlinks=False,
 )
+```
+
+---
+
+## Qwen-Image-Edit-2511 Download (LightX2V)
+
+**Model**: [Qwen/Qwen-Image-Edit-2511](https://huggingface.co/Qwen/Qwen-Image-Edit-2511)  
+**8-Step LORA**: [lightx2v/Qwen-Image-Edit-2511-Lightning](https://huggingface.co/lightx2v/Qwen-Image-Edit-2511-Lightning)  
+**Size**: Base ~20GB, LORA ~500MB  
+**Requirements**: 16GB VRAM (with offloading), 24GB recommended
+
+> **Note**: This model uses the LightX2V framework for accelerated inference. The 8-step distilled LORA provides **~42x speedup** compared to the base 40-step model.
+
+### Step 1: Download Base Model
+
+```bash
+huggingface-cli download Qwen/Qwen-Image-Edit-2511 \
+    --local-dir models/qwen-image-edit-2511 \
+    --local-dir-use-symlinks False
+```
+
+### Step 2: Download 8-Step Distilled LORA
+
+```bash
+huggingface-cli download lightx2v/Qwen-Image-Edit-2511-Lightning \
+    --local-dir models/loras/qwen-image-edit-2511 \
+    --local-dir-use-symlinks False
+```
+
+### Verification
+
+```bash
+# Check base model
+ls models/qwen-image-edit-2511/
+# Expected: transformer, vae, text_encoder, etc.
+
+# Check LORA weights
+ls models/loras/qwen-image-edit-2511/
+# Expected: Qwen-Image-Edit-2511-Lightning-8steps-V1.0-fp32.safetensors
 ```
 
 ---
@@ -109,10 +155,20 @@ ls models/z-image-turbo/text_encoder/*.safetensors
 
 ## GPU Requirements
 
+### Z-Image Turbo
+
 | Mode               | VRAM Required  |
 | ------------------ | -------------- |
 | bfloat16 (default) | ~16GB          |
 | float16            | ~16GB          |
 | CPU offload        | ~8GB GPU + RAM |
 
-For lower VRAM GPUs, see [stable-diffusion.cpp](https://github.com/leejet/stable-diffusion.cpp) for 4GB support.
+### Qwen-Image-Edit-2511 (LightX2V)
+
+| Configuration             | VRAM Required  |
+| ------------------------- | -------------- |
+| Full precision            | ~24GB          |
+| With text encoder offload | ~16GB          |
+| With full CPU offload     | ~8GB GPU + RAM |
+
+> **Tip**: For best performance with LightX2V, use the 8-step distilled LORA which eliminates the need for CFG (classifier-free guidance), effectively halving the memory requirements.

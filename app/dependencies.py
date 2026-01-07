@@ -11,7 +11,7 @@ from app.services.mock_generator import MockGenerator
 
 
 # Global generator instance (set during startup)
-_generator_instance: Union[MockGenerator, "ZImageGenerator", None] = None
+_generator_instance: Union[MockGenerator, "ZImageGenerator", "LightX2VImageEditGenerator", None] = None
 
 
 def verify_api_key(
@@ -54,11 +54,13 @@ def get_storage_service(
     return StorageService(settings)
 
 
-def set_generator_instance(instance: Union[MockGenerator, "ZImageGenerator"]) -> None:
+def set_generator_instance(
+    instance: Union[MockGenerator, "ZImageGenerator", "LightX2VImageEditGenerator"]
+) -> None:
     """Set the global generator instance (called during startup).
     
     Args:
-        instance: The generator instance to use
+        instance: The generator instance to use (MockGenerator, ZImageGenerator, or LightX2VImageEditGenerator)
     """
     global _generator_instance
     _generator_instance = instance
@@ -66,14 +68,14 @@ def set_generator_instance(instance: Union[MockGenerator, "ZImageGenerator"]) ->
 
 def get_generator(
     settings: Settings = Depends(get_settings),
-) -> Union[MockGenerator, "ZImageGenerator"]:
+) -> Union[MockGenerator, "ZImageGenerator", "LightX2VImageEditGenerator"]:
     """Get generator service instance.
 
     Args:
         settings: Application settings
 
     Returns:
-        Generator instance (MockGenerator or ZImageGenerator)
+        Generator instance (MockGenerator, ZImageGenerator, or LightX2VImageEditGenerator)
     """
     global _generator_instance
     
@@ -94,5 +96,8 @@ def get_generator(
 APIKeyDep = Annotated[str, Depends(verify_api_key)]
 SettingsDep = Annotated[Settings, Depends(get_settings)]
 StorageDep = Annotated[StorageService, Depends(get_storage_service)]
-GeneratorDep = Annotated[Union[MockGenerator, "ZImageGenerator"], Depends(get_generator)]
+GeneratorDep = Annotated[
+    Union[MockGenerator, "ZImageGenerator", "LightX2VImageEditGenerator"],
+    Depends(get_generator)
+]
 

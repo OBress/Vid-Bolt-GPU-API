@@ -1,0 +1,13 @@
+# Qwen-Image-Edit-2511 Model Directory
+
+This directory will contain the Qwen-Image-Edit-2511 base model.
+
+## Download Instructions
+
+```bash
+huggingface-cli download Qwen/Qwen-Image-Edit-2511 \
+    --local-dir models/qwen-image-edit-2511 \
+    --local-dir-use-symlinks False
+```
+
+See the main [models/README.md](../README.md) for complete setup instructions.

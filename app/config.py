@@ -44,6 +44,19 @@ class Settings(BaseSettings):
     zimage_attention_backend: str = "_native_flash"  # flash, _flash_3, sdpa, _native_flash
     zimage_dry_run: bool = False  # Test workflow without loading models
 
+    # LightX2V Settings (Qwen-Image-Edit-2511)
+    lightx2v_model_path: str = "models/qwen-image-edit-2511"
+    lightx2v_lora_path: str = "models/loras/qwen-image-edit-2511"
+    lightx2v_lora_filename: str = "Qwen-Image-Edit-2511-Lightning-8steps-V1.0-fp32.safetensors"
+    lightx2v_device: str = "cuda"
+    lightx2v_attn_mode: str = "flash_attn3"  # flash_attn2, flash_attn3, sage_attn2
+    lightx2v_infer_steps: int = 8  # 8-step with LORA, 40 for base
+    lightx2v_guidance_scale: float = 1.0  # CFG disabled with distill LORA
+    lightx2v_resize_mode: str = "adaptive"
+    lightx2v_dry_run: bool = False  # Test workflow without loading models
+    lightx2v_cpu_offload: bool = False  # Enable for lower VRAM usage
+    lightx2v_text_encoder_offload: bool = True  # Offload text encoder to CPU
+
     @property
     def max_image_size_bytes(self) -> int:
         """Get max image size in bytes."""

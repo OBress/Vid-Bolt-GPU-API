@@ -1,0 +1,15 @@
+# Qwen-Image-Edit-2511 Lightning LORA
+
+This directory will contain the 8-step distilled LORA weights.
+
+## Download Instructions
+
+```bash
+huggingface-cli download lightx2v/Qwen-Image-Edit-2511-Lightning \
+    --local-dir models/loras/qwen-image-edit-2511 \
+    --local-dir-use-symlinks False
+```
+
+Expected file: `Qwen-Image-Edit-2511-Lightning-8steps-V1.0-fp32.safetensors`
+
+See the main [models/README.md](../../README.md) for complete setup instructions.

@@ -28,6 +28,8 @@ logger = logging.getLogger(__name__)
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     """Application lifespan handler."""
+    from pathlib import Path
+    
     from app.dependencies import set_generator_instance
     from app.services.mock_generator import MockGenerator
 
@@ -45,15 +47,36 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         logger.info("Running in MOCK MODE - no actual GPU processing")
         generator = MockGenerator(settings)
     else:
-        # Import Z-Image generator only when needed
-        from app.services.zimage_generator import ZImageGenerator
-
-        generator = ZImageGenerator(settings)
-
-        if settings.zimage_dry_run:
-            logger.info("Running in DRY RUN MODE - workflow testing without models")
+        # Determine which generator to use based on available models
+        lightx2v_model_path = Path(settings.lightx2v_model_path)
+        lightx2v_lora_path = Path(settings.lightx2v_lora_path) / settings.lightx2v_lora_filename
+        
+        # Use LightX2V if the model exists OR if dry-run mode is enabled
+        use_lightx2v = (
+            settings.lightx2v_dry_run or 
+            (lightx2v_model_path.exists() and lightx2v_lora_path.exists())
+        )
+        
+        if use_lightx2v:
+            # Use LightX2V for image editing
+            from app.services.lightx2v_generator import LightX2VImageEditGenerator
+            
+            generator = LightX2VImageEditGenerator(settings)
+            
+            if settings.lightx2v_dry_run:
+                logger.info("Running LightX2V in DRY RUN MODE - workflow testing without models")
+            else:
+                logger.info("Loading LightX2V models (Qwen-Image-Edit-2511)...")
         else:
-            logger.info("Loading Z-Image models (this may take a moment)...")
+            # Fall back to Z-Image generator
+            from app.services.zimage_generator import ZImageGenerator
+
+            generator = ZImageGenerator(settings)
+
+            if settings.zimage_dry_run:
+                logger.info("Running Z-Image in DRY RUN MODE - workflow testing without models")
+            else:
+                logger.info("Loading Z-Image models (this may take a moment)...")
 
         # Load models (or validate dry-run configuration)
         generator.load_models()
