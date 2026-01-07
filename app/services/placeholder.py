@@ -194,7 +194,10 @@ class PlaceholderGenerator:
         Returns:
             Tuple of (video_bytes, width, height)
         """
-        from moviepy.editor import ImageClip, TextClip, CompositeVideoClip
+        try:
+            from moviepy import ImageClip
+        except ImportError:
+            from moviepy.editor import ImageClip
 
         # Load input image
         input_image = Image.open(io.BytesIO(input_image_data))
@@ -238,7 +241,6 @@ class PlaceholderGenerator:
                 fps=fps,
                 codec="libx264",
                 audio=False,
-                verbose=False,
                 logger=None,
             )
 

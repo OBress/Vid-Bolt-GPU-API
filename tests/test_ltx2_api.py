@@ -1,0 +1,256 @@
+"""Tests for LTX-2 Video Generation API Endpoints."""
+
+import io
+import os
+from unittest.mock import AsyncMock, MagicMock, patch
+
+import pytest
+from fastapi.testclient import TestClient
+from PIL import Image
+
+# Set test environment variables before importing app
+os.environ["MOCK_MODE"] = "true"
+os.environ["API_KEY"] = "test-api-key-12345"
+
+
+class TestLTX2GenerateEndpoint:
+    """Test suite for POST /api/v1/ltx2/generate endpoint."""
+
+    def test_generate_valid_request(self, client, api_key_headers, mock_storage):
+        """Test successful I2V video generation."""
+        response = client.post(
+            "/api/v1/ltx2/generate",
+            headers=api_key_headers,
+            json={
+                "job_id": "test-i2v-001",
+                "input_image_url": "https://example.com/start.png",
+                "prompt": "Gentle waves on the ocean, cinematic",
+                "duration_seconds": 3.0,
+                "frame_rate": 24.0,
+                "save_url": "https://example.com/upload/video.mp4",
+            },
+        )
+
+        assert response.status_code == 200
+        data = response.json()
+        assert data["status"] == "completed"
+        assert "generation_time" in data
+        assert "save_url" in data
+        assert "duration_seconds" in data
+        assert "has_audio" in data
+
+    def test_generate_with_end_image(self, client, api_key_headers, mock_storage):
+        """Test I2V with start and end frame interpolation."""
+        response = client.post(
+            "/api/v1/ltx2/generate",
+            headers=api_key_headers,
+            json={
+                "job_id": "test-i2v-002",
+                "input_image_url": "https://example.com/start.png",
+                "end_image_url": "https://example.com/end.png",
+                "prompt": "Person walking from left to right",
+                "duration_seconds": 5.0,
+                "save_url": "https://example.com/upload/video.mp4",
+            },
+        )
+
+        assert response.status_code == 200
+        data = response.json()
+        assert data["status"] == "completed"
+
+    def test_generate_missing_required_fields(self, client, api_key_headers):
+        """Test validation error for missing required fields."""
+        response = client.post(
+            "/api/v1/ltx2/generate",
+            headers=api_key_headers,
+            json={
+                "prompt": "Test prompt only",
+            },
+        )
+
+        assert response.status_code == 400
+        data = response.json()
+        assert data["error_code"] == "VALIDATION_ERROR"
+
+    def test_generate_missing_auth(self, client):
+        """Test authentication error when API key is missing."""
+        response = client.post(
+            "/api/v1/ltx2/generate",
+            json={
+                "job_id": "test-no-auth",
+                "input_image_url": "https://example.com/image.png",
+                "prompt": "Test",
+                "save_url": "https://example.com/upload.mp4",
+            },
+        )
+
+        assert response.status_code == 401
+
+    def test_generate_duration_bounds(self, client, api_key_headers, mock_storage):
+        """Test duration validation bounds."""
+        # Test minimum duration
+        response = client.post(
+            "/api/v1/ltx2/generate",
+            headers=api_key_headers,
+            json={
+                "job_id": "test-min-duration",
+                "input_image_url": "https://example.com/image.png",
+                "prompt": "Short video",
+                "duration_seconds": 0.5,  # Minimum allowed
+                "save_url": "https://example.com/upload.mp4",
+            },
+        )
+        assert response.status_code == 200
+
+        # Test below minimum
+        response = client.post(
+            "/api/v1/ltx2/generate",
+            headers=api_key_headers,
+            json={
+                "job_id": "test-too-short",
+                "input_image_url": "https://example.com/image.png",
+                "prompt": "Too short",
+                "duration_seconds": 0.1,  # Below minimum
+                "save_url": "https://example.com/upload.mp4",
+            },
+        )
+        assert response.status_code == 400
+
+
+class TestKeyframeInterpolateEndpoint:
+    """Test suite for POST /api/v1/ltx2/interpolate endpoint."""
+
+    def test_interpolate_valid_request(self, client, api_key_headers, mock_storage):
+        """Test successful keyframe interpolation."""
+        response = client.post(
+            "/api/v1/ltx2/interpolate",
+            headers=api_key_headers,
+            json={
+                "job_id": "test-keyframe-001",
+                "prompt": "Smooth transition between poses",
+                "keyframes": [
+                    {"image_url": "https://example.com/kf1.png", "frame_index": 0, "strength": 1.0},
+                    {"image_url": "https://example.com/kf2.png", "frame_index": 72, "strength": 1.0},
+                ],
+                "duration_seconds": 3.0,
+                "frame_rate": 24.0,
+                "save_url": "https://example.com/upload/video.mp4",
+            },
+        )
+
+        assert response.status_code == 200
+        data = response.json()
+        assert data["status"] == "completed"
+        assert "generation_time" in data
+        assert "duration_seconds" in data
+
+    def test_interpolate_single_keyframe(self, client, api_key_headers, mock_storage):
+        """Test with single keyframe (treated as I2V)."""
+        response = client.post(
+            "/api/v1/ltx2/interpolate",
+            headers=api_key_headers,
+            json={
+                "job_id": "test-single-kf",
+                "prompt": "Animation from single frame",
+                "keyframes": [
+                    {"image_url": "https://example.com/start.png", "frame_index": 0, "strength": 1.0},
+                ],
+                "duration_seconds": 2.0,
+                "save_url": "https://example.com/upload/video.mp4",
+            },
+        )
+
+        assert response.status_code == 200
+
+    def test_interpolate_empty_keyframes(self, client, api_key_headers):
+        """Test validation error for empty keyframes list."""
+        response = client.post(
+            "/api/v1/ltx2/interpolate",
+            headers=api_key_headers,
+            json={
+                "job_id": "test-empty-kf",
+                "prompt": "No keyframes",
+                "keyframes": [],
+                "save_url": "https://example.com/upload/video.mp4",
+            },
+        )
+
+        assert response.status_code == 400
+        data = response.json()
+        assert data["error_code"] == "VALIDATION_ERROR"
+
+    def test_interpolate_too_many_keyframes(self, client, api_key_headers):
+        """Test validation error for too many keyframes."""
+        keyframes = [
+            {"image_url": f"https://example.com/kf{i}.png", "frame_index": i * 10, "strength": 1.0}
+            for i in range(15)  # Max is 10
+        ]
+        
+        response = client.post(
+            "/api/v1/ltx2/interpolate",
+            headers=api_key_headers,
+            json={
+                "job_id": "test-too-many-kf",
+                "prompt": "Too many keyframes",
+                "keyframes": keyframes,
+                "duration_seconds": 5.0,
+                "save_url": "https://example.com/upload/video.mp4",
+            },
+        )
+
+        assert response.status_code == 400
+
+    def test_interpolate_missing_auth(self, client):
+        """Test authentication error when API key is missing."""
+        response = client.post(
+            "/api/v1/ltx2/interpolate",
+            json={
+                "job_id": "test-no-auth",
+                "prompt": "Test",
+                "keyframes": [
+                    {"image_url": "https://example.com/kf.png", "frame_index": 0, "strength": 1.0},
+                ],
+                "save_url": "https://example.com/upload.mp4",
+            },
+        )
+
+        assert response.status_code == 401
+
+    def test_interpolate_with_negative_prompt(self, client, api_key_headers, mock_storage):
+        """Test with negative prompt included."""
+        response = client.post(
+            "/api/v1/ltx2/interpolate",
+            headers=api_key_headers,
+            json={
+                "job_id": "test-negative-prompt",
+                "prompt": "Beautiful landscape animation",
+                "negative_prompt": "blurry, distorted, low quality",
+                "keyframes": [
+                    {"image_url": "https://example.com/start.png", "frame_index": 0, "strength": 1.0},
+                    {"image_url": "https://example.com/end.png", "frame_index": 120, "strength": 1.0},
+                ],
+                "duration_seconds": 5.0,
+                "save_url": "https://example.com/upload/video.mp4",
+            },
+        )
+
+        assert response.status_code == 200
+
+    def test_interpolate_custom_aspect_ratio(self, client, api_key_headers, mock_storage):
+        """Test with different aspect ratios."""
+        response = client.post(
+            "/api/v1/ltx2/interpolate",
+            headers=api_key_headers,
+            json={
+                "job_id": "test-aspect-ratio",
+                "prompt": "Vertical video",
+                "keyframes": [
+                    {"image_url": "https://example.com/kf.png", "frame_index": 0, "strength": 1.0},
+                ],
+                "duration_seconds": 2.0,
+                "aspect_ratio": "9:16",
+                "save_url": "https://example.com/upload/video.mp4",
+            },
+        )
+
+        assert response.status_code == 200

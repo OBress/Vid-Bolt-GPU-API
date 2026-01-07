@@ -57,6 +57,18 @@ class Settings(BaseSettings):
     lightx2v_cpu_offload: bool = False  # Enable for lower VRAM usage
     lightx2v_text_encoder_offload: bool = True  # Offload text encoder to CPU
 
+    # LTX-2 Video Generation Settings
+    ltx2_checkpoint_path: str = "models/ltx-2/ltx-2-19b-dev.safetensors"
+    ltx2_distilled_lora_path: str = "models/ltx-2/ltx-2-19b-distilled-lora-384.safetensors"
+    ltx2_spatial_upsampler_path: str = "models/ltx-2/ltx-2-spatial-upsampler-x2-1.0.safetensors"
+    ltx2_gemma_root: str = "models/ltx-2/gemma-3-12b-it-qat-q4_0-unquantized"
+    ltx2_device: str = "cuda"
+    ltx2_fp8_enabled: bool = False  # Enable FP8 for lower VRAM usage (~16GB instead of 24GB)
+    ltx2_dry_run: bool = False  # Test workflow without loading models
+    ltx2_num_inference_steps: int = 40  # Stage 1 denoising steps
+    ltx2_cfg_guidance_scale: float = 4.0  # CFG scale for stage 1
+    ltx2_default_frame_rate: float = 24.0  # Default FPS
+
     @property
     def max_image_size_bytes(self) -> int:
         """Get max image size in bytes."""

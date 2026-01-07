@@ -18,6 +18,11 @@ models/
 │   ├── vae/                      # VAE encoder/decoder
 │   ├── text_encoder/             # Qwen2.5-VL text encoder
 │   └── ...                       # Other model files
+├── ltx-2/                        # LTX-2 (video generation with audio)
+│   ├── ltx-2-19b-dev.safetensors # Main checkpoint (~20GB)
+│   ├── ltx-2-19b-distilled-lora-384.safetensors  # Distilled LoRA
+│   ├── ltx-2-spatial-upsampler-x2-1.0.safetensors # Spatial upsampler
+│   └── gemma-3-12b-it-qat-q4_0-unquantized/      # Gemma text encoder
 └── loras/
     ├── z-image-turbo/            # LoRAs for Z-Image
     └── qwen-image-edit-2511/     # LoRAs for Qwen-Image-Edit
@@ -106,6 +111,70 @@ ls models/loras/qwen-image-edit-2511/
 
 ---
 
+## LTX-2 Video Generation Download
+
+**Model**: [Lightricks/LTX-2](https://huggingface.co/Lightricks/LTX-2)  
+**Text Encoder**: [google/gemma-3-12b-it-qat-q4_0-unquantized](https://huggingface.co/google/gemma-3-12b-it-qat-q4_0-unquantized)  
+**Size**: ~40GB total (checkpoint + upscaler + text encoder + distilled LoRA)  
+**Requirements**: 24GB VRAM (16GB with FP8), CUDA GPU with bfloat16 support
+
+> **Features**: LTX-2 generates video with synchronized audio and supports:
+>
+> - **I2V (Image-to-Video)**: Generate motion from a single starting image
+> - **Keyframe Interpolation**: Smoothly interpolate between multiple keyframe images
+
+### Step 1: Create Directory
+
+```bash
+mkdir -p models/ltx-2
+```
+
+### Step 2: Download Main Checkpoint (~20GB)
+
+```bash
+huggingface-cli download Lightricks/LTX-2 ltx-2-19b-dev.safetensors \
+    --local-dir models/ltx-2 \
+    --local-dir-use-symlinks False
+```
+
+### Step 3: Download Distilled LoRA
+
+```bash
+huggingface-cli download Lightricks/LTX-2 ltx-2-19b-distilled-lora-384.safetensors \
+    --local-dir models/ltx-2 \
+    --local-dir-use-symlinks False
+```
+
+### Step 4: Download Spatial Upsampler
+
+```bash
+huggingface-cli download Lightricks/LTX-2 ltx-2-spatial-upsampler-x2-1.0.safetensors \
+    --local-dir models/ltx-2 \
+    --local-dir-use-symlinks False
+```
+
+### Step 5: Download Gemma Text Encoder
+
+```bash
+huggingface-cli download google/gemma-3-12b-it-qat-q4_0-unquantized \
+    --local-dir models/ltx-2/gemma-3-12b-it-qat-q4_0-unquantized \
+    --local-dir-use-symlinks False
+```
+
+### Verification
+
+```bash
+# Check LTX-2 files
+ls -la models/ltx-2/
+# Expected:
+#   ltx-2-19b-dev.safetensors
+#   ltx-2-19b-distilled-lora-384.safetensors
+#   ltx-2-spatial-upsampler-x2-1.0.safetensors
+#   gemma-3-12b-it-qat-q4_0-unquantized/
+```
+
+---
+
 ## LoRA Weights
 
 Place LoRA weights in the `loras/` directory:
@@ -172,3 +241,12 @@ ls models/z-image-turbo/text_encoder/*.safetensors
 | With full CPU offload     | ~8GB GPU + RAM |
 
 > **Tip**: For best performance with LightX2V, use the 8-step distilled LORA which eliminates the need for CFG (classifier-free guidance), effectively halving the memory requirements.
+
+### LTX-2 Video Generation
+
+| Configuration               | VRAM Required |
+| --------------------------- | ------------- |
+| bfloat16 (default)          | ~24GB         |
+| FP8 mode (LTX2_FP8_ENABLED) | ~16GB         |
+
+> **Note**: LTX-2 uses a two-stage pipeline: Stage 1 generates at half resolution, Stage 2 upsamples 2x with the distilled LoRA. The FP8 mode keeps the model in lower precision to reduce VRAM usage while maintaining quality (computations still done in bfloat16).

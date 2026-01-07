@@ -11,7 +11,7 @@ from app.services.mock_generator import MockGenerator
 
 
 # Global generator instance (set during startup)
-_generator_instance: Union[MockGenerator, "ZImageGenerator", "LightX2VImageEditGenerator", None] = None
+_generator_instance: Union[MockGenerator, "ZImageGenerator", "LightX2VImageEditGenerator", "LTX2Generator", None] = None
 
 
 def verify_api_key(
@@ -55,12 +55,12 @@ def get_storage_service(
 
 
 def set_generator_instance(
-    instance: Union[MockGenerator, "ZImageGenerator", "LightX2VImageEditGenerator"]
+    instance: Union[MockGenerator, "ZImageGenerator", "LightX2VImageEditGenerator", "LTX2Generator"]
 ) -> None:
     """Set the global generator instance (called during startup).
     
     Args:
-        instance: The generator instance to use (MockGenerator, ZImageGenerator, or LightX2VImageEditGenerator)
+        instance: The generator instance to use (MockGenerator, ZImageGenerator, LightX2VImageEditGenerator, or LTX2Generator)
     """
     global _generator_instance
     _generator_instance = instance
@@ -68,14 +68,14 @@ def set_generator_instance(
 
 def get_generator(
     settings: Settings = Depends(get_settings),
-) -> Union[MockGenerator, "ZImageGenerator", "LightX2VImageEditGenerator"]:
+) -> Union[MockGenerator, "ZImageGenerator", "LightX2VImageEditGenerator", "LTX2Generator"]:
     """Get generator service instance.
 
     Args:
         settings: Application settings
 
     Returns:
-        Generator instance (MockGenerator, ZImageGenerator, or LightX2VImageEditGenerator)
+        Generator instance (MockGenerator, ZImageGenerator, LightX2VImageEditGenerator, or LTX2Generator)
     """
     global _generator_instance
     
@@ -97,7 +97,7 @@ APIKeyDep = Annotated[str, Depends(verify_api_key)]
 SettingsDep = Annotated[Settings, Depends(get_settings)]
 StorageDep = Annotated[StorageService, Depends(get_storage_service)]
 GeneratorDep = Annotated[
-    Union[MockGenerator, "ZImageGenerator", "LightX2VImageEditGenerator"],
+    Union[MockGenerator, "ZImageGenerator", "LightX2VImageEditGenerator", "LTX2Generator"],
     Depends(get_generator)
 ]
 

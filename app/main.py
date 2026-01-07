@@ -14,7 +14,7 @@ from app import __version__
 from app.config import get_settings
 from app.exceptions import APIError
 from app.models.common import ErrorResponse
-from app.routers import health, image_generation, image_editing, video_generation
+from app.routers import health, image_generation, image_editing, video_generation, ltx2_generation
 from app.utils.logging import setup_logging
 
 # Initialize settings
@@ -47,36 +47,55 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         logger.info("Running in MOCK MODE - no actual GPU processing")
         generator = MockGenerator(settings)
     else:
-        # Determine which generator to use based on available models
-        lightx2v_model_path = Path(settings.lightx2v_model_path)
-        lightx2v_lora_path = Path(settings.lightx2v_lora_path) / settings.lightx2v_lora_filename
+        # Check for LTX-2 generator first (video generation with audio)
+        ltx2_checkpoint_path = Path(settings.ltx2_checkpoint_path)
         
-        # Use LightX2V if the model exists OR if dry-run mode is enabled
-        use_lightx2v = (
-            settings.lightx2v_dry_run or 
-            (lightx2v_model_path.exists() and lightx2v_lora_path.exists())
+        use_ltx2 = (
+            settings.ltx2_dry_run or
+            ltx2_checkpoint_path.exists()
         )
         
-        if use_lightx2v:
-            # Use LightX2V for image editing
-            from app.services.lightx2v_generator import LightX2VImageEditGenerator
+        if use_ltx2:
+            # Use LTX-2 for video generation
+            from app.services.ltx2_generator import LTX2Generator
             
-            generator = LightX2VImageEditGenerator(settings)
+            generator = LTX2Generator(settings)
             
-            if settings.lightx2v_dry_run:
-                logger.info("Running LightX2V in DRY RUN MODE - workflow testing without models")
+            if settings.ltx2_dry_run:
+                logger.info("Running LTX-2 in DRY RUN MODE - workflow testing without models")
             else:
-                logger.info("Loading LightX2V models (Qwen-Image-Edit-2511)...")
-        else:
-            # Fall back to Z-Image generator
-            from app.services.zimage_generator import ZImageGenerator
-
-            generator = ZImageGenerator(settings)
-
-            if settings.zimage_dry_run:
-                logger.info("Running Z-Image in DRY RUN MODE - workflow testing without models")
+                logger.info("Loading LTX-2 models (this may take a moment)...")
+        
+        # Check for LightX2V (image editing)
+        elif not use_ltx2:
+            lightx2v_model_path = Path(settings.lightx2v_model_path)
+            lightx2v_lora_path = Path(settings.lightx2v_lora_path) / settings.lightx2v_lora_filename
+            
+            use_lightx2v = (
+                settings.lightx2v_dry_run or 
+                (lightx2v_model_path.exists() and lightx2v_lora_path.exists())
+            )
+            
+            if use_lightx2v:
+                # Use LightX2V for image editing
+                from app.services.lightx2v_generator import LightX2VImageEditGenerator
+                
+                generator = LightX2VImageEditGenerator(settings)
+                
+                if settings.lightx2v_dry_run:
+                    logger.info("Running LightX2V in DRY RUN MODE - workflow testing without models")
+                else:
+                    logger.info("Loading LightX2V models (Qwen-Image-Edit-2511)...")
             else:
-                logger.info("Loading Z-Image models (this may take a moment)...")
+                # Fall back to Z-Image generator
+                from app.services.zimage_generator import ZImageGenerator
+
+                generator = ZImageGenerator(settings)
+
+                if settings.zimage_dry_run:
+                    logger.info("Running Z-Image in DRY RUN MODE - workflow testing without models")
+                else:
+                    logger.info("Loading Z-Image models (this may take a moment)...")
 
         # Load models (or validate dry-run configuration)
         generator.load_models()
@@ -255,3 +274,4 @@ app.include_router(health.router)
 app.include_router(image_generation.router)
 app.include_router(image_editing.router)
 app.include_router(video_generation.router)
+app.include_router(ltx2_generation.router)
