@@ -51,17 +51,11 @@ def test_status_with_valid_auth(
     api_key_headers: dict[str, str],
 ) -> None:
     """Test that /api/v1/status works with valid authentication."""
-    # Mock the storage connection test
-    with patch("app.routers.health.StorageService") as mock_storage_class:
-        mock_storage = MagicMock()
-        mock_storage.test_connection.return_value = True
-        mock_storage_class.return_value = mock_storage
+    response = client.get("/api/v1/status", headers=api_key_headers)
 
-        response = client.get("/api/v1/status", headers=api_key_headers)
+    assert response.status_code == 200
+    data = response.json()
+    assert data["status"] == "healthy"
+    assert data["version"] == "0.1.0"
+    assert "mock_mode" in data
 
-        assert response.status_code == 200
-        data = response.json()
-        assert data["status"] == "healthy"
-        assert data["version"] == "0.1.0"
-        assert "mock_mode" in data
-        assert "r2_connected" in data

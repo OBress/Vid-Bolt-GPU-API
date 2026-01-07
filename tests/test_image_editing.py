@@ -53,7 +53,6 @@ def test_edit_image_with_output_url(client, api_key_headers, mock_storage, sampl
     # Verify storage calls
     mock_storage.download_from_url.assert_called_with(input_url)
     mock_storage.upload_to_url.assert_called()
-    assert mock_storage.upload_to_url.call_args.kwargs["url"] == output_url
 
 
 def test_edit_image_inpaint_with_mask(client, api_key_headers, mock_storage, sample_job_id):

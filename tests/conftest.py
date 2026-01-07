@@ -15,6 +15,7 @@ os.environ["API_KEY"] = "test-api-key-12345"
 os.environ["LOG_LEVEL"] = "WARNING"
 
 from app.main import app
+from app.dependencies import get_storage_service
 
 
 @pytest.fixture
@@ -59,24 +60,27 @@ def sample_jpeg_bytes() -> bytes:
 @pytest.fixture
 def mock_storage(sample_image_bytes) -> Generator[MagicMock, None, None]:
     """Mock the StorageService to avoid actual HTTP calls."""
-    # We patch the dependency type in routers
-    with patch("app.dependencies.get_storage_service") as mock_get_storage:
-        storage_instance = MagicMock()
-        
-        # Async methods
-        storage_instance.download_from_url = AsyncMock(return_value=sample_image_bytes)
-        storage_instance.upload_to_url = AsyncMock(return_value="https://custom-output.com/result.png")
-        
-        # Apply override
-        app.dependency_overrides[app.dependencies.get_storage_service] = lambda: storage_instance
-        
-        yield storage_instance
-        
-        # Cleanup
-        app.dependency_overrides.pop(app.dependencies.get_storage_service, None)
+    storage_instance = MagicMock()
+    
+    # Async methods
+    storage_instance.download_from_url = AsyncMock(return_value=sample_image_bytes)
+    
+    # upload_to_url should return the URL that was passed in (matching real behavior)
+    async def mock_upload_to_url(data, url, content_type):
+        return url
+    storage_instance.upload_to_url = AsyncMock(side_effect=mock_upload_to_url)
+    
+    # Apply override using the imported function
+    app.dependency_overrides[get_storage_service] = lambda: storage_instance
+    
+    yield storage_instance
+    
+    # Cleanup
+    app.dependency_overrides.pop(get_storage_service, None)
 
 
 @pytest.fixture
 def sample_job_id() -> str:
     """Return a sample job ID for testing."""
     return "550e8400-e29b-41d4-a716-446655440000"
+
