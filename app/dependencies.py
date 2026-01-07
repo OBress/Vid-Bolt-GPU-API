@@ -1,6 +1,6 @@
 """FastAPI dependency injection functions."""
 
-from typing import Annotated
+from typing import Annotated, Union
 
 from fastapi import Depends, Header
 
@@ -8,6 +8,10 @@ from app.config import Settings, get_settings
 from app.exceptions import InvalidAPIKeyError, MissingAPIKeyError
 from app.services.storage import StorageService
 from app.services.mock_generator import MockGenerator
+
+
+# Global generator instance (set during startup)
+_generator_instance: Union[MockGenerator, "ZImageGenerator", None] = None
 
 
 def verify_api_key(
@@ -50,24 +54,45 @@ def get_storage_service(
     return StorageService(settings)
 
 
+def set_generator_instance(instance: Union[MockGenerator, "ZImageGenerator"]) -> None:
+    """Set the global generator instance (called during startup).
+    
+    Args:
+        instance: The generator instance to use
+    """
+    global _generator_instance
+    _generator_instance = instance
+
+
 def get_generator(
     settings: Settings = Depends(get_settings),
-) -> MockGenerator:
+) -> Union[MockGenerator, "ZImageGenerator"]:
     """Get generator service instance.
 
     Args:
         settings: Application settings
 
     Returns:
-        MockGenerator instance (will be replaced with real generator when MOCK_MODE=false)
+        Generator instance (MockGenerator or ZImageGenerator)
     """
-    # For now, always return mock generator
-    # In the future, this will check settings.mock_mode and return appropriate generator
-    return MockGenerator(settings)
+    global _generator_instance
+    
+    # Return cached instance if available
+    if _generator_instance is not None:
+        return _generator_instance
+    
+    # Fallback: create new instance (shouldn't happen if startup ran correctly)
+    if settings.mock_mode:
+        return MockGenerator(settings)
+    
+    # Import here to avoid circular imports
+    from app.services.zimage_generator import ZImageGenerator
+    return ZImageGenerator(settings)
 
 
 # Type aliases for dependency injection
 APIKeyDep = Annotated[str, Depends(verify_api_key)]
 SettingsDep = Annotated[Settings, Depends(get_settings)]
 StorageDep = Annotated[StorageService, Depends(get_storage_service)]
-GeneratorDep = Annotated[MockGenerator, Depends(get_generator)]
+GeneratorDep = Annotated[Union[MockGenerator, "ZImageGenerator"], Depends(get_generator)]
+

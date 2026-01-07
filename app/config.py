@@ -1,6 +1,7 @@
 """Application configuration using pydantic-settings."""
 
 from functools import lru_cache
+from typing import Literal
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
@@ -34,6 +35,15 @@ class Settings(BaseSettings):
     # CORS - comma-separated list of allowed origins
     cors_allowed_origins: str = "http://localhost:3000"
 
+    # Z-Image Settings
+    zimage_model_path: str = "models/z-image-turbo"
+    zimage_lora_path: str = "models/loras"
+    zimage_device: str = "cuda"
+    zimage_dtype: Literal["bfloat16", "float16"] = "bfloat16"
+    zimage_compile: bool = False  # torch.compile for faster inference after warmup
+    zimage_attention_backend: str = "_native_flash"  # flash, _flash_3, sdpa, _native_flash
+    zimage_dry_run: bool = False  # Test workflow without loading models
+
     @property
     def max_image_size_bytes(self) -> int:
         """Get max image size in bytes."""
@@ -44,3 +54,4 @@ class Settings(BaseSettings):
 def get_settings() -> Settings:
     """Get cached settings instance."""
     return Settings()
+

@@ -15,3 +15,14 @@ moviepy>=1.0.3
 # Utilities
 aiofiles>=24.1.0
 python-dotenv>=1.0.0
+
+# Z-Image Generation (required when MOCK_MODE=false)
+# Note: Install torch separately based on your CUDA version
+# See: https://pytorch.org/get-started/locally/
+# pip install torch --index-url https://download.pytorch.org/whl/cu121
+torch>=2.2.0
+transformers>=4.40.0
+safetensors>=0.4.0
+loguru>=0.7.0
+huggingface-hub>=0.20.0
+

@@ -28,6 +28,9 @@ logger = logging.getLogger(__name__)
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     """Application lifespan handler."""
+    from app.dependencies import set_generator_instance
+    from app.services.mock_generator import MockGenerator
+
     # Startup
     logger.info(
         f"Starting Vid-Bolt GPU API v{__version__}",
@@ -36,8 +39,28 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
             "log_level": settings.log_level,
         },
     )
+
+    # Initialize generator based on mode
     if settings.mock_mode:
         logger.info("Running in MOCK MODE - no actual GPU processing")
+        generator = MockGenerator(settings)
+    else:
+        # Import Z-Image generator only when needed
+        from app.services.zimage_generator import ZImageGenerator
+
+        generator = ZImageGenerator(settings)
+
+        if settings.zimage_dry_run:
+            logger.info("Running in DRY RUN MODE - workflow testing without models")
+        else:
+            logger.info("Loading Z-Image models (this may take a moment)...")
+
+        # Load models (or validate dry-run configuration)
+        generator.load_models()
+
+    # Set the global generator instance
+    set_generator_instance(generator)
+    logger.info("Generator initialized successfully")
 
     yield
 
@@ -103,7 +126,7 @@ async def api_error_handler(request: Request, exc: APIError) -> JSONResponse:
         f"API error: {exc.error_code}",
         extra={
             "error_code": exc.error_code,
-            "message": exc.message,
+            "error_msg": exc.message,
             "path": request.url.path,
         },
     )
