@@ -79,8 +79,11 @@ async def generate_video(
     """Generate a video from a start frame image (Async)."""
     
     # 1. Mode check
-    if model_manager.current_mode != ModelMode.VIDEO:
-        raise HTTPException(status_code=503, detail="System not in Video Mode")
+    if not await model_manager.ensure_mode(ModelMode.VIDEO):
+        raise HTTPException(
+            status_code=409,
+            detail="System is currently busy processing Image tasks. Please wait until they are finished."
+        )
 
     # 2. Check if generator supports LTX-2
     if not hasattr(generator, "generate_video"):
@@ -192,8 +195,11 @@ async def interpolate_keyframes(
     """Generate a video by interpolating between keyframes (Async)."""
     
     # 1. Mode check
-    if model_manager.current_mode != ModelMode.VIDEO:
-        raise HTTPException(status_code=503, detail="System not in Video Mode")
+    if not await model_manager.ensure_mode(ModelMode.VIDEO):
+        raise HTTPException(
+            status_code=409,
+            detail="System is currently busy processing Image tasks. Please wait until they are finished."
+        )
 
     if not hasattr(generator, "generate_keyframe_video"):
         raise ValidationError("Current generator does not support keyframe interpolation.")

@@ -61,11 +61,11 @@ async def edit_image(
 ) -> AsyncJobResponse:
     """Edit an image with AI-powered transformations (Async)."""
     
-    # 1. Mode check
-    if model_manager.current_mode != ModelMode.IMAGE:
+    # 1. Mode check (Auto-switch)
+    if not await model_manager.ensure_mode(ModelMode.IMAGE):
         raise HTTPException(
-            status_code=503,
-            detail="System is not in Image Mode. Switch modes first."
+            status_code=409,
+            detail="System is currently busy processing Video tasks. Please wait until they are finished."
         )
 
     # 2. Pre-validation of input URLs (Fail fast)

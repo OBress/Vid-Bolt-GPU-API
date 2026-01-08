@@ -49,12 +49,11 @@ async def generate_image(
 
     Returns 202 Accepted if job is queued, or 429/503 if busy.
     """
-    # 1. Model Mode Check (Quick fail)
-    if model_manager.current_mode != ModelMode.IMAGE:
+    # 1. Model Mode Check (Auto-switch)
+    if not await model_manager.ensure_mode(ModelMode.IMAGE):
         raise HTTPException(
-            status_code=503,
-            detail=f"System is in {model_manager.current_mode.value} mode. "
-                   "Please switch to Image Mode first."
+            status_code=409,  # Conflict
+            detail="System is currently busy processing Video tasks. Please wait until they are finished."
         )
 
     # 2. Prepare parameters

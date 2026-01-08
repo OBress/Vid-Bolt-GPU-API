@@ -155,6 +155,49 @@ class ModelManager:
             else:
                 logger.warning(f"Job {job_id} tried to release lock held by {self._active_job_id}")
 
+    async def ensure_mode(self, target_mode: ModelMode) -> bool:
+        """Ensure the system is in the target mode, switching if necessary.
+
+        This handles the automatic logic:
+        - If already in target mode: Return True (Ready)
+        - If in different mode (e.g. Image vs Video):
+            - If BUSY with jobs: Return False (Reject request)
+            - If IDLE: Switch mode and Return True (Ready)
+
+        Args:
+            target_mode: The required mode (ModelMode.IMAGE or ModelMode.VIDEO)
+
+        Returns:
+            True if mode is set and ready to proceed.
+            False if system is busy in another mode and cannot switch.
+        """
+        if self._mode == target_mode:
+            return True
+
+        # Check if we can switch
+        # Note: We check is_busy without acquiring lock yet.
+        # The lock will be acquired by the job submission later.
+        # There is a tiny race condition window here but acceptable for this architecture.
+        if self._is_busy:
+            logger.warning(
+                f"Cannot auto-switch to {target_mode} because system is busy in {self._mode} mode."
+            )
+            return False
+
+        # Attempt switch
+        logger.info(f"Auto-switching from {self._mode} to {target_mode}...")
+        try:
+            if target_mode == ModelMode.IMAGE:
+                await self.switch_to_image_mode()
+            elif target_mode == ModelMode.VIDEO:
+                await self.switch_to_video_mode()
+            else:
+                return False
+            return True
+        except Exception as e:
+            logger.error(f"Auto-switch failed: {e}")
+            return False
+
     async def switch_to_image_mode(self) -> None:
         """Switch to Image Mode.
         
