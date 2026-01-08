@@ -22,17 +22,7 @@ class TestLightX2VImageEditGenerator:
         
         settings = Settings(
             mock_mode=False,
-            lightx2v_model_path="models/qwen-image-edit-2511",
-            lightx2v_lora_path="models/loras/qwen-image-edit-2511",
-            lightx2v_lora_filename="Qwen-Image-Edit-2511-Lightning-8steps-V1.0-fp32.safetensors",
-            lightx2v_device="cuda",
-            lightx2v_attn_mode="flash_attn3",
-            lightx2v_infer_steps=8,
-            lightx2v_guidance_scale=1.0,
-            lightx2v_resize_mode="adaptive",
-            lightx2v_dry_run=True,  # Always use dry-run for tests
-            lightx2v_cpu_offload=False,
-            lightx2v_text_encoder_offload=True,
+            lightx2v_dry_run_override=True,  # Always use dry-run for tests
         )
         return settings
 
@@ -206,7 +196,7 @@ class TestLightX2VIntegration:
         """Create a test client with LightX2V dry-run mode."""
         # Set environment for LightX2V dry-run
         os.environ["MOCK_MODE"] = "false"
-        os.environ["LIGHTX2V_DRY_RUN"] = "true"
+        os.environ["LIGHTX2V_DRY_RUN_OVERRIDE"] = "true"
         os.environ["API_KEY"] = "test-api-key-12345"
         
         # Need to reimport after setting env vars

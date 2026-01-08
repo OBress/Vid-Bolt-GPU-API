@@ -22,13 +22,7 @@ class TestZImageGenerator:
         
         settings = Settings(
             mock_mode=False,
-            zimage_model_path="models/z-image-turbo",
-            zimage_lora_path="models/loras",
-            zimage_device="cuda",
-            zimage_dtype="bfloat16",
-            zimage_compile=False,
-            zimage_attention_backend="_native_flash",
-            zimage_dry_run=True,  # Always use dry-run for tests
+            zimage_dry_run_override=True,  # Always use dry-run for tests
         )
         return settings
 
@@ -190,7 +184,7 @@ class TestZImageGenerator:
         from app.services.zimage_generator import ZImageGenerator
         
         # Create a non-dry-run settings
-        settings.zimage_dry_run = False
+        settings.zimage_dry_run_override = False
         generator = ZImageGenerator(settings)
         generator.dry_run = False  # Override for this test
         generator.is_loaded = True  # Pretend we're loaded
@@ -207,8 +201,8 @@ class TestZImageIntegration:
         """Create a test client with Z-Image dry-run mode."""
         # Set environment for Z-Image dry-run
         os.environ["MOCK_MODE"] = "false"
-        os.environ["ZIMAGE_DRY_RUN"] = "true"
-        os.environ["LIGHTX2V_DRY_RUN"] = "false"  # Ensure LightX2V is not selected
+        os.environ["ZIMAGE_DRY_RUN_OVERRIDE"] = "true"
+        os.environ["LIGHTX2V_DRY_RUN_OVERRIDE"] = "false"  # Ensure LightX2V is not selected
         os.environ["API_KEY"] = "test-api-key-12345"
         
         # Need to reimport after setting env vars
@@ -272,7 +266,7 @@ class TestZImageDryRunPlaceholder:
         
         return Settings(
             mock_mode=False,
-            zimage_dry_run=True,
+            zimage_dry_run_override=True,
         )
 
     @pytest.mark.asyncio

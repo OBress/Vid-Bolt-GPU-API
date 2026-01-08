@@ -13,7 +13,7 @@ if needed for your specific deployment.
 """
 
 from functools import lru_cache
-from typing import Literal
+from typing import Literal, Optional
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
@@ -67,10 +67,10 @@ class InferenceConfig:
     LIGHTX2V_CPU_OFFLOAD = False
     LIGHTX2V_TEXT_ENCODER_OFFLOAD = True
     
-    # LTX-2 settings
-    LTX2_FP8_ENABLED = False
-    LTX2_NUM_INFERENCE_STEPS = 40
-    LTX2_CFG_GUIDANCE_SCALE = 4.0
+    # LTX-2 settings (Optimized for Distilled LoRA)
+    LTX2_FP8_ENABLED = True  # Enable FP8 for lower VRAM usage and faster inference
+    LTX2_NUM_INFERENCE_STEPS = 8  # Distilled LoRA requires fewer steps (8 vs 40)
+    LTX2_CFG_GUIDANCE_SCALE = 1.0  # Distilled LoRA works best without CFG (1.0)
     LTX2_DEFAULT_FRAME_RATE = 24.0
     
     # Stream-DiffVSR settings
@@ -80,7 +80,7 @@ class InferenceConfig:
     
     # Limits
     MAX_IMAGE_SIZE_MB = 10
-    MAX_VIDEO_DURATION_SECONDS = 8
+    MAX_VIDEO_DURATION_SECONDS = 10
 
 
 # =============================================================================
@@ -111,6 +111,12 @@ class Settings(BaseSettings):
     
     # Model mode (default startup mode)
     default_model_mode: Literal["image", "video"] = "image"
+
+    # Test Overrides (hidden from .env, used for testing real generators without weights)
+    zimage_dry_run_override: Optional[bool] = None
+    lightx2v_dry_run_override: Optional[bool] = None
+    ltx2_dry_run_override: Optional[bool] = None
+    stream_diffvsr_dry_run_override: Optional[bool] = None
 
     # ==========================================================================
     # Computed properties exposing hardcoded config
@@ -190,6 +196,8 @@ class Settings(BaseSettings):
     @property
     def zimage_dry_run(self) -> bool:
         """In mock_mode, all generators run in dry-run mode."""
+        if self.zimage_dry_run_override is not None:
+            return self.zimage_dry_run_override
         return self.mock_mode
     
     # --- LightX2V ---
@@ -220,6 +228,8 @@ class Settings(BaseSettings):
     @property
     def lightx2v_dry_run(self) -> bool:
         """In mock_mode, all generators run in dry-run mode."""
+        if self.lightx2v_dry_run_override is not None:
+            return self.lightx2v_dry_run_override
         return self.mock_mode
     
     # --- LTX-2 ---
@@ -242,6 +252,8 @@ class Settings(BaseSettings):
     @property
     def ltx2_dry_run(self) -> bool:
         """In mock_mode, all generators run in dry-run mode."""
+        if self.ltx2_dry_run_override is not None:
+            return self.ltx2_dry_run_override
         return self.mock_mode
     
     # --- Stream-DiffVSR ---
@@ -260,6 +272,8 @@ class Settings(BaseSettings):
     @property
     def stream_diffvsr_dry_run(self) -> bool:
         """In mock_mode, all generators run in dry-run mode."""
+        if self.stream_diffvsr_dry_run_override is not None:
+            return self.stream_diffvsr_dry_run_override
         return self.mock_mode
     
     # --- Limits ---

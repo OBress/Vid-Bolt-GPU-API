@@ -22,7 +22,7 @@ class TestLTX2Generator:
         from app.config import Settings
         return Settings(
             mock_mode=False,
-            ltx2_dry_run=True,
+            ltx2_dry_run_override=True,
         )
 
     @pytest.fixture

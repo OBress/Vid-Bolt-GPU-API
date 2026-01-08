@@ -21,8 +21,7 @@ class TestStreamDiffVSRUpscaler:
         from app.config import Settings
         return Settings(
             mock_mode=False,
-            stream_diffvsr_enabled=True,
-            stream_diffvsr_dry_run=True,
+            stream_diffvsr_dry_run_override=True,
         )
 
     @pytest.fixture
@@ -202,9 +201,8 @@ class TestLTX2UpscalerIntegration:
         from app.config import Settings
         return Settings(
             mock_mode=False,
-            ltx2_dry_run=True,
-            stream_diffvsr_enabled=True,
-            stream_diffvsr_dry_run=True,
+            ltx2_dry_run_override=True,
+            stream_diffvsr_dry_run_override=True,
         )
 
     def test_set_upscaler(self, settings_with_upscaler):
