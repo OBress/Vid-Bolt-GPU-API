@@ -27,36 +27,13 @@ if TYPE_CHECKING:
     from PIL import Image
 
 from app.config import Settings
+from app.services.interfaces import Upscaler
+from app.models.internal import UpscaleParams, UpscaleResult
 
 logger = logging.getLogger(__name__)
 
 
-# ============================================================================
-# Dataclasses
-# ============================================================================
 
-
-@dataclass
-class UpscaleParams:
-    """Parameters for video upscaling."""
-
-    job_id: str
-    video_data: bytes
-    preserve_audio: bool = True
-
-
-@dataclass
-class UpscaleResult:
-    """Result of video upscaling."""
-
-    video_data: bytes
-    original_width: int
-    original_height: int
-    upscaled_width: int
-    upscaled_height: int
-    frame_count: int
-    processing_time_seconds: float
-    was_upscaled: bool = True  # False if skipped or dry-run passthrough
 
 
 @dataclass
@@ -73,7 +50,7 @@ class StreamDiffVSRComponents:
 # ============================================================================
 
 
-class StreamDiffVSRUpscaler:
+class StreamDiffVSRUpscaler(Upscaler):
     """Stream-DiffVSR video upscaling service.
 
     Uses diffusion-based super-resolution with auto-regressive temporal

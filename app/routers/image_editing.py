@@ -4,12 +4,12 @@ from typing import Annotated
 
 from fastapi import APIRouter, Request, HTTPException
 
-from app.dependencies import APIKeyDep, StorageDep, GeneratorDep, JobManagerDep, ModelManagerDep
+from app.dependencies import APIKeyDep, StorageDep, GeneratorDep, JobManagerDep, ModelManagerDep, SettingsDep
 from app.exceptions import ValidationError
 from app.models.common import ErrorResponse, get_dimensions
 from app.models.image_editing import ImageEditRequest
 from app.models.job import AsyncJobResponse, JobResult
-from app.services.mock_generator import ImageEditParams
+from app.models.internal import ImageEditParams
 from app.services.model_manager import ModelMode
 
 logger = logging.getLogger(__name__)
@@ -58,15 +58,20 @@ async def edit_image(
     generator: GeneratorDep,
     job_manager: JobManagerDep,
     model_manager: ModelManagerDep,
+    settings: SettingsDep,
 ) -> AsyncJobResponse:
     """Edit an image with AI-powered transformations (Async)."""
     
-    # 1. Mode check (Auto-switch)
-    if not await model_manager.ensure_mode(ModelMode.IMAGE):
-        raise HTTPException(
-            status_code=409,
-            detail="System is currently busy processing Video tasks. Please wait until they are finished."
-        )
+    # 1. Determine active generator and ensure mode (if not mock)
+    active_generator = generator
+
+    if not settings.mock_mode:
+        if not await model_manager.ensure_mode(ModelMode.IMAGE):
+            raise HTTPException(
+                status_code=409,
+                detail="System is currently busy processing Video tasks. Please wait until they are finished."
+            )
+        active_generator = model_manager.get_image_editor()
 
     # 2. Pre-validation of input URLs (Fail fast)
     # We download images HERE (blocking the request slightly) to ensure they are valid
@@ -103,7 +108,9 @@ async def edit_image(
         mode=ModelMode.IMAGE,
         task_func=_run_image_edit,
         # Args
-        generator=generator,
+
+        # Args
+        generator=active_generator,
         storage=storage,
         params=params,
         save_url=body.save_url,

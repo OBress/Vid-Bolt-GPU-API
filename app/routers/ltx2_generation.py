@@ -13,7 +13,7 @@ from fastapi import APIRouter
 
 from fastapi import APIRouter, Request, HTTPException
 
-from app.dependencies import APIKeyDep, StorageDep, GeneratorDep, JobManagerDep, ModelManagerDep
+from app.dependencies import APIKeyDep, StorageDep, GeneratorDep, JobManagerDep, ModelManagerDep, SettingsDep
 from app.exceptions import ValidationError
 from app.models.common import ErrorResponse, get_dimensions
 from app.models.ltx2_generation import (
@@ -22,7 +22,10 @@ from app.models.ltx2_generation import (
     round_up_to_valid_frames,
 )
 from app.models.job import AsyncJobResponse, JobResult
-from app.services.ltx2_generator import LTX2VideoParams, KeyframeInterpolationParams
+from app.models.internal import (
+    VideoGenerationParams as LTX2VideoParams, 
+    KeyframeInterpolationParams,
+)
 from app.services.model_manager import ModelMode
 
 logger = logging.getLogger(__name__)
@@ -75,18 +78,23 @@ async def generate_video(
     generator: GeneratorDep,
     job_manager: JobManagerDep,
     model_manager: ModelManagerDep,
+    settings: SettingsDep,
 ) -> AsyncJobResponse:
     """Generate a video from a start frame image (Async)."""
     
-    # 1. Mode check
-    if not await model_manager.ensure_mode(ModelMode.VIDEO):
-        raise HTTPException(
-            status_code=409,
-            detail="System is currently busy processing Image tasks. Please wait until they are finished."
-        )
+    # 1. Determine active generator and ensure mode (if not mock)
+    active_generator = generator
 
-    # 2. Check if generator supports LTX-2
-    if not hasattr(generator, "generate_video"):
+    if not settings.mock_mode:
+        if not await model_manager.ensure_mode(ModelMode.VIDEO):
+            raise HTTPException(
+                status_code=409,
+                detail="System is currently busy processing Image tasks. Please wait until they are finished."
+            )
+        active_generator = model_manager.get_video_generator()
+
+    # 2. Check if generator supports LTX-2 (Video Generation)
+    if not hasattr(active_generator, "generate_video"):
          raise ValidationError("Current generator does not support video generation.")
 
     # 3. Pre-download checks
@@ -124,7 +132,7 @@ async def generate_video(
         job_id=body.job_id,
         mode=ModelMode.VIDEO,
         task_func=_run_ltx2_generation,
-        generator=generator,
+        generator=active_generator,
         storage=storage,
         params=params,
         save_url=body.save_url,
@@ -191,17 +199,22 @@ async def interpolate_keyframes(
     generator: GeneratorDep,
     job_manager: JobManagerDep,
     model_manager: ModelManagerDep,
+    settings: SettingsDep,
 ) -> AsyncJobResponse:
     """Generate a video by interpolating between keyframes (Async)."""
     
-    # 1. Mode check
-    if not await model_manager.ensure_mode(ModelMode.VIDEO):
-        raise HTTPException(
-            status_code=409,
-            detail="System is currently busy processing Image tasks. Please wait until they are finished."
-        )
+    # 1. Determine active generator and ensure mode (if not mock)
+    active_generator = generator
 
-    if not hasattr(generator, "generate_keyframe_video"):
+    if not settings.mock_mode:
+        if not await model_manager.ensure_mode(ModelMode.VIDEO):
+            raise HTTPException(
+                status_code=409,
+                detail="System is currently busy processing Image tasks. Please wait until they are finished."
+            )
+        active_generator = model_manager.get_video_generator()
+
+    if not hasattr(active_generator, "generate_keyframe_video"):
         raise ValidationError("Current generator does not support keyframe interpolation.")
 
     # 2. Keyframe download loop
@@ -235,7 +248,7 @@ async def interpolate_keyframes(
         job_id=body.job_id,
         mode=ModelMode.VIDEO,
         task_func=_run_ltx2_interpolation,
-        generator=generator,
+        generator=active_generator,
         storage=storage,
         params=params,
         save_url=body.save_url,

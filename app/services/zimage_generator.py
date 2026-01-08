@@ -21,7 +21,8 @@ from typing import Any, Dict, Optional
 from PIL import Image
 
 from app.config import Settings
-from app.services.mock_generator import ImageGenerationParams, ImageGenerationResult
+from app.services.interfaces import ImageGenerator
+from app.models.internal import ImageGenerationParams, ImageGenerationResult
 
 logger = logging.getLogger(__name__)
 
@@ -37,7 +38,7 @@ class ZImageComponents:
     scheduler: Any
 
 
-class ZImageGenerator:
+class ZImageGenerator(ImageGenerator):
     """Z-Image Turbo image generation service.
     
     This service handles loading the Z-Image model components and generating

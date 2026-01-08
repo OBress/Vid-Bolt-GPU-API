@@ -6,139 +6,29 @@ import random
 import time
 from dataclasses import dataclass
 
+from typing import Any
+
 from app.config import Settings
 from app.services.placeholder import PlaceholderGenerator
+from app.services.interfaces import ImageGenerator, ImageEditor, VideoGenerator
+
+
+from app.models.internal import (
+    ImageGenerationParams,
+    ImageGenerationResult,
+    ImageEditParams,
+    ImageEditResult,
+    VideoGenerationParams,
+    VideoGenerationResult,
+    VideoGenerationParams as LTX2VideoParams,
+    VideoGenerationResult as LTX2VideoResult,
+    KeyframeInterpolationParams,
+)
 
 logger = logging.getLogger(__name__)
 
 
-@dataclass
-class ImageGenerationParams:
-    """Parameters for image generation."""
-
-    job_id: str
-    prompt: str
-    width: int
-    height: int
-    seed: int | None
-    num_inference_steps: int
-    lora_name: str | None = None
-
-
-@dataclass
-class ImageGenerationResult:
-    """Result of image generation."""
-
-    image_data: bytes
-    width: int
-    height: int
-    seed: int
-
-
-@dataclass
-class ImageEditParams:
-    """Parameters for image editing."""
-
-    job_id: str
-    input_image_data: bytes
-    prompt: str
-    width: int
-    height: int
-    mask_data: bytes | None
-    seed: int | None
-
-
-@dataclass
-class ImageEditResult:
-    """Result of image editing."""
-
-    image_data: bytes
-    original_width: int
-    original_height: int
-    width: int
-    height: int
-    seed: int
-
-
-@dataclass
-class VideoGenerationParams:
-    """Parameters for video generation."""
-
-    job_id: str
-    input_image_data: bytes
-    prompt: str
-    duration_seconds: float
-    fps: int
-    width: int
-    height: int
-    seed: int | None
-    end_image_data: bytes | None = None
-
-
-@dataclass
-class VideoGenerationResult:
-    """Result of video generation."""
-
-    video_data: bytes
-    width: int
-    height: int
-    duration_seconds: float
-    fps: int
-    frame_count: int
-    seed: int
-
-
-# ============================================================================
-# LTX-2 Video Generation Types (for MockGenerator compatibility)
-# ============================================================================
-
-@dataclass
-class LTX2VideoParams:
-    """Parameters for LTX-2 I2V video generation."""
-
-    job_id: str
-    prompt: str
-    negative_prompt: str
-    input_image_data: bytes
-    end_image_data: bytes | None
-    duration_seconds: float
-    frame_rate: float
-    width: int
-    height: int
-    seed: int | None
-    enhance_prompt: bool = False
-
-
-@dataclass
-class KeyframeInterpolationParams:
-    """Parameters for keyframe interpolation video generation."""
-
-    job_id: str
-    prompt: str
-    negative_prompt: str
-    keyframes: list[tuple[bytes, int, float]]  # (image_data, frame_idx, strength)
-    duration_seconds: float
-    frame_rate: float
-    width: int
-    height: int
-    seed: int | None
-    enhance_prompt: bool = False
-
-
-@dataclass
-class LTX2VideoResult:
-    """Result of LTX-2 video generation."""
-
-    video_data: bytes
-    width: int
-    height: int
-    duration_seconds: float
-    frame_rate: float
-    has_audio: bool
-    seed: int
-
-
-class MockGenerator:
+class MockGenerator(ImageGenerator, ImageEditor, VideoGenerator):
     """Mock ComfyUI generator for local development."""
 
     def __init__(self, settings: Settings):
@@ -149,6 +39,31 @@ class MockGenerator:
         """
         self.settings = settings
         self.placeholder = PlaceholderGenerator()
+
+    # BaseModelGenerator Implementation
+    def load_models(self) -> None:
+        pass
+
+    def unload_models(self) -> None:
+        pass
+
+    def get_status(self) -> dict:
+        return {"status": "mock", "is_loaded": True}
+
+    @property
+    def _loaded(self) -> bool:
+        return True
+
+    # ImageGenerator Implementation
+    async def load_lora(self, lora_name: str, weight: float = 1.0) -> None:
+        pass
+
+    async def unload_lora(self) -> None:
+        pass
+
+    # VideoGenerator Implementation
+    def set_upscaler(self, upscaler: Any) -> None:
+        pass
 
     async def generate_image(self, params: ImageGenerationParams) -> ImageGenerationResult:
         """Generate a mock image.

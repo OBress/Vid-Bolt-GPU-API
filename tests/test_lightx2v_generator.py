@@ -77,7 +77,7 @@ class TestLightX2VImageEditGenerator:
     async def test_edit_image_dry_run(self, settings, sample_image_bytes):
         """Test image editing in dry-run mode."""
         from app.services.lightx2v_generator import LightX2VImageEditGenerator
-        from app.services.mock_generator import ImageEditParams
+        from app.models.internal import ImageEditParams
         
         generator = LightX2VImageEditGenerator(settings)
         generator.load_models()
@@ -108,7 +108,7 @@ class TestLightX2VImageEditGenerator:
     async def test_edit_image_random_seed(self, settings, sample_image_bytes):
         """Test image editing with random seed generation."""
         from app.services.lightx2v_generator import LightX2VImageEditGenerator
-        from app.services.mock_generator import ImageEditParams
+        from app.models.internal import ImageEditParams
         
         generator = LightX2VImageEditGenerator(settings)
         generator.load_models()
@@ -133,7 +133,7 @@ class TestLightX2VImageEditGenerator:
     async def test_edit_image_not_loaded(self, settings, sample_image_bytes):
         """Test that editing fails when models are not loaded."""
         from app.services.lightx2v_generator import LightX2VImageEditGenerator
-        from app.services.mock_generator import ImageEditParams
+        from app.models.internal import ImageEditParams
         
         generator = LightX2VImageEditGenerator(settings)
         # Don't call load_models()
@@ -151,41 +151,6 @@ class TestLightX2VImageEditGenerator:
         with pytest.raises(RuntimeError, match="not loaded"):
             await generator.edit_image(params)
 
-    @pytest.mark.asyncio
-    async def test_generate_image_not_implemented(self, settings):
-        """Test that generate_image raises NotImplementedError."""
-        from app.services.lightx2v_generator import LightX2VImageEditGenerator
-        from app.services.mock_generator import ImageGenerationParams
-        
-        generator = LightX2VImageEditGenerator(settings)
-        generator.load_models()
-        
-        params = ImageGenerationParams(
-            job_id="test-job",
-            prompt="A test prompt",
-            width=512,
-            height=512,
-            seed=42,
-            num_inference_steps=8,
-        )
-        
-        with pytest.raises(NotImplementedError, match="image editing only"):
-            await generator.generate_image(params)
-
-    @pytest.mark.asyncio
-    async def test_generate_video_not_implemented(self, settings):
-        """Test that generate_video raises NotImplementedError."""
-        from app.services.lightx2v_generator import LightX2VImageEditGenerator
-        
-        generator = LightX2VImageEditGenerator(settings)
-        generator.load_models()
-        
-        # Create a minimal mock params object
-        class MockVideoParams:
-            job_id = "test"
-        
-        with pytest.raises(NotImplementedError, match="does not support video"):
-            await generator.generate_video(MockVideoParams())
 
 
 class TestLightX2VIntegration:

@@ -10,7 +10,7 @@ from app.exceptions import ValidationError
 from app.models.common import ErrorResponse, get_dimensions
 from app.models.video_generation import VideoGenerateRequest
 from app.models.job import AsyncJobResponse, JobResult
-from app.services.mock_generator import VideoGenerationParams
+from app.models.internal import VideoGenerationParams
 from app.services.model_manager import ModelMode
 
 logger = logging.getLogger(__name__)
@@ -63,12 +63,20 @@ async def generate_video(
     """Generate a video from an input image (Async)."""
     settings = get_settings()
 
-    # 1. Mode check
-    if model_manager.current_mode != ModelMode.VIDEO:
-        raise HTTPException(
-            status_code=503,
-            detail="System is not in Video Mode. Switch modes first."
-        )
+    # 1. Determine active generator and ensure mode (if not mock)
+    active_generator = generator
+
+    if not settings.mock_mode:
+        if not await model_manager.ensure_mode(ModelMode.VIDEO):
+            # This legacy endpoint might expect to manually switch or error?
+            # Original code check `current_mode`.
+            # Let's keep consistent with others and try to auto-switch if possible
+            if not await model_manager.ensure_mode(ModelMode.VIDEO):
+                raise HTTPException(
+                     status_code=409,
+                     detail="System is busy."
+                )
+        active_generator = model_manager.get_video_generator()
 
     # 2. Validation
     if body.fps not in ALLOWED_FPS:
@@ -96,8 +104,9 @@ async def generate_video(
         job_id=body.job_id,
         input_image_data=input_image_data,
         prompt=body.prompt,
+        negative_prompt="",
         duration_seconds=body.duration_seconds,
-        fps=body.fps,
+        frame_rate=float(body.fps),
         width=width,
         height=height,
         seed=body.seed,
@@ -109,7 +118,7 @@ async def generate_video(
         job_id=body.job_id,
         mode=ModelMode.VIDEO,
         task_func=_run_video_generation,
-        generator=generator,
+        generator=active_generator,
         storage=storage,
         params=params,
         save_url=body.save_url,

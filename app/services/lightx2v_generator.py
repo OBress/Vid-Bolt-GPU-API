@@ -21,7 +21,8 @@ from typing import Any, Dict, Optional
 from PIL import Image
 
 from app.config import Settings
-from app.services.mock_generator import ImageEditParams, ImageEditResult
+from app.services.interfaces import ImageEditor
+from app.models.internal import ImageEditParams, ImageEditResult
 
 logger = logging.getLogger(__name__)
 
@@ -33,7 +34,7 @@ class LightX2VComponents:
     pipeline: Any  # LightX2VPipeline instance
 
 
-class LightX2VImageEditGenerator:
+class LightX2VImageEditGenerator(ImageEditor):
     """LightX2V image editing service using Qwen-Image-Edit-2511.
     
     This service handles loading the LightX2V pipeline with Qwen-Image-Edit-2511
@@ -150,19 +151,7 @@ class LightX2VImageEditGenerator:
         
         logger.info("LightX2V pipeline loaded successfully")
 
-    async def generate_image(self, params: "ImageGenerationParams") -> "ImageGenerationResult":
-        """Generate an image (not supported for image editing model).
-        
-        This model is for image editing only. For text-to-image generation,
-        use ZImageGenerator or the Qwen-Image-2512 model.
-        
-        Raises:
-            NotImplementedError: Always raises as this is an editing-only model
-        """
-        raise NotImplementedError(
-            "LightX2VImageEditGenerator is for image editing only. "
-            "For text-to-image, use ZImageGenerator or configure Qwen-Image-2512."
-        )
+
 
     async def edit_image(self, params: ImageEditParams) -> ImageEditResult:
         """Edit an image using the LightX2V pipeline.
@@ -326,16 +315,7 @@ class LightX2VImageEditGenerator:
             seed=seed,
         )
 
-    async def generate_video(self, params: "VideoGenerationParams") -> "VideoGenerationResult":
-        """Generate a video (not supported for this model).
-        
-        Raises:
-            NotImplementedError: Always raises as this is an image editing model
-        """
-        raise NotImplementedError(
-            "LightX2VImageEditGenerator does not support video generation. "
-            "Use a video generation model instead."
-        )
+
 
     def get_status(self) -> Dict[str, Any]:
         """Get the current status of the generator.

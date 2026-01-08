@@ -33,6 +33,12 @@ if TYPE_CHECKING:
     from app.services.video_upscaler import StreamDiffVSRUpscaler
 
 from app.config import Settings
+from app.services.interfaces import VideoGenerator
+from app.models.internal import (
+    VideoGenerationParams as LTX2VideoParams,
+    KeyframeInterpolationParams,
+    VideoGenerationResult as LTX2VideoResult,
+)
 from app.models.ltx2_generation import round_up_to_valid_frames
 
 logger = logging.getLogger(__name__)
@@ -42,51 +48,7 @@ logger = logging.getLogger(__name__)
 # Parameter and Result Dataclasses
 # ============================================================================
 
-@dataclass
-class LTX2VideoParams:
-    """Parameters for standard I2V video generation."""
 
-    job_id: str
-    prompt: str
-    negative_prompt: str
-    input_image_data: bytes
-    end_image_data: bytes | None
-    duration_seconds: float
-    frame_rate: float
-    width: int
-    height: int
-    seed: int | None
-    enhance_prompt: bool = False
-
-
-@dataclass
-class KeyframeInterpolationParams:
-    """Parameters for keyframe interpolation video generation."""
-
-    job_id: str
-    prompt: str
-    negative_prompt: str
-    keyframes: list[tuple[bytes, int, float]]  # (image_data, frame_idx, strength)
-    duration_seconds: float
-    frame_rate: float
-    width: int
-    height: int
-    seed: int | None
-    enhance_prompt: bool = False
-
-
-@dataclass
-class LTX2VideoResult:
-    """Result of LTX-2 video generation."""
-
-    video_data: bytes
-    width: int
-    height: int
-    duration_seconds: float
-    frame_rate: float
-    has_audio: bool
-    seed: int
-    upscale_info: dict[str, Any] | None = None  # Upscaling metadata if applied
 
 
 @dataclass
@@ -96,7 +58,7 @@ class LTX2Components:
     pipeline: Any  # KeyframeInterpolationPipeline instance
 
 
-class LTX2Generator:
+class LTX2Generator(VideoGenerator):
     """LTX-2 video generation service.
 
     This service handles loading the LTX-2 KeyframeInterpolationPipeline
@@ -119,7 +81,7 @@ class LTX2Generator:
         self._temp_dir: tempfile.TemporaryDirectory | None = None
         self._upscaler: StreamDiffVSRUpscaler | None = None
 
-    def set_upscaler(self, upscaler: StreamDiffVSRUpscaler) -> None:
+    def set_upscaler(self, upscaler: Any) -> None:
         """Set the video upscaler for post-generation enhancement.
 
         Args:

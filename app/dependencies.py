@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Annotated, Union
+from typing import TYPE_CHECKING, Annotated, Union, Optional
+from app.services.interfaces import BaseModelGenerator, ImageGenerator, ImageEditor, VideoGenerator, Upscaler
 
 from fastapi import Depends, Header, HTTPException
 
@@ -15,13 +16,15 @@ if TYPE_CHECKING:
     from app.services.video_upscaler import StreamDiffVSRUpscaler
     from app.services.model_manager import ModelManager
     from app.services.job_manager import JobManager
-
+    from app.services.zimage_generator import ZImageGenerator
+    from app.services.ltx2_generator import LTX2Generator
+    from app.services.lightx2v_generator import LightX2VImageEditGenerator
 
 # Global instances (set during startup)
-_generator_instance: Union[MockGenerator, "ZImageGenerator", "LightX2VImageEditGenerator", "LTX2Generator", None] = None
-_upscaler_instance: "StreamDiffVSRUpscaler | None" = None
-_model_manager_instance: "ModelManager | None" = None
-_job_manager_instance: "JobManager | None" = None
+_generator_instance: Union[MockGenerator, BaseModelGenerator, None] = None
+_upscaler_instance: Optional[Upscaler] = None
+_model_manager_instance: Optional["ModelManager"] = None
+_job_manager_instance: Optional["JobManager"] = None
 
 
 def verify_api_key(
@@ -65,22 +68,22 @@ def get_storage_service(
 
 
 def set_generator_instance(
-    instance: Union[MockGenerator, "ZImageGenerator", "LightX2VImageEditGenerator", "LTX2Generator"]
+    instance: Union[MockGenerator, BaseModelGenerator]
 ) -> None:
     """Set the global generator instance (called during startup).
     
     Args:
-        instance: The generator instance to use (MockGenerator, ZImageGenerator, LightX2VImageEditGenerator, or LTX2Generator)
+        instance: The generator instance to use
     """
     global _generator_instance
     _generator_instance = instance
 
 
-def set_upscaler_instance(instance: "StreamDiffVSRUpscaler") -> None:
+def set_upscaler_instance(instance: Upscaler) -> None:
     """Set the global upscaler instance (called during startup).
 
     Args:
-        instance: The StreamDiffVSRUpscaler instance to use for video upscaling
+        instance: The Upscaler instance to use for video upscaling
     """
     global _upscaler_instance
     _upscaler_instance = instance
@@ -130,25 +133,25 @@ def get_job_manager() -> "JobManager":
     return _job_manager_instance
 
 
-def get_upscaler() -> "StreamDiffVSRUpscaler | None":
+def get_upscaler() -> Optional[Upscaler]:
     """Get the upscaler instance, if available.
 
     Returns:
-        StreamDiffVSRUpscaler instance or None if not initialized
+        Upscaler instance or None if not initialized
     """
     return _upscaler_instance
 
 
 def get_generator(
     settings: Settings = Depends(get_settings),
-) -> Union[MockGenerator, "ZImageGenerator", "LightX2VImageEditGenerator", "LTX2Generator"]:
+) -> Union[MockGenerator, BaseModelGenerator]:
     """Get generator service instance.
 
     Args:
         settings: Application settings
 
     Returns:
-        Generator instance (MockGenerator, ZImageGenerator, LightX2VImageEditGenerator, or LTX2Generator)
+        Generator instance
     """
     global _generator_instance
     
@@ -170,7 +173,7 @@ APIKeyDep = Annotated[str, Depends(verify_api_key)]
 SettingsDep = Annotated[Settings, Depends(get_settings)]
 StorageDep = Annotated[StorageService, Depends(get_storage_service)]
 GeneratorDep = Annotated[
-    Union[MockGenerator, "ZImageGenerator", "LightX2VImageEditGenerator", "LTX2Generator"],
+    Union[MockGenerator, BaseModelGenerator],
     Depends(get_generator)
 ]
 JobManagerDep = Annotated["JobManager", Depends(get_job_manager)]

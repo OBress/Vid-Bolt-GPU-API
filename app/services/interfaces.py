@@ -1,0 +1,110 @@
+"""Interfaces for model generation services.
+
+This module defines the abstract base classes that all model generators must implement.
+This ensures a consistent API for the ModelManager and facilitates easy addition of new models.
+"""
+
+from abc import ABC, abstractmethod
+from typing import Any, Dict, Optional
+
+from app.config import Settings
+from app.models.internal import (
+    ImageEditParams,
+    ImageEditResult,
+    ImageGenerationParams,
+    ImageGenerationResult,
+    KeyframeInterpolationParams,
+    UpscaleParams,
+    UpscaleResult,
+    VideoGenerationParams,
+    VideoGenerationResult,
+)
+
+
+class BaseModelGenerator(ABC):
+    """Abstract base class for all model generators."""
+
+    def __init__(self, settings: Settings):
+        self.settings = settings
+
+    @abstractmethod
+    def load_models(self) -> None:
+        """Load model components."""
+        pass
+
+    @abstractmethod
+    def unload_models(self) -> None:
+        """Unload models and free resources."""
+        pass
+
+    @abstractmethod
+    def get_status(self) -> Dict[str, Any]:
+        """Get the current status of the generator."""
+        pass
+
+    @property
+    @abstractmethod
+    def _loaded(self) -> bool:
+        """Check if models are loaded.
+        
+        Using _loaded naming to match existing property conventions in ModelManager.
+        """
+        pass
+
+
+class ImageGenerator(BaseModelGenerator):
+    """Interface for text-to-image generators."""
+
+    @abstractmethod
+    async def generate_image(self, params: ImageGenerationParams) -> ImageGenerationResult:
+        """Generate an image from a text prompt."""
+        pass
+    
+    @abstractmethod
+    async def load_lora(self, lora_name: str, weight: float = 1.0) -> None:
+        """Load a LoRA adapter."""
+        pass
+
+    @abstractmethod
+    async def unload_lora(self) -> None:
+        """Unload the current LoRA adapter."""
+        pass
+
+
+class ImageEditor(BaseModelGenerator):
+    """Interface for image editing generators."""
+
+    @abstractmethod
+    async def edit_image(self, params: ImageEditParams) -> ImageEditResult:
+        """Edit an existing image based on prompt and mask."""
+        pass
+
+
+class VideoGenerator(BaseModelGenerator):
+    """Interface for video generators."""
+
+    @abstractmethod
+    def set_upscaler(self, upscaler: Any) -> None:
+        """Set the video upscaler for post-generation enhancement."""
+        pass
+
+    @abstractmethod
+    async def generate_video(self, params: VideoGenerationParams) -> VideoGenerationResult:
+        """Generate a video from a start frame (I2V)."""
+        pass
+
+    @abstractmethod
+    async def generate_keyframe_video(
+        self, params: KeyframeInterpolationParams
+    ) -> VideoGenerationResult:
+        """Generate a video by interpolating between keyframes."""
+        pass
+
+
+class Upscaler(BaseModelGenerator):
+    """Interface for video upscalers."""
+
+    @abstractmethod
+    async def upscale_video(self, params: UpscaleParams) -> UpscaleResult:
+        """Upscale a video."""
+        pass

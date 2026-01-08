@@ -7,11 +7,11 @@ from fastapi import APIRouter
 
 from fastapi import APIRouter, Request, HTTPException
 
-from app.dependencies import APIKeyDep, StorageDep, GeneratorDep, JobManagerDep, ModelManagerDep
+from app.dependencies import APIKeyDep, StorageDep, GeneratorDep, JobManagerDep, ModelManagerDep, SettingsDep
 from app.models.common import ErrorResponse, get_dimensions
 from app.models.image_generation import ImageGenerateRequest
 from app.models.job import AsyncJobResponse, JobResult
-from app.services.mock_generator import ImageGenerationParams
+from app.models.internal import ImageGenerationParams
 from app.services.model_manager import ModelMode
 
 logger = logging.getLogger(__name__)
@@ -44,17 +44,22 @@ async def generate_image(
     generator: GeneratorDep,
     job_manager: JobManagerDep,
     model_manager: ModelManagerDep,
+    settings: SettingsDep,
 ) -> AsyncJobResponse:
     """Generate an image from a text prompt (Async).
 
     Returns 202 Accepted if job is queued, or 429/503 if busy.
     """
-    # 1. Model Mode Check (Auto-switch)
-    if not await model_manager.ensure_mode(ModelMode.IMAGE):
-        raise HTTPException(
-            status_code=409,  # Conflict
-            detail="System is currently busy processing Video tasks. Please wait until they are finished."
-        )
+    # 1. Determine active generator and ensure mode (if not mock)
+    active_generator = generator
+    
+    if not settings.mock_mode:
+        if not await model_manager.ensure_mode(ModelMode.IMAGE):
+            raise HTTPException(
+                status_code=409,  # Conflict
+                detail="System is currently busy processing Video tasks. Please wait until they are finished."
+            )
+        active_generator = model_manager.get_image_generator()
 
     # 2. Prepare parameters
     if body.width and body.height:
@@ -78,7 +83,7 @@ async def generate_image(
         mode=ModelMode.IMAGE,
         task_func=_run_image_generation,
         # Args for task_func:
-        generator=generator,
+        generator=active_generator,
         storage=storage,
         params=params,
         save_url=body.save_url,

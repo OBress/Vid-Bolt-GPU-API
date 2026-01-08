@@ -21,10 +21,12 @@ from enum import Enum
 from typing import TYPE_CHECKING, Optional
 
 if TYPE_CHECKING:
-    from app.services.zimage_generator import ZImageGenerator
-    from app.services.lightx2v_generator import LightX2VImageEditGenerator
-    from app.services.ltx2_generator import LTX2Generator
-    from app.services.video_upscaler import StreamDiffVSRUpscaler
+    from app.services.interfaces import (
+        ImageEditor,
+        ImageGenerator,
+        Upscaler,
+        VideoGenerator,
+    )
 
 from app.config import Settings
 
@@ -82,10 +84,10 @@ class ModelManager:
         self._lock = asyncio.Lock()
         
         # Generator instances (lazy loaded)
-        self._zimage_generator: Optional["ZImageGenerator"] = None
-        self._lightx2v_generator: Optional["LightX2VImageEditGenerator"] = None
-        self._ltx2_generator: Optional["LTX2Generator"] = None
-        self._upscaler: Optional["StreamDiffVSRUpscaler"] = None
+        self._zimage_generator: Optional["ImageGenerator"] = None
+        self._lightx2v_generator: Optional["ImageEditor"] = None
+        self._ltx2_generator: Optional["VideoGenerator"] = None
+        self._upscaler: Optional["Upscaler"] = None
         
         logger.info("ModelManager initialized")
 
@@ -351,11 +353,11 @@ class ModelManager:
         except ImportError:
             pass
 
-    def get_image_generator(self) -> "ZImageGenerator":
-        """Get the Z-Image generator for text-to-image.
+    def get_image_generator(self) -> "ImageGenerator":
+        """Get the ImageGenerator for text-to-image.
         
         Returns:
-            ZImageGenerator instance
+            ImageGenerator instance
             
         Raises:
             RuntimeError: If not in Image Mode or generator not loaded
@@ -368,11 +370,11 @@ class ModelManager:
         
         return self._zimage_generator
 
-    def get_image_editor(self) -> "LightX2VImageEditGenerator":
-        """Get the LightX2V generator for image editing.
+    def get_image_editor(self) -> "ImageEditor":
+        """Get the ImageEditor for image editing.
         
         Returns:
-            LightX2VImageEditGenerator instance
+            ImageEditor instance
             
         Raises:
             RuntimeError: If not in Image Mode or generator not loaded
@@ -385,11 +387,11 @@ class ModelManager:
         
         return self._lightx2v_generator
 
-    def get_video_generator(self) -> "LTX2Generator":
-        """Get the LTX-2 generator for video generation.
+    def get_video_generator(self) -> "VideoGenerator":
+        """Get the VideoGenerator for video generation.
         
         Returns:
-            LTX2Generator instance
+            VideoGenerator instance
             
         Raises:
             RuntimeError: If not in Video Mode or generator not loaded
@@ -402,11 +404,11 @@ class ModelManager:
         
         return self._ltx2_generator
 
-    def get_upscaler(self) -> Optional["StreamDiffVSRUpscaler"]:
-        """Get the Stream-DiffVSR upscaler if available.
+    def get_upscaler(self) -> Optional["Upscaler"]:
+        """Get the upscaler if available.
         
         Returns:
-            StreamDiffVSRUpscaler instance or None
+            Upscaler instance or None
         """
         if self._mode != ModelMode.VIDEO:
             return None
