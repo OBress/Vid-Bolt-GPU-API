@@ -32,7 +32,11 @@ class JobInfo(BaseModel):
     started_at: Optional[float] = None
     completed_at: Optional[float] = None
     error_message: Optional[str] = None
+    error_code: Optional[str] = None  # e.g., "GPU_OUT_OF_MEMORY", "JOB_TIMEOUT"
     result: Optional[JobResult] = None
+    # Progress tracking for long-running jobs
+    progress_percent: Optional[int] = None  # 0-100
+    progress_stage: Optional[str] = None    # "loading", "generating", "upscaling", "uploading"
 
 
 class AsyncJobResponse(BaseModel):

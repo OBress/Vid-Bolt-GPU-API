@@ -78,6 +78,10 @@ class InferenceConfig:
     STREAM_DIFFVSR_NUM_INFERENCE_STEPS = 4
     STREAM_DIFFVSR_ENABLE_TENSORRT = False
     
+    # Job timeouts (seconds)
+    IMAGE_JOB_TIMEOUT = 120      # 2 minutes for image jobs
+    VIDEO_JOB_TIMEOUT = 600      # 10 minutes for video jobs
+    
     # Limits
     MAX_IMAGE_SIZE_MB = 10
     MAX_VIDEO_DURATION_SECONDS = 10

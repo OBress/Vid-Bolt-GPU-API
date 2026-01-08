@@ -63,6 +63,7 @@ class ZImageGenerator(ImageGenerator):
         self.dry_run = settings.zimage_dry_run
         self._generate_func: Optional[callable] = None
         self._current_lora: Optional[str] = None
+        self._lora_scale: Optional[float] = None
 
     def load_models(self) -> None:
         """Load Z-Image model components.
@@ -335,7 +336,11 @@ class ZImageGenerator(ImageGenerator):
         )
 
     async def load_lora(self, lora_name: str, weight: float = 1.0) -> None:
-        """Load a LoRA adapter.
+        """Load a LoRA adapter by merging weights into the transformer.
+        
+        This implementation loads LoRA weights from a safetensors file and
+        merges them into the transformer model. Z-Image uses a Flux-based
+        architecture, so we look for standard LoRA key patterns.
         
         Args:
             lora_name: Name of the LoRA file (without .safetensors extension)
@@ -343,64 +348,220 @@ class ZImageGenerator(ImageGenerator):
             
         Raises:
             FileNotFoundError: If LoRA file doesn't exist
-            NotImplementedError: LoRA loading requires additional implementation
+            RuntimeError: If LoRA loading fails
         """
         if self.dry_run:
             logger.info(f"Dry-run: Would load LoRA '{lora_name}' with weight {weight}")
             self._current_lora = lora_name
+            self._lora_scale = weight
             return
 
         lora_path = Path(self.settings.zimage_lora_path) / f"{lora_name}.safetensors"
         if not lora_path.exists():
             raise FileNotFoundError(f"LoRA not found: {lora_path}")
 
-        # TODO: Implement LoRA loading for Z-Image transformer
-        # This requires merging LoRA weights into the transformer
-        logger.warning(
-            f"LoRA loading for Z-Image is not yet fully implemented. "
-            f"LoRA path: {lora_path}"
-        )
-        self._current_lora = lora_name
+        logger.info(f"Loading LoRA '{lora_name}' with weight {weight} from {lora_path}")
         
-        # Determine strict loading based on file extension or config
         try:
-             # Try standard Peft/Diffusers loading if available
-             # This is a best-effort implementation without seeing Z-Image internals
-             if hasattr(self.components, "transformer"):
-                 # Check if it's a diffusers model
-                 if hasattr(self.components.transformer, "load_attn_procs"):
-                     logger.info(f"Loading LoRA via diffusers load_attn_procs: {lora_path}")
-                     self.components.transformer.load_attn_procs(str(lora_path))
-                 # Check if it's a PEFT model or standard PyTorch module
-                 else:
-                     from peft import PeftModel
-                     logger.info(f"Loading LoRA via PEFT: {lora_path}")
-                     # In a real scenario, we might need to inject adapters. 
-                     # For now, we assume the transformer helps us or we just track the name 
-                     # if the underlying 'generate' function handles it (unlikely for raw logic).
-                     # Since we can't see 'generate', we will log this as a critical path.
-                     pass 
+            from safetensors.torch import load_file
+            import torch
+            
+            # Load LoRA weights from safetensors
+            lora_weights = load_file(str(lora_path))
+            
+            if not lora_weights:
+                raise RuntimeError(f"No weights found in LoRA file: {lora_path}")
+            
+            logger.info(f"Loaded LoRA with {len(lora_weights)} weight tensors")
+            
+            # Apply LoRA weights to transformer
+            applied_count = self._apply_lora_to_transformer(lora_weights, weight)
+            
+            if applied_count == 0:
+                logger.warning(
+                    f"No LoRA weights were applied. The LoRA format may be incompatible "
+                    f"with Z-Image. Found keys: {list(lora_weights.keys())[:5]}..."
+                )
+            else:
+                logger.info(f"Successfully applied LoRA to {applied_count} layer pairs")
+            
+            self._current_lora = lora_name
+            self._lora_scale = weight
+            self._lora_applied_layers: list[str] = []  # Track for potential unmerge
+            
+        except ImportError as e:
+            raise RuntimeError(
+                f"safetensors is required for LoRA loading. Install with: pip install safetensors"
+            ) from e
         except Exception as e:
-            logger.error(f"Failed to load LoRA {lora_name}: {e}")
-            # If strictly required, raise. For now, we log error but allow proceed if it's just a hook issue,
-            # but usually this fatal.
-            raise RuntimeError(f"Failed to load LoRA weights: {e}") from e
+            logger.error(f"Failed to load LoRA '{lora_name}': {e}")
+            raise RuntimeError(f"Failed to load LoRA: {e}") from e
+
+    def _apply_lora_to_transformer(self, lora_weights: dict, scale: float) -> int:
+        """Apply LoRA weights to the transformer model.
+        
+        Standard LoRA format uses low-rank decomposition: W' = W + scale * (B @ A)
+        Keys typically follow patterns like:
+        - "transformer.blocks.0.attn.to_q.lora_A.weight"
+        - "transformer.blocks.0.attn.to_q.lora_B.weight"
+        
+        Args:
+            lora_weights: Dictionary of LoRA weight tensors
+            scale: Scale factor for the LoRA weights
+            
+        Returns:
+            Number of layer pairs successfully applied
+        """
+        import torch
+        
+        if self.components is None or self.components.transformer is None:
+            raise RuntimeError("Transformer not loaded")
+        
+        applied_count = 0
+        processed_keys: set[str] = set()
+        
+        # Find all lora_A keys and match with lora_B
+        for key in lora_weights.keys():
+            if key in processed_keys:
+                continue
+                
+            # Handle different LoRA key patterns
+            if ".lora_A" in key or ".lora_down" in key:
+                # Determine matching lora_B key
+                if ".lora_A" in key:
+                    lora_a_key = key
+                    lora_b_key = key.replace(".lora_A", ".lora_B")
+                    base_key = key.replace(".lora_A.weight", "").replace(".lora_A", "")
+                else:
+                    lora_a_key = key
+                    lora_b_key = key.replace(".lora_down", ".lora_up")
+                    base_key = key.replace(".lora_down.weight", "").replace(".lora_down", "")
+                
+                if lora_b_key not in lora_weights:
+                    logger.debug(f"Skipping {lora_a_key}: no matching B weight found")
+                    continue
+                
+                lora_a = lora_weights[lora_a_key]
+                lora_b = lora_weights[lora_b_key]
+                
+                # Find target layer in transformer
+                target_layer = self._find_layer_by_key(base_key)
+                
+                if target_layer is not None and hasattr(target_layer, 'weight'):
+                    try:
+                        # Compute delta: B @ A (low-rank update)
+                        # lora_a shape: (rank, in_features) or (in_features, rank)
+                        # lora_b shape: (out_features, rank) or (rank, out_features)
+                        
+                        # Handle different dimension orderings
+                        if lora_a.dim() == 2 and lora_b.dim() == 2:
+                            if lora_b.shape[1] == lora_a.shape[0]:
+                                # B @ A format
+                                delta = (lora_b @ lora_a) * scale
+                            elif lora_a.shape[1] == lora_b.shape[0]:
+                                # A @ B format (transposed)
+                                delta = (lora_a @ lora_b).T * scale
+                            else:
+                                logger.debug(f"Incompatible shapes for {base_key}: A={lora_a.shape}, B={lora_b.shape}")
+                                continue
+                            
+                            # Ensure delta matches target shape
+                            if delta.shape == target_layer.weight.shape:
+                                target_layer.weight.data += delta.to(
+                                    device=target_layer.weight.device,
+                                    dtype=target_layer.weight.dtype
+                                )
+                                applied_count += 1
+                                processed_keys.add(lora_a_key)
+                                processed_keys.add(lora_b_key)
+                            else:
+                                logger.debug(
+                                    f"Shape mismatch for {base_key}: "
+                                    f"delta={delta.shape}, target={target_layer.weight.shape}"
+                                )
+                        else:
+                            logger.debug(f"Unexpected tensor dimensions for {base_key}")
+                            
+                    except Exception as e:
+                        logger.debug(f"Failed to apply LoRA to {base_key}: {e}")
+                else:
+                    logger.debug(f"Layer not found for key: {base_key}")
+        
+        return applied_count
+
+    def _find_layer_by_key(self, key: str) -> Any:
+        """Find a layer in the transformer by its key path.
+        
+        Args:
+            key: Dot-separated path to the layer (e.g., "blocks.0.attn.to_q")
+            
+        Returns:
+            The layer module if found, None otherwise
+        """
+        # Clean up the key - remove common prefixes
+        clean_key = key
+        for prefix in ["transformer.", "model.", "lora_unet_", "lora_te_"]:
+            if clean_key.startswith(prefix):
+                clean_key = clean_key[len(prefix):]
+        
+        # Also handle diffusers-style keys with underscores instead of dots
+        clean_key = clean_key.replace("_", ".")
+        
+        try:
+            obj = self.components.transformer
+            for part in clean_key.split('.'):
+                if part.isdigit():
+                    obj = obj[int(part)]
+                elif hasattr(obj, part):
+                    obj = getattr(obj, part)
+                elif hasattr(obj, 'named_modules'):
+                    # Try to find in named modules
+                    found = False
+                    for name, module in obj.named_modules():
+                        if name == part or name.endswith('.' + part):
+                            obj = module
+                            found = True
+                            break
+                    if not found:
+                        return None
+                else:
+                    return None
+            return obj
+        except (AttributeError, IndexError, KeyError, TypeError):
+            return None
 
     async def unload_lora(self) -> None:
-        """Unload the current LoRA adapter."""
-        if self._current_lora:
-            if self.dry_run:
-                logger.info(f"Dry-run: Would unload LoRA '{self._current_lora}'")
-            else:
-                logger.info(f"Unloading LoRA '{self._current_lora}'")
-                try:
-                    if hasattr(self.components, "transformer"):
-                        if hasattr(self.components.transformer, "unload_lora_weights"):
-                            self.components.transformer.unload_lora_weights()
-                        # Fallback for PEFT usually involves 'disable_adapter' or unmerging
-                except Exception as e:
-                    logger.warning(f"Error unloading LoRA: {e}")
+        """Unload the current LoRA adapter.
+        
+        Since LoRA weights are merged into the model, unloading requires
+        reloading the base model weights. This ensures a clean state.
+        """
+        if self._current_lora is None:
+            return
+            
+        if self.dry_run:
+            logger.info(f"Dry-run: Would unload LoRA '{self._current_lora}'")
             self._current_lora = None
+            self._lora_scale = None
+            return
+        
+        logger.info(f"Unloading LoRA '{self._current_lora}' by reloading base model")
+        
+        # Since we merged LoRA into weights, we need to reload base model
+        # to get clean weights. This is the safest approach.
+        old_is_loaded = self.is_loaded
+        
+        try:
+            self.unload_models()
+            self._current_lora = None
+            self._lora_scale = None
+            
+            if old_is_loaded:
+                self.load_models()
+                logger.info("Base model reloaded, LoRA unloaded successfully")
+        except Exception as e:
+            logger.error(f"Failed to reload base model after LoRA unload: {e}")
+            raise
 
     def get_status(self) -> Dict[str, Any]:
         """Get the current status of the generator.

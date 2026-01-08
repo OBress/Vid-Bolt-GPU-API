@@ -82,3 +82,23 @@ class GenerationError(APIError):
 
     def __init__(self, message: str = "Generation failed"):
         super().__init__(message)
+
+
+class GPUOutOfMemoryError(APIError):
+    """Raised when GPU runs out of memory during generation."""
+
+    status_code: ClassVar[int] = 503
+    error_code: ClassVar[str] = "GPU_OUT_OF_MEMORY"
+
+    def __init__(self, message: str = "GPU out of memory. Try reducing resolution, duration, or wait for current jobs to complete."):
+        super().__init__(message)
+
+
+class JobTimeoutError(APIError):
+    """Raised when a job exceeds its timeout."""
+
+    status_code: ClassVar[int] = 504
+    error_code: ClassVar[str] = "JOB_TIMEOUT"
+
+    def __init__(self, message: str = "Job timed out"):
+        super().__init__(message)

@@ -14,7 +14,7 @@ from app import __version__
 from app.config import get_settings
 from app.exceptions import APIError
 from app.models.common import ErrorResponse
-from app.routers import health, image_generation, image_editing, video_generation, ltx2_generation, mode, system, lora_management, jobs
+from app.routers import health, image_generation, image_editing, video_generation, ltx2_generation, mode, system, lora_management, jobs, gpu
 from app.utils.logging import setup_logging
 
 # Initialize settings
@@ -72,12 +72,19 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     logger.info("Initializing JobManager...")
     job_manager = JobManager(settings)
     set_job_manager_instance(job_manager)
-    logger.info("JobManager initialized")
+    
+    # Start periodic cleanup task
+    job_manager.start_cleanup_task()
+    logger.info("JobManager initialized with cleanup task")
 
     yield
 
     # Shutdown
-    logger.info("Shutting down Vid-Bolt GPU API")
+    logger.info("Shutting down Vid-Bolt GPU API...")
+    
+    # Stop cleanup task
+    job_manager.stop_cleanup_task()
+    logger.info("Shutdown complete")
 
 
 # Create FastAPI application
@@ -249,4 +256,5 @@ app.include_router(video_generation.router)
 app.include_router(ltx2_generation.router)
 app.include_router(lora_management.router)
 app.include_router(jobs.router)
+app.include_router(gpu.router)
 
