@@ -63,13 +63,16 @@ async def test_generate_image_with_output_url(async_client, api_key_headers, moc
     
     # Poll for completion to verify upload
     import asyncio
-    max_retries = 30
+    max_retries = 60
     for _ in range(max_retries):
         status_response = await async_client.get(data["status_url"], headers=api_key_headers)
         if status_response.json()["status"] in ["completed", "failed"]:
             break
-        await asyncio.sleep(0.1)
-        
+        await asyncio.sleep(0.5)
+
+    final_status = (await async_client.get(data["status_url"], headers=api_key_headers)).json()
+    assert final_status["status"] == "completed"
+
     mock_storage.upload_to_url.assert_called_once()
     call_args = mock_storage.upload_to_url.call_args
     assert call_args.kwargs["url"] == custom_url
