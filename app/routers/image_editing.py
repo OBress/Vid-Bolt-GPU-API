@@ -2,14 +2,15 @@ import logging
 import time
 from typing import Annotated
 
-from fastapi import APIRouter, Form
+from fastapi import APIRouter, Request, HTTPException
 
-from app.config import get_settings
-from app.dependencies import APIKeyDep, StorageDep, GeneratorDep, ImageModeDep
+from app.dependencies import APIKeyDep, StorageDep, GeneratorDep, JobManagerDep, ModelManagerDep
 from app.exceptions import ValidationError
 from app.models.common import ErrorResponse, get_dimensions
-from app.models.image_editing import EditType, ImageEditRequest, ImageEditResponse
+from app.models.image_editing import ImageEditRequest
+from app.models.job import AsyncJobResponse, JobResult
 from app.services.mock_generator import ImageEditParams
+from app.services.model_manager import ModelMode
 
 logger = logging.getLogger(__name__)
 
@@ -37,85 +38,109 @@ def _validate_image_magic_bytes(data: bytes) -> bool:
 
 @router.post(
     "/edit",
-    response_model=ImageEditResponse,
+    response_model=AsyncJobResponse,
+    status_code=202,
     responses={
         400: {"model": ErrorResponse, "description": "Validation error"},
         401: {"model": ErrorResponse, "description": "Authentication error"},
-        503: {"model": ErrorResponse, "description": "Image mode not active or system busy"},
-        500: {"model": ErrorResponse, "description": "Processing or upload error"},
+        429: {"model": ErrorResponse, "description": "System busy (concurrency limit reached)"},
+        503: {"model": ErrorResponse, "description": "Image mode not active"},
+        500: {"model": ErrorResponse, "description": "Internal error"},
     },
     summary="Edit Image",
-    description="Edit an existing image using AI. Input image must be provided as a URL.",
+    description="Edit an image using AI (inpainting or instruction-based). Returns the edited image URL.",
 )
 async def edit_image(
-    request: ImageEditRequest,
+    request: Request,
+    body: ImageEditRequest,
     api_key: APIKeyDep,
     storage: StorageDep,
     generator: GeneratorDep,
-    _mode_guard: ImageModeDep,
-) -> ImageEditResponse:
-    """Edit an image with AI-powered transformations."""
-    start_time = time.time()
+    job_manager: JobManagerDep,
+    model_manager: ModelManagerDep,
+) -> AsyncJobResponse:
+    """Edit an image with AI-powered transformations (Async)."""
     
-    # Validation logic for inpainting is now slightly ambiguous without edit_type in request
-    # If mask is provided, we assume inpainting intent, but since edit_type is gone, 
-    # we can't strictly validate against it unless we infer it. 
-    # For now, let's keep mask validation simple or remove strict dependency on removed edit_type.
-    # User asked to remove edit_type, so we can't check `request.edit_type`.
-    
-    # Use aspect ratio for logging and logic
-    logger.info(
-        f"Image edit request (URL flow)",
-        extra={
-            "job_id": request.job_id,
-            "aspect_ratio": request.aspect_ratio,
-            "has_mask": request.mask_image_url is not None,
-            "has_save_url": True,
-        },
-    )
+    # 1. Mode check
+    if model_manager.current_mode != ModelMode.IMAGE:
+        raise HTTPException(
+            status_code=503,
+            detail="System is not in Image Mode. Switch modes first."
+        )
 
-    # Download input image
-    input_image_data = await storage.download_from_url(request.input_image_url)
+    # 2. Pre-validation of input URLs (Fail fast)
+    # We download images HERE (blocking the request slightly) to ensure they are valid
+    # before queuing the job. This prevents queue slots being taken by bad requests.
+    try:
+        input_image_data = await storage.download_from_url(body.input_image_url)
+        if not _validate_image_magic_bytes(input_image_data):
+            raise ValidationError("input_image_url is not a valid image")
 
-    # Validate magic bytes
-    if not _validate_image_magic_bytes(input_image_data):
-        raise ValidationError("input_image_url does not point to a valid image file")
+        mask_data = None
+        if body.mask_image_url:
+            mask_data = await storage.download_from_url(body.mask_image_url)
+            if not _validate_image_magic_bytes(mask_data):
+                raise ValidationError("mask_image_url is not a valid image")
+    except Exception as e:
+        # Wrap storage/validation errors
+        raise HTTPException(status_code=400, detail=str(e))
 
-    # Download and validate mask if provided
-    mask_data = None
-    if request.mask_image_url is not None:
-        mask_data = await storage.download_from_url(request.mask_image_url)
-        if not _validate_image_magic_bytes(mask_data):
-            raise ValidationError("mask_image_url does not point to a valid image file")
+    width, height = get_dimensions(body.aspect_ratio)
 
-    # Calculate dimensions
-    width, height = get_dimensions(request.aspect_ratio)
-
-    # Prepare edit parameters
     params = ImageEditParams(
-        job_id=request.job_id,
+        job_id=body.job_id,
         input_image_data=input_image_data,
-        prompt=request.prompt,
+        prompt=body.prompt,
         width=width,
         height=height,
         mask_data=mask_data,
-        seed=request.seed,
+        seed=body.seed,
     )
 
-    # Generate edited image
-    result = await generator.edit_image(params)
+    # 3. Submit Job
+    submitted = await job_manager.try_submit_job(
+        job_id=body.job_id,
+        mode=ModelMode.IMAGE,
+        task_func=_run_image_edit,
+        # Args
+        generator=generator,
+        storage=storage,
+        params=params,
+        save_url=body.save_url,
+    )
 
-    # Upload output
-    save_url = await storage.upload_to_url(
+    if not submitted:
+        raise HTTPException(status_code=429, detail="System busy: Max concurrent jobs reached")
+
+    return AsyncJobResponse(
+        job_id=body.job_id,
+        status_url=str(request.url_for("get_job_status", job_id=body.job_id)),
+    )
+
+
+async def _run_image_edit(
+    generator: GeneratorDep,
+    storage: StorageDep,
+    params: ImageEditParams,
+    save_url: str,
+) -> JobResult:
+    """Background task for image editing."""
+    start_time = time.time()
+    
+    result = await generator.edit_image(params)
+    
+    final_url = await storage.upload_to_url(
         data=result.image_data,
-        url=request.save_url,
+        url=save_url,
         content_type="image/png",
     )
-
-    generation_time = round(time.time() - start_time, 2)
-
-    return ImageEditResponse(
-        status="completed",
-        generation_time=generation_time,
-        save_url=save_url,
+    
+    return JobResult(
+        save_url=final_url,
+        generation_time=round(time.time() - start_time, 2),
+        metadata={
+            "seed": result.seed,
+            "width": result.width,
+            "height": result.height
+        }
     )

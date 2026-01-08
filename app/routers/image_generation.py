@@ -5,10 +5,14 @@ import time
 
 from fastapi import APIRouter
 
-from app.dependencies import APIKeyDep, StorageDep, GeneratorDep, ImageModeDep
+from fastapi import APIRouter, Request, HTTPException
+
+from app.dependencies import APIKeyDep, StorageDep, GeneratorDep, JobManagerDep, ModelManagerDep
 from app.models.common import ErrorResponse, get_dimensions
-from app.models.image_generation import ImageGenerateRequest, ImageGenerateResponse
+from app.models.image_generation import ImageGenerateRequest
+from app.models.job import AsyncJobResponse, JobResult
 from app.services.mock_generator import ImageGenerationParams
+from app.services.model_manager import ModelMode
 
 logger = logging.getLogger(__name__)
 
@@ -20,86 +24,106 @@ router = APIRouter(
 
 @router.post(
     "/generate",
-    response_model=ImageGenerateResponse,
+    response_model=AsyncJobResponse,
+    status_code=202,
     responses={
         400: {"model": ErrorResponse, "description": "Validation error"},
         401: {"model": ErrorResponse, "description": "Authentication error"},
-        503: {"model": ErrorResponse, "description": "Image mode not active or system busy"},
-        500: {"model": ErrorResponse, "description": "Generation or upload error"},
+        429: {"model": ErrorResponse, "description": "System busy (concurrency limit reached)"},
+        503: {"model": ErrorResponse, "description": "Image mode not active"},
+        500: {"model": ErrorResponse, "description": "Internal error"},
     },
     summary="Generate Image",
     description="Generate an image from a text prompt using AI. Returns the generated image URL.",
 )
 async def generate_image(
-    request: ImageGenerateRequest,
+    request: Request,
+    body: ImageGenerateRequest,
     api_key: APIKeyDep,
     storage: StorageDep,
     generator: GeneratorDep,
-    _mode_guard: ImageModeDep,
-) -> ImageGenerateResponse:
-    """Generate an image from a text prompt.
+    job_manager: JobManagerDep,
+    model_manager: ModelManagerDep,
+) -> AsyncJobResponse:
+    """Generate an image from a text prompt (Async).
 
-    The image is generated using the configured AI model (or mock in development)
-    and uploaded to R2 storage. The public CDN URL is returned.
-
-    Args:
-        request: Image generation parameters
-        api_key: Validated API key (injected)
-        storage: Storage service (injected)
-        generator: Generator service (injected)
-
-    Returns:
-        ImageGenerateResponse with the generated image details
+    Returns 202 Accepted if job is queued, or 429/503 if busy.
     """
-    start_time = time.time()
+    # 1. Model Mode Check (Quick fail)
+    if model_manager.current_mode != ModelMode.IMAGE:
+        raise HTTPException(
+            status_code=503,
+            detail=f"System is in {model_manager.current_mode.value} mode. "
+                   "Please switch to Image Mode first."
+        )
 
-    logger.info(
-        f"Image generation request",
-        extra={
-            "job_id": request.job_id,
-            "aspect_ratio": request.aspect_ratio,
-            "prompt_length": len(request.prompt),
-        },
-    )
+    # 2. Prepare parameters
+    if body.width and body.height:
+        width, height = body.width, body.height
+    else:
+        width, height = get_dimensions(body.aspect_ratio)
 
-    # Calculate dimensions
-    width, height = get_dimensions(request.aspect_ratio)
-
-    # Prepare generation parameters
     params = ImageGenerationParams(
-        job_id=request.job_id,
-        prompt=request.prompt,
+        job_id=body.job_id,
+        prompt=body.prompt,
         width=width,
         height=height,
-        seed=request.seed,
-        num_inference_steps=request.num_inference_steps,
+        seed=body.seed,
+        num_inference_steps=body.num_inference_steps,
+        lora_name=body.lora_name if body.lora_name and body.lora_name.lower() != "none" else None,
     )
 
-    # Generate image
+    # 3. Try to submit job
+    submitted = await job_manager.try_submit_job(
+        job_id=body.job_id,
+        mode=ModelMode.IMAGE,
+        task_func=_run_image_generation,
+        # Args for task_func:
+        generator=generator,
+        storage=storage,
+        params=params,
+        save_url=body.save_url,
+    )
+
+    if not submitted:
+        raise HTTPException(
+            status_code=429,
+            detail="System busy: Maximum concurrent image generations reached."
+        )
+
+    # 4. Return Accepted response
+    return AsyncJobResponse(
+        job_id=body.job_id,
+        status_url=str(request.url_for("get_job_status", job_id=body.job_id)),
+    )
+
+
+async def _run_image_generation(
+    generator: GeneratorDep,
+    storage: StorageDep,
+    params: ImageGenerationParams,
+    save_url: str,
+) -> JobResult:
+    """Background task for image generation."""
+    start_time = time.time()
+    
+    # Generate
     result = await generator.generate_image(params)
 
-    # Upload output
-    save_url = await storage.upload_to_url(
+    # Upload
+    final_url = await storage.upload_to_url(
         data=result.image_data,
-        url=request.save_url,
+        url=save_url,
         content_type="image/png",
     )
 
-    generation_time = round(time.time() - start_time, 2)
-
-
-
-    logger.info(
-        f"Image generation completed",
-        extra={
-            "job_id": request.job_id,
+    return JobResult(
+        save_url=final_url,
+        generation_time=round(time.time() - start_time, 2),
+        metadata={
             "seed": result.seed,
-            "generation_time_s": generation_time,
-        },
+            "width": result.width,
+            "height": result.height,
+        }
     )
 
-    return ImageGenerateResponse(
-        status="completed",
-        generation_time=generation_time,
-        save_url=save_url,
-    )

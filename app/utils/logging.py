@@ -45,7 +45,7 @@ class StructuredFormatter(logging.Formatter):
         if extra_fields:
             import json
 
-            extras = json.dumps(extra_fields)
+            extras = json.dumps(extra_fields, default=str)
             message = f"{message} | {extras}"
 
         return message

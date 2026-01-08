@@ -2,7 +2,7 @@
 
 from typing import Literal, Optional
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, model_validator
 
 from app.models.common import AspectRatio
 
@@ -23,7 +23,19 @@ class ImageGenerateRequest(BaseModel):
     )
     aspect_ratio: AspectRatio = Field(
         default=AspectRatio.r_16_9,
-        description="Aspect ratio of the generated image",
+        description="Aspect ratio of the generated image. Ignored if width/height are provided.",
+    )
+    width: Optional[int] = Field(
+        default=None,
+        description="Custom width in pixels",
+        ge=256,
+        le=1536,
+    )
+    height: Optional[int] = Field(
+        default=None,
+        description="Custom height in pixels",
+        ge=256,
+        le=1536,
     )
     num_inference_steps: int = Field(
         20,
@@ -35,10 +47,23 @@ class ImageGenerateRequest(BaseModel):
         default=None,
         description="Random seed for reproducible generation",
     )
+    lora_name: Optional[str] = Field(
+        default=None,
+        description="Name of the LoRA style to apply (or 'none' for no LoRA)",
+    )
     save_url: str = Field(
         ...,
         description="Presigned URL (PUT) for direct storage upload",
     )
+
+    @model_validator(mode="after")
+    def validate_dimensions(self):
+        """Enable custom width and height if one is provided, ensure the other is also provided."""
+        if self.width is not None and self.height is None:
+             raise ValueError("Height must be provided if width is provided")
+        if self.width is None and self.height is not None:
+             raise ValueError("Width must be provided if height is provided")
+        return self
 
 
 

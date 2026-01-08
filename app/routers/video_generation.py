@@ -2,14 +2,16 @@ import logging
 import time
 from typing import Annotated, Literal
 
-from fastapi import APIRouter, Form
+from fastapi import APIRouter, Request, HTTPException
 
 from app.config import get_settings
-from app.dependencies import APIKeyDep, StorageDep, GeneratorDep, VideoModeDep
+from app.dependencies import APIKeyDep, StorageDep, GeneratorDep, JobManagerDep, ModelManagerDep
 from app.exceptions import ValidationError
 from app.models.common import ErrorResponse, get_dimensions
-from app.models.video_generation import VideoGenerateRequest, VideoGenerateResponse
+from app.models.video_generation import VideoGenerateRequest
+from app.models.job import AsyncJobResponse, JobResult
 from app.services.mock_generator import VideoGenerationParams
+from app.services.model_manager import ModelMode
 
 logger = logging.getLogger(__name__)
 
@@ -37,85 +39,111 @@ def _validate_image_magic_bytes(data: bytes) -> bool:
 
 @router.post(
     "/generate",
-    response_model=VideoGenerateResponse,
+    response_model=AsyncJobResponse,
+    status_code=202,
     responses={
         400: {"model": ErrorResponse, "description": "Validation error"},
         401: {"model": ErrorResponse, "description": "Authentication error"},
-        503: {"model": ErrorResponse, "description": "Video mode not active or system busy"},
-        500: {"model": ErrorResponse, "description": "Generation or upload error"},
+        429: {"model": ErrorResponse, "description": "System busy (concurrency limit reached)"},
+        503: {"model": ErrorResponse, "description": "Video mode not active"},
+        500: {"model": ErrorResponse, "description": "Internal error"},
     },
     summary="Generate Video",
-    description="Generate a video from an input image URL with AI-powered motion.",
+    description="Generate a video from an image and prompt. Returns the generated video URL.",
 )
 async def generate_video(
-    request: VideoGenerateRequest,
+    request: Request,
+    body: VideoGenerateRequest,
     api_key: APIKeyDep,
     storage: StorageDep,
     generator: GeneratorDep,
-    _mode_guard: VideoModeDep,
-) -> VideoGenerateResponse:
-    """Generate a video from an input image."""
-    start_time = time.time()
+    job_manager: JobManagerDep,
+    model_manager: ModelManagerDep,
+) -> AsyncJobResponse:
+    """Generate a video from an input image (Async)."""
     settings = get_settings()
 
-    if request.fps not in ALLOWED_FPS:
-        raise ValidationError(f"fps must be one of {sorted(ALLOWED_FPS)}, got {request.fps}")
+    # 1. Mode check
+    if model_manager.current_mode != ModelMode.VIDEO:
+        raise HTTPException(
+            status_code=503,
+            detail="System is not in Video Mode. Switch modes first."
+        )
 
-    if request.duration_seconds > settings.max_video_duration_seconds:
-        raise ValidationError(f"duration_seconds cannot exceed {settings.max_video_duration_seconds}")
+    # 2. Validation
+    if body.fps not in ALLOWED_FPS:
+        raise ValidationError(f"fps must be one of {sorted(ALLOWED_FPS)}")
+    if body.duration_seconds > settings.max_video_duration_seconds:
+        raise ValidationError(f"duration exceeds {settings.max_video_duration_seconds}s limit")
 
-    logger.info(
-        f"Video generation request (URL flow)",
-        extra={
-            "job_id": request.job_id,
-            "duration": request.duration_seconds,
-            "fps": request.fps,
-            "aspect_ratio": request.aspect_ratio,
-            "has_end_image": request.end_image_url is not None,
-            "has_save_url": True,
-        },
-    )
+    # 3. Download inputs (Fail Fast if invalid)
+    try:
+        input_image_data = await storage.download_from_url(body.input_image_url)
+        if not _validate_image_magic_bytes(input_image_data):
+            raise ValidationError("Invalid input image")
 
-    # Download input image
-    input_image_data = await storage.download_from_url(request.input_image_url)
-    if not _validate_image_magic_bytes(input_image_data):
-        raise ValidationError("input_image_url does not point to a valid image file")
+        end_image_data = None
+        if body.end_image_url:
+            end_image_data = await storage.download_from_url(body.end_image_url)
+            if not _validate_image_magic_bytes(end_image_data):
+                raise ValidationError("Invalid end image")
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
 
-    # Handle optional end image
-    end_image_data: bytes | None = None
-    if request.end_image_url is not None:
-        end_image_data = await storage.download_from_url(request.end_image_url)
-        if not _validate_image_magic_bytes(end_image_data):
-            raise ValidationError("end_image_url does not point to a valid image file")
-
-    # Calculate dimensions
-    width, height = get_dimensions(request.aspect_ratio)
+    width, height = get_dimensions(body.aspect_ratio)
 
     params = VideoGenerationParams(
-        job_id=request.job_id,
+        job_id=body.job_id,
         input_image_data=input_image_data,
-        prompt=request.prompt,
-        duration_seconds=request.duration_seconds,
-        fps=request.fps,
+        prompt=body.prompt,
+        duration_seconds=body.duration_seconds,
+        fps=body.fps,
         width=width,
         height=height,
-        seed=request.seed,
+        seed=body.seed,
         end_image_data=end_image_data,
     )
 
+    # 4. Submit Job
+    submitted = await job_manager.try_submit_job(
+        job_id=body.job_id,
+        mode=ModelMode.VIDEO,
+        task_func=_run_video_generation,
+        generator=generator,
+        storage=storage,
+        params=params,
+        save_url=body.save_url,
+    )
+
+    if not submitted:
+        raise HTTPException(status_code=429, detail="System busy: Max concurrent video jobs reached")
+
+    return AsyncJobResponse(
+        job_id=body.job_id,
+        status_url=str(request.url_for("get_job_status", job_id=body.job_id)),
+    )
+
+
+async def _run_video_generation(
+    generator: GeneratorDep,
+    storage: StorageDep,
+    params: VideoGenerationParams,
+    save_url: str,
+) -> JobResult:
+    """Background task for video generation."""
+    start_time = time.time()
+
     result = await generator.generate_video(params)
 
-    # Upload output
-    save_url = await storage.upload_to_url(
+    final_url = await storage.upload_to_url(
         data=result.video_data,
-        url=request.save_url,
+        url=save_url,
         content_type="video/mp4",
     )
 
-    generation_time = round(time.time() - start_time, 2)
-
-    return VideoGenerateResponse(
-        status="completed",
-        generation_time=generation_time,
-        save_url=save_url,
+    return JobResult(
+        save_url=final_url,
+        generation_time=round(time.time() - start_time, 2),
+        duration_seconds=getattr(result, "duration_seconds", params.duration_seconds),
+        has_audio=getattr(result, "has_audio", False),
     )

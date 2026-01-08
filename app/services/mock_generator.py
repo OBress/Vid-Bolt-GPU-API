@@ -22,6 +22,7 @@ class ImageGenerationParams:
     height: int
     seed: int | None
     num_inference_steps: int
+    lora_name: str | None = None
 
 
 @dataclass
@@ -54,8 +55,8 @@ class ImageEditResult:
     image_data: bytes
     original_width: int
     original_height: int
-    output_width: int
-    output_height: int
+    width: int
+    height: int
     seed: int
 
 
@@ -229,8 +230,8 @@ class MockGenerator:
             image_data=image_data,
             original_width=orig_w,
             original_height=orig_h,
-            output_width=out_w,
-            output_height=out_h,
+            width=out_w,
+            height=out_h,
             seed=seed,
         )
 

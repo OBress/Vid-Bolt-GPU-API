@@ -211,8 +211,8 @@ class LightX2VImageEditGenerator:
             image_data=image_data,
             original_width=orig_w,
             original_height=orig_h,
-            output_width=out_w,
-            output_height=out_h,
+            width=out_w,
+            height=out_h,
             seed=seed,
         )
 
@@ -321,8 +321,8 @@ class LightX2VImageEditGenerator:
             image_data=buffer.getvalue(),
             original_width=orig_width,
             original_height=orig_height,
-            output_width=orig_width,
-            output_height=orig_height,
+            width=orig_width,
+            height=orig_height,
             seed=seed,
         )
 

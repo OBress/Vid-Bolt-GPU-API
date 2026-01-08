@@ -11,17 +11,19 @@ import time
 
 from fastapi import APIRouter
 
-from app.dependencies import APIKeyDep, StorageDep, GeneratorDep, VideoModeDep
+from fastapi import APIRouter, Request, HTTPException
+
+from app.dependencies import APIKeyDep, StorageDep, GeneratorDep, JobManagerDep, ModelManagerDep
 from app.exceptions import ValidationError
 from app.models.common import ErrorResponse, get_dimensions
 from app.models.ltx2_generation import (
     LTX2GenerateRequest,
-    LTX2GenerateResponse,
     KeyframeInterpolateRequest,
-    KeyframeInterpolateResponse,
     round_up_to_valid_frames,
 )
+from app.models.job import AsyncJobResponse, JobResult
 from app.services.ltx2_generator import LTX2VideoParams, KeyframeInterpolationParams
+from app.services.model_manager import ModelMode
 
 logger = logging.getLogger(__name__)
 
@@ -53,105 +55,110 @@ def _validate_image_magic_bytes(data: bytes) -> bool:
 
 @router.post(
     "/generate",
-    response_model=LTX2GenerateResponse,
+    response_model=AsyncJobResponse,
+    status_code=202,
     responses={
         400: {"model": ErrorResponse, "description": "Validation error"},
         401: {"model": ErrorResponse, "description": "Authentication error"},
-        503: {"model": ErrorResponse, "description": "Video mode not active or system busy"},
-        500: {"model": ErrorResponse, "description": "Generation or upload error"},
+        429: {"model": ErrorResponse, "description": "System busy"},
+        503: {"model": ErrorResponse, "description": "Video mode not active"},
+        500: {"model": ErrorResponse, "description": "Internal error"},
     },
-    summary="Generate Video from Image (I2V)",
-    description=(
-        "Generate a video from a single start frame image using LTX-2. "
-        "Optionally provide an end frame for interpolation. "
-        "The video includes synchronized AI-generated audio."
-    ),
+    summary="LTX-2 Video Generation",
+    description="Generate a video using LTX-2 (I2V or T2V).",
 )
 async def generate_video(
-    request: LTX2GenerateRequest,
+    request: Request,
+    body: LTX2GenerateRequest,
     api_key: APIKeyDep,
     storage: StorageDep,
     generator: GeneratorDep,
-    _mode_guard: VideoModeDep,
-) -> LTX2GenerateResponse:
-    """Generate a video from a start frame image."""
-    start_time = time.time()
+    job_manager: JobManagerDep,
+    model_manager: ModelManagerDep,
+) -> AsyncJobResponse:
+    """Generate a video from a start frame image (Async)."""
+    
+    # 1. Mode check
+    if model_manager.current_mode != ModelMode.VIDEO:
+        raise HTTPException(status_code=503, detail="System not in Video Mode")
 
-    logger.info(
-        f"LTX-2 I2V generation request",
-        extra={
-            "job_id": request.job_id,
-            "duration_seconds": request.duration_seconds,
-            "frame_rate": request.frame_rate,
-            "aspect_ratio": request.aspect_ratio,
-            "has_end_image": request.end_image_url is not None,
-        },
-    )
-
-    # Download input image
-    input_image_data = await storage.download_from_url(request.input_image_url)
-    if not _validate_image_magic_bytes(input_image_data):
-        raise ValidationError("input_image_url does not point to a valid image file")
-
-    # Download optional end image
-    end_image_data: bytes | None = None
-    if request.end_image_url is not None:
-        end_image_data = await storage.download_from_url(request.end_image_url)
-        if not _validate_image_magic_bytes(end_image_data):
-            raise ValidationError("end_image_url does not point to a valid image file")
-
-    # Calculate dimensions
-    width, height = get_dimensions(request.aspect_ratio)
-
-    # Check if generator supports LTX-2 video generation
+    # 2. Check if generator supports LTX-2
     if not hasattr(generator, "generate_video"):
-        raise ValidationError(
-            "Current generator does not support video generation. "
-            "Ensure LTX2Generator is configured."
-        )
+         raise ValidationError("Current generator does not support video generation.")
+
+    # 3. Pre-download checks
+    try:
+        input_image_data = await storage.download_from_url(body.input_image_url)
+        if not _validate_image_magic_bytes(input_image_data):
+            raise ValidationError("Invalid input image")
+
+        end_image_data = None
+        if body.end_image_url:
+            end_image_data = await storage.download_from_url(body.end_image_url)
+            if not _validate_image_magic_bytes(end_image_data):
+                raise ValidationError("Invalid end image")
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+    width, height = get_dimensions(body.aspect_ratio)
 
     params = LTX2VideoParams(
-        job_id=request.job_id,
-        prompt=request.prompt,
-        negative_prompt=request.negative_prompt,
+        job_id=body.job_id,
+        prompt=body.prompt,
+        negative_prompt=body.negative_prompt,
         input_image_data=input_image_data,
         end_image_data=end_image_data,
-        duration_seconds=request.duration_seconds,
-        frame_rate=request.frame_rate,
+        duration_seconds=body.duration_seconds,
+        frame_rate=body.frame_rate,
         width=width,
         height=height,
-        seed=request.seed,
-        enhance_prompt=request.enhance_prompt,
+        seed=body.seed,
+        enhance_prompt=body.enhance_prompt,
     )
 
-    result = await generator.generate_video(params)
+    # 4. Submit Job
+    submitted = await job_manager.try_submit_job(
+        job_id=body.job_id,
+        mode=ModelMode.VIDEO,
+        task_func=_run_ltx2_generation,
+        generator=generator,
+        storage=storage,
+        params=params,
+        save_url=body.save_url,
+    )
 
-    # Upload output
-    save_url = await storage.upload_to_url(
+    if not submitted:
+        raise HTTPException(status_code=429, detail="System busy: Max concurrent jobs reached")
+
+    return AsyncJobResponse(
+        job_id=body.job_id,
+        status_url=str(request.url_for("get_job_status", job_id=body.job_id)),
+    )
+
+
+async def _run_ltx2_generation(
+    generator: GeneratorDep,
+    storage: StorageDep,
+    params: LTX2VideoParams,
+    save_url: str,
+) -> JobResult:
+    """Background task for LTX-2 I2V."""
+    start_time = time.time()
+    
+    result = await generator.generate_video(params)
+    
+    final_url = await storage.upload_to_url(
         data=result.video_data,
-        url=request.save_url,
+        url=save_url,
         content_type="video/mp4",
     )
-
-    generation_time = round(time.time() - start_time, 2)
-
-    logger.info(
-        f"LTX-2 I2V generation completed",
-        extra={
-            "job_id": request.job_id,
-            "generation_time_s": generation_time,
-            "duration_seconds": result.duration_seconds,
-            "has_audio": result.has_audio,
-        },
-    )
-
-    return LTX2GenerateResponse(
-        status="completed",
-        generation_time=generation_time,
-        save_url=save_url,
+    
+    return JobResult(
+        save_url=final_url,
+        generation_time=round(time.time() - start_time, 2),
         duration_seconds=result.duration_seconds,
         has_audio=result.has_audio,
-        upscale_info=getattr(result, "upscale_info", None),
+        metadata={"upscale_info": getattr(result, "upscale_info", None)}
     )
 
 
@@ -161,115 +168,103 @@ async def generate_video(
 
 @router.post(
     "/interpolate",
-    response_model=KeyframeInterpolateResponse,
+    response_model=AsyncJobResponse,
+    status_code=202,
     responses={
         400: {"model": ErrorResponse, "description": "Validation error"},
         401: {"model": ErrorResponse, "description": "Authentication error"},
-        503: {"model": ErrorResponse, "description": "Video mode not active or system busy"},
-        500: {"model": ErrorResponse, "description": "Generation or upload error"},
+        429: {"model": ErrorResponse, "description": "System busy"},
+        503: {"model": ErrorResponse, "description": "Video mode not active"},
+        500: {"model": ErrorResponse, "description": "Internal error"},
     },
-    summary="Generate Keyframe Interpolation Video",
-    description=(
-        "Generate a video by interpolating between multiple keyframe images using LTX-2. "
-        "Each keyframe specifies an image, target frame index, and conditioning strength. "
-        "The video includes synchronized AI-generated audio."
-    ),
+    summary="LTX-2 Keyframe Interpolation",
+    description="Generate a video by interpolating between keyframes using LTX-2.",
 )
 async def interpolate_keyframes(
-    request: KeyframeInterpolateRequest,
+    request: Request,
+    body: KeyframeInterpolateRequest,
     api_key: APIKeyDep,
     storage: StorageDep,
     generator: GeneratorDep,
-    _mode_guard: VideoModeDep,
-) -> KeyframeInterpolateResponse:
-    """Generate a video by interpolating between keyframes."""
-    start_time = time.time()
+    job_manager: JobManagerDep,
+    model_manager: ModelManagerDep,
+) -> AsyncJobResponse:
+    """Generate a video by interpolating between keyframes (Async)."""
+    
+    # 1. Mode check
+    if model_manager.current_mode != ModelMode.VIDEO:
+        raise HTTPException(status_code=503, detail="System not in Video Mode")
 
-    # Calculate frame count for validation
-    requested_frames = math.ceil(request.duration_seconds * request.frame_rate) + 1
-    num_frames = round_up_to_valid_frames(requested_frames)
-    max_frame_idx = num_frames - 1
-
-    # Validate keyframe indices are within bounds
-    for kf in request.keyframes:
-        if kf.frame_index > max_frame_idx:
-            raise ValidationError(
-                f"Keyframe frame_index {kf.frame_index} exceeds max frame index "
-                f"{max_frame_idx} for {request.duration_seconds}s duration at {request.frame_rate}fps. "
-                f"(Rounded to {num_frames} frames)"
-            )
-
-    logger.info(
-        f"LTX-2 keyframe interpolation request",
-        extra={
-            "job_id": request.job_id,
-            "num_keyframes": len(request.keyframes),
-            "duration_seconds": request.duration_seconds,
-            "frame_rate": request.frame_rate,
-            "aspect_ratio": request.aspect_ratio,
-            "rounded_frames": num_frames,
-        },
-    )
-
-    # Download all keyframe images
-    keyframes: list[tuple[bytes, int, float]] = []
-    for idx, kf in enumerate(request.keyframes):
-        image_data = await storage.download_from_url(kf.image_url)
-        if not _validate_image_magic_bytes(image_data):
-            raise ValidationError(
-                f"Keyframe {idx} (frame_index={kf.frame_index}) does not point to a valid image"
-            )
-        keyframes.append((image_data, kf.frame_index, kf.strength))
-
-    # Calculate dimensions
-    width, height = get_dimensions(request.aspect_ratio)
-
-    # Check if generator supports keyframe interpolation
     if not hasattr(generator, "generate_keyframe_video"):
-        raise ValidationError(
-            "Current generator does not support keyframe interpolation. "
-            "Ensure LTX2Generator is configured."
-        )
+        raise ValidationError("Current generator does not support keyframe interpolation.")
+
+    # 2. Keyframe download loop
+    keyframes = []
+    try:
+        for idx, kf in enumerate(body.keyframes):
+            image_data = await storage.download_from_url(kf.image_url)
+            if not _validate_image_magic_bytes(image_data):
+                raise ValidationError(f"Keyframe {idx} invalid image")
+            keyframes.append((image_data, kf.frame_index, kf.strength))
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+    width, height = get_dimensions(body.aspect_ratio)
 
     params = KeyframeInterpolationParams(
-        job_id=request.job_id,
-        prompt=request.prompt,
-        negative_prompt=request.negative_prompt,
+        job_id=body.job_id,
+        prompt=body.prompt,
+        negative_prompt=body.negative_prompt,
         keyframes=keyframes,
-        duration_seconds=request.duration_seconds,
-        frame_rate=request.frame_rate,
+        duration_seconds=body.duration_seconds,
+        frame_rate=body.frame_rate,
         width=width,
         height=height,
-        seed=request.seed,
-        enhance_prompt=request.enhance_prompt,
+        seed=body.seed,
+        enhance_prompt=body.enhance_prompt,
     )
 
-    result = await generator.generate_keyframe_video(params)
+    # 3. Submit
+    submitted = await job_manager.try_submit_job(
+        job_id=body.job_id,
+        mode=ModelMode.VIDEO,
+        task_func=_run_ltx2_interpolation,
+        generator=generator,
+        storage=storage,
+        params=params,
+        save_url=body.save_url,
+    )
 
-    # Upload output
-    save_url = await storage.upload_to_url(
+    if not submitted:
+        raise HTTPException(status_code=429, detail="System busy: Max concurrent jobs reached")
+
+    return AsyncJobResponse(
+        job_id=body.job_id,
+        status_url=str(request.url_for("get_job_status", job_id=body.job_id)),
+    )
+
+
+async def _run_ltx2_interpolation(
+    generator: GeneratorDep,
+    storage: StorageDep,
+    params: KeyframeInterpolationParams,
+    save_url: str,
+) -> JobResult:
+    """Background task for interpolation."""
+    start_time = time.time()
+    
+    result = await generator.generate_keyframe_video(params)
+    
+    final_url = await storage.upload_to_url(
         data=result.video_data,
-        url=request.save_url,
+        url=save_url,
         content_type="video/mp4",
     )
-
-    generation_time = round(time.time() - start_time, 2)
-
-    logger.info(
-        f"LTX-2 keyframe interpolation completed",
-        extra={
-            "job_id": request.job_id,
-            "generation_time_s": generation_time,
-            "duration_seconds": result.duration_seconds,
-            "has_audio": result.has_audio,
-        },
-    )
-
-    return KeyframeInterpolateResponse(
-        status="completed",
-        generation_time=generation_time,
-        save_url=save_url,
+    
+    return JobResult(
+        save_url=final_url,
+        generation_time=round(time.time() - start_time, 2),
         duration_seconds=result.duration_seconds,
         has_audio=result.has_audio,
-        upscale_info=getattr(result, "upscale_info", None),
+        metadata={"upscale_info": getattr(result, "upscale_info", None)}
     )

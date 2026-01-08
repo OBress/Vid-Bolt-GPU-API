@@ -14,6 +14,24 @@ os.environ["ZIMAGE_DRY_RUN"] = "true"
 
 class TestZImageGenerator:
     """Test suite for ZImageGenerator."""
+    
+    @pytest.fixture
+    def mock_model_manager(self):
+         """Create a ModelManager for tests."""
+         from unittest.mock import MagicMock
+         from app.services.model_manager import ModelManager, ModelMode
+         from app.config import get_settings
+         from app.dependencies import get_model_manager
+         from app.main import app
+         
+         settings = get_settings()
+         manager = ModelManager(settings)
+         manager._mode = ModelMode.IMAGE
+         
+         app.dependency_overrides[get_model_manager] = lambda: manager
+         yield manager
+         app.dependency_overrides.pop(get_model_manager, None)
+
 
     @pytest.fixture
     def settings(self):
@@ -237,9 +255,10 @@ class TestZImageIntegration:
         data = response.json()
         assert data["status"] == "healthy"
 
-    def test_generate_image_endpoint_with_zimage(self, client, api_key_headers):
+    @pytest.mark.asyncio
+    async def test_generate_image_endpoint_with_zimage(self, async_client, api_key_headers, mock_model_manager):
         """Test image generation endpoint with Z-Image dry-run."""
-        response = client.post(
+        response = await async_client.post(
             "/api/v1/image/generate",
             headers=api_key_headers,
             json={
@@ -253,7 +272,7 @@ class TestZImageIntegration:
         # Should complete successfully in dry-run mode
         # (may fail if storage mock isn't set up, which is expected)
         # The important thing is it doesn't crash trying to load the model
-        assert response.status_code in [200, 500]  # 500 if storage fails, 200 if mocked
+        assert response.status_code in [202, 500]  # 500 if storage fails, 202 if mocked
 
 
 class TestZImageDryRunPlaceholder:

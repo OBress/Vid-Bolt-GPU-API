@@ -14,7 +14,7 @@ from app import __version__
 from app.config import get_settings
 from app.exceptions import APIError
 from app.models.common import ErrorResponse
-from app.routers import health, image_generation, image_editing, video_generation, ltx2_generation, mode, system
+from app.routers import health, image_generation, image_editing, video_generation, ltx2_generation, mode, system, lora_management, jobs
 from app.utils.logging import setup_logging
 
 # Initialize settings
@@ -56,7 +56,6 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         model_manager = ModelManager(settings)
         set_model_manager_instance(model_manager)
         
-        # Load the default mode
         if settings.default_model_mode == "image":
             logger.info("Loading Image Mode (Z-Image + LightX2V)...")
             await model_manager.switch_to_image_mode()
@@ -65,6 +64,15 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
             await model_manager.switch_to_video_mode()
         
         logger.info(f"ModelManager initialized in {settings.default_model_mode} mode")
+
+    # Initialize JobManager
+    from app.services.job_manager import JobManager
+    from app.dependencies import set_job_manager_instance
+    
+    logger.info("Initializing JobManager...")
+    job_manager = JobManager(settings)
+    set_job_manager_instance(job_manager)
+    logger.info("JobManager initialized")
 
     yield
 
@@ -239,4 +247,6 @@ app.include_router(image_generation.router)
 app.include_router(image_editing.router)
 app.include_router(video_generation.router)
 app.include_router(ltx2_generation.router)
+app.include_router(lora_management.router)
+app.include_router(jobs.router)
 

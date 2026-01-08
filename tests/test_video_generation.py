@@ -11,22 +11,30 @@ except ImportError:
 
 
 @pytest.mark.skipif(not HAS_MOVIEPY, reason="moviepy not installed")
-def test_generate_video_success(client, api_key_headers, mock_storage, sample_job_id):
+def test_generate_video_success(client, api_key_headers, mock_storage, sample_job_id, mock_job_manager, mock_model_manager):
     """Test successful video generation using URLs."""
     input_url = "https://example.com/first-frame.png"
-    response = client.post(
-        "/api/v1/video/generate",
-        headers=api_key_headers,
-        json={
-            "job_id": sample_job_id,
-            "input_image_url": input_url,
-            "prompt": "Zoom in slowly",
-            "duration_seconds": 4.0,
-            "fps": 24,
-            "aspect_ratio": "16:9",
-            "save_url": "https://example.com/save.mp4",
-        },
-    )
+    
+    # Mock Video Mode
+    from app.services.model_manager import ModelMode
+    with patch("app.services.model_manager.ModelManager.current_mode", new_callable=lambda: ModelMode.VIDEO):
+        response = client.post(
+            "/api/v1/video/generate",
+            headers=api_key_headers,
+            json={
+                "job_id": sample_job_id,
+                "input_image_url": input_url,
+                "prompt": "Zoom in slowly",
+                "duration_seconds": 4.0,
+                "fps": 24,
+                "aspect_ratio": "16:9",
+                "save_url": "https://example.com/save.mp4",
+            },
+        )
+
+        assert response.status_code == 202
+        data = response.json()
+        assert data["job_id"] == sample_job_id
 
     assert response.status_code == 200
     data = response.json()
@@ -41,7 +49,7 @@ def test_generate_video_success(client, api_key_headers, mock_storage, sample_jo
 
 
 @pytest.mark.skipif(not HAS_MOVIEPY, reason="moviepy not installed")
-def test_generate_video_with_end_frame(client, api_key_headers, mock_storage, sample_job_id):
+def test_generate_video_with_end_frame(client, api_key_headers, mock_storage, sample_job_id, mock_model_manager):
     """Test video generation with an end frame URL."""
     input_url = "https://example.com/start.png"
     end_url = "https://example.com/end.png"
@@ -64,7 +72,7 @@ def test_generate_video_with_end_frame(client, api_key_headers, mock_storage, sa
 
 
 @pytest.mark.skipif(not HAS_MOVIEPY, reason="moviepy not installed")
-def test_generate_video_with_output_url(client, api_key_headers, mock_storage, sample_job_id):
+def test_generate_video_with_output_url(client, api_key_headers, mock_storage, sample_job_id, mock_model_manager):
     """Test video generation with a custom output URL."""
     input_url = "https://example.com/start.png"
     output_url = "https://custom-storage.com/video.mp4?token=123"
@@ -88,8 +96,11 @@ def test_generate_video_with_output_url(client, api_key_headers, mock_storage, s
     mock_storage.upload_to_url.assert_called()
 
 
-def test_generate_video_validation_error(client, api_key_headers, sample_job_id):
+def test_generate_video_validation_error(client, api_key_headers, sample_job_id, mock_model_manager):
     """Test validation error for invalid FPS."""
+    from app.services.model_manager import ModelMode
+    mock_model_manager._mode = ModelMode.VIDEO
+    
     response = client.post(
         "/api/v1/video/generate",
         headers=api_key_headers,

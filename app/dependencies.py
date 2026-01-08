@@ -14,12 +14,14 @@ from app.services.mock_generator import MockGenerator
 if TYPE_CHECKING:
     from app.services.video_upscaler import StreamDiffVSRUpscaler
     from app.services.model_manager import ModelManager
+    from app.services.job_manager import JobManager
 
 
 # Global instances (set during startup)
 _generator_instance: Union[MockGenerator, "ZImageGenerator", "LightX2VImageEditGenerator", "LTX2Generator", None] = None
 _upscaler_instance: "StreamDiffVSRUpscaler | None" = None
 _model_manager_instance: "ModelManager | None" = None
+_job_manager_instance: "JobManager | None" = None
 
 
 def verify_api_key(
@@ -94,6 +96,12 @@ def set_model_manager_instance(instance: "ModelManager") -> None:
     _model_manager_instance = instance
 
 
+def set_job_manager_instance(instance: "JobManager") -> None:
+    """Set the global JobManager instance (called during startup)."""
+    global _job_manager_instance
+    _job_manager_instance = instance
+
+
 def get_model_manager() -> "ModelManager":
     """Get the ModelManager instance.
     
@@ -106,6 +114,20 @@ def get_model_manager() -> "ModelManager":
     if _model_manager_instance is None:
         raise RuntimeError("ModelManager not initialized. Server startup may have failed.")
     return _model_manager_instance
+
+
+def get_job_manager() -> "JobManager":
+    """Get the JobManager instance.
+    
+    Returns:
+        JobManager instance
+        
+    Raises:
+        RuntimeError: If JobManager is not initialized
+    """
+    if _job_manager_instance is None:
+        raise RuntimeError("JobManager not initialized. Server startup may have failed.")
+    return _job_manager_instance
 
 
 def get_upscaler() -> "StreamDiffVSRUpscaler | None":
@@ -143,70 +165,6 @@ def get_generator(
     return ZImageGenerator(settings)
 
 
-def require_image_mode() -> None:
-    """Dependency that requires Image Mode to be active.
-    
-    Raises:
-        HTTPException 503: If not in Image Mode or system is busy
-    """
-    if _model_manager_instance is None:
-        # In mock mode or legacy mode, allow all requests
-        return
-    
-    from app.services.model_manager import ModelMode
-    
-    if _model_manager_instance.current_mode == ModelMode.SWITCHING:
-        raise HTTPException(
-            status_code=503,
-            detail="Mode switch in progress. Please wait and try again."
-        )
-    
-    if _model_manager_instance.current_mode != ModelMode.IMAGE:
-        raise HTTPException(
-            status_code=503,
-            detail=f"Image models not loaded. Current mode: {_model_manager_instance.current_mode.value}. "
-                   f"Switch to image mode using POST /api/v1/mode/switch"
-        )
-    
-    if _model_manager_instance.is_busy:
-        raise HTTPException(
-            status_code=503,
-            detail=f"System is busy with job: {_model_manager_instance.active_job_id}. Please try again later."
-        )
-
-
-def require_video_mode() -> None:
-    """Dependency that requires Video Mode to be active.
-    
-    Raises:
-        HTTPException 503: If not in Video Mode or system is busy
-    """
-    if _model_manager_instance is None:
-        # In mock mode or legacy mode, allow all requests
-        return
-    
-    from app.services.model_manager import ModelMode
-    
-    if _model_manager_instance.current_mode == ModelMode.SWITCHING:
-        raise HTTPException(
-            status_code=503,
-            detail="Mode switch in progress. Please wait and try again."
-        )
-    
-    if _model_manager_instance.current_mode != ModelMode.VIDEO:
-        raise HTTPException(
-            status_code=503,
-            detail=f"Video models not loaded. Current mode: {_model_manager_instance.current_mode.value}. "
-                   f"Switch to video mode using POST /api/v1/mode/switch"
-        )
-    
-    if _model_manager_instance.is_busy:
-        raise HTTPException(
-            status_code=503,
-            detail=f"System is busy with job: {_model_manager_instance.active_job_id}. Please try again later."
-        )
-
-
 # Type aliases for dependency injection
 APIKeyDep = Annotated[str, Depends(verify_api_key)]
 SettingsDep = Annotated[Settings, Depends(get_settings)]
@@ -215,5 +173,5 @@ GeneratorDep = Annotated[
     Union[MockGenerator, "ZImageGenerator", "LightX2VImageEditGenerator", "LTX2Generator"],
     Depends(get_generator)
 ]
-ImageModeDep = Annotated[None, Depends(require_image_mode)]
-VideoModeDep = Annotated[None, Depends(require_video_mode)]
+JobManagerDep = Annotated["JobManager", Depends(get_job_manager)]
+ModelManagerDep = Annotated["ModelManager", Depends(get_model_manager)]

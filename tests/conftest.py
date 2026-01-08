@@ -6,6 +6,7 @@ from typing import Generator
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+import httpx
 from fastapi.testclient import TestClient
 from PIL import Image
 
@@ -21,8 +22,17 @@ from app.dependencies import get_storage_service
 @pytest.fixture
 def client() -> Generator[TestClient, None, None]:
     """Create a test client for the FastAPI app."""
+    # Use TestClient with a context manager to ensure startup/shutdown events run
     with TestClient(app) as test_client:
         yield test_client
+
+
+@pytest.fixture
+async def async_client() -> Generator[httpx.AsyncClient, None, None]:
+    """Create an async test client."""
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://testserver") as client:
+        yield client
+
 
 
 @pytest.fixture
@@ -83,4 +93,43 @@ def mock_storage(sample_image_bytes) -> Generator[MagicMock, None, None]:
 def sample_job_id() -> str:
     """Return a sample job ID for testing."""
     return "550e8400-e29b-41d4-a716-446655440000"
+
+
+@pytest.fixture
+def mock_job_manager() -> Generator[MagicMock, None, None]:
+    """Create a fresh JobManager for each test."""
+    from app.services.job_manager import JobManager
+    from app.config import get_settings
+    from app.dependencies import get_job_manager
+    
+    settings = get_settings()
+    # Ensure fresh semaphores
+    manager = JobManager(settings)
+    
+    app.dependency_overrides[get_job_manager] = lambda: manager
+    yield manager
+    app.dependency_overrides.pop(get_job_manager, None)
+
+
+@pytest.fixture
+def mock_model_manager() -> Generator[MagicMock, None, None]:
+    """Create a ModelManager for tests."""
+    from app.services.model_manager import ModelManager, ModelMode
+    from app.config import get_settings
+    from app.dependencies import get_model_manager
+    
+    settings = get_settings()
+    # In mock mode, this is lightweight
+    manager = ModelManager(settings)
+    # Force default mode
+    import asyncio
+    # We can't easily run async init here, but ModelManager.__init__ doesn't do async stuff.
+    # It just sets up locks.
+    # We might need to manually set the initial mode if logic depends on it.
+    manager._mode = ModelMode.IMAGE
+    
+    app.dependency_overrides[get_model_manager] = lambda: manager
+    yield manager
+    app.dependency_overrides.pop(get_model_manager, None)
+
 
