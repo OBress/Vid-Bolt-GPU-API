@@ -26,3 +26,9 @@ safetensors>=0.4.0
 loguru>=0.7.0
 huggingface-hub>=0.20.0
 
+# Stream-DiffVSR Video Upscaling
+diffusers>=0.31.0
+xformers>=0.0.27
+accelerate>=0.34.0
+peft>=0.12.0
+opencv-python>=4.10.0

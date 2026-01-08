@@ -11,7 +11,7 @@ import time
 
 from fastapi import APIRouter
 
-from app.dependencies import APIKeyDep, StorageDep, GeneratorDep
+from app.dependencies import APIKeyDep, StorageDep, GeneratorDep, VideoModeDep
 from app.exceptions import ValidationError
 from app.models.common import ErrorResponse, get_dimensions
 from app.models.ltx2_generation import (
@@ -57,6 +57,7 @@ def _validate_image_magic_bytes(data: bytes) -> bool:
     responses={
         400: {"model": ErrorResponse, "description": "Validation error"},
         401: {"model": ErrorResponse, "description": "Authentication error"},
+        503: {"model": ErrorResponse, "description": "Video mode not active or system busy"},
         500: {"model": ErrorResponse, "description": "Generation or upload error"},
     },
     summary="Generate Video from Image (I2V)",
@@ -71,6 +72,7 @@ async def generate_video(
     api_key: APIKeyDep,
     storage: StorageDep,
     generator: GeneratorDep,
+    _mode_guard: VideoModeDep,
 ) -> LTX2GenerateResponse:
     """Generate a video from a start frame image."""
     start_time = time.time()
@@ -149,6 +151,7 @@ async def generate_video(
         save_url=save_url,
         duration_seconds=result.duration_seconds,
         has_audio=result.has_audio,
+        upscale_info=getattr(result, "upscale_info", None),
     )
 
 
@@ -162,6 +165,7 @@ async def generate_video(
     responses={
         400: {"model": ErrorResponse, "description": "Validation error"},
         401: {"model": ErrorResponse, "description": "Authentication error"},
+        503: {"model": ErrorResponse, "description": "Video mode not active or system busy"},
         500: {"model": ErrorResponse, "description": "Generation or upload error"},
     },
     summary="Generate Keyframe Interpolation Video",
@@ -176,6 +180,7 @@ async def interpolate_keyframes(
     api_key: APIKeyDep,
     storage: StorageDep,
     generator: GeneratorDep,
+    _mode_guard: VideoModeDep,
 ) -> KeyframeInterpolateResponse:
     """Generate a video by interpolating between keyframes."""
     start_time = time.time()
@@ -266,4 +271,5 @@ async def interpolate_keyframes(
         save_url=save_url,
         duration_seconds=result.duration_seconds,
         has_audio=result.has_audio,
+        upscale_info=getattr(result, "upscale_info", None),
     )

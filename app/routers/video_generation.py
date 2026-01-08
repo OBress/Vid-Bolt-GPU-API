@@ -5,7 +5,7 @@ from typing import Annotated, Literal
 from fastapi import APIRouter, Form
 
 from app.config import get_settings
-from app.dependencies import APIKeyDep, StorageDep, GeneratorDep
+from app.dependencies import APIKeyDep, StorageDep, GeneratorDep, VideoModeDep
 from app.exceptions import ValidationError
 from app.models.common import ErrorResponse, get_dimensions
 from app.models.video_generation import VideoGenerateRequest, VideoGenerateResponse
@@ -41,6 +41,7 @@ def _validate_image_magic_bytes(data: bytes) -> bool:
     responses={
         400: {"model": ErrorResponse, "description": "Validation error"},
         401: {"model": ErrorResponse, "description": "Authentication error"},
+        503: {"model": ErrorResponse, "description": "Video mode not active or system busy"},
         500: {"model": ErrorResponse, "description": "Generation or upload error"},
     },
     summary="Generate Video",
@@ -51,6 +52,7 @@ async def generate_video(
     api_key: APIKeyDep,
     storage: StorageDep,
     generator: GeneratorDep,
+    _mode_guard: VideoModeDep,
 ) -> VideoGenerateResponse:
     """Generate a video from an input image."""
     start_time = time.time()

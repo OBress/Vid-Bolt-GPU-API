@@ -15,17 +15,22 @@ Key features:
 - Post-generation trimming to exact requested duration
 """
 
+from __future__ import annotations
+
 import asyncio
 import io
 import logging
 import math
 import random
 import tempfile
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from PIL import Image
+
+if TYPE_CHECKING:
+    from app.services.video_upscaler import StreamDiffVSRUpscaler
 
 from app.config import Settings
 from app.models.ltx2_generation import round_up_to_valid_frames
@@ -81,6 +86,7 @@ class LTX2VideoResult:
     frame_rate: float
     has_audio: bool
     seed: int
+    upscale_info: dict[str, Any] | None = None  # Upscaling metadata if applied
 
 
 @dataclass
@@ -111,6 +117,16 @@ class LTX2Generator:
         self.is_loaded = False
         self.dry_run = settings.ltx2_dry_run
         self._temp_dir: tempfile.TemporaryDirectory | None = None
+        self._upscaler: StreamDiffVSRUpscaler | None = None
+
+    def set_upscaler(self, upscaler: StreamDiffVSRUpscaler) -> None:
+        """Set the video upscaler for post-generation enhancement.
+
+        Args:
+            upscaler: StreamDiffVSRUpscaler instance to use for upscaling
+        """
+        self._upscaler = upscaler
+        logger.info("Video upscaler connected to LTX-2 generator")
 
     def load_models(self) -> None:
         """Load LTX-2 pipeline components.
@@ -323,14 +339,56 @@ class LTX2Generator:
             lambda: trim_video_to_duration(video_data, params.duration_seconds),
         )
 
+        # Apply video upscaling if upscaler is available and enabled
+        final_video = trimmed_video
+        upscale_info: dict[str, Any] | None = None
+
+        if (
+            self._upscaler is not None
+            and self._upscaler.is_loaded
+            and self.settings.stream_diffvsr_enabled
+        ):
+            from app.services.video_upscaler import UpscaleParams
+
+            logger.info(
+                f"Upscaling video from 720p to 1080p",
+                extra={"job_id": params.job_id},
+            )
+
+            upscale_params = UpscaleParams(
+                job_id=params.job_id,
+                video_data=trimmed_video,
+                preserve_audio=True,
+            )
+
+            upscale_result = await self._upscaler.upscale_video(upscale_params)
+            final_video = upscale_result.video_data
+
+            upscale_info = {
+                "original_resolution": f"{upscale_result.original_width}x{upscale_result.original_height}",
+                "upscaled_resolution": f"{upscale_result.upscaled_width}x{upscale_result.upscaled_height}",
+                "frame_count": upscale_result.frame_count,
+                "upscale_time_seconds": round(upscale_result.processing_time_seconds, 2),
+                "was_upscaled": upscale_result.was_upscaled,
+            }
+
+            logger.info(
+                f"Video upscaling completed",
+                extra={
+                    "job_id": params.job_id,
+                    "upscale_time_s": upscale_info["upscale_time_seconds"],
+                },
+            )
+
         return LTX2VideoResult(
-            video_data=trimmed_video,
+            video_data=final_video,
             width=params.width,
             height=params.height,
             duration_seconds=params.duration_seconds,
             frame_rate=params.frame_rate,
             has_audio=has_audio,
             seed=seed,
+            upscale_info=upscale_info,
         )
 
     def _generate_sync(
@@ -549,6 +607,48 @@ class LTX2Generator:
             "num_inference_steps": self.settings.ltx2_num_inference_steps,
             "cfg_guidance_scale": self.settings.ltx2_cfg_guidance_scale,
         }
+
+    @property
+    def _loaded(self) -> bool:
+        """Alias for is_loaded for ModelManager compatibility."""
+        return self.is_loaded
+
+    def unload_models(self) -> None:
+        """Unload models and free GPU memory.
+        
+        This is called by ModelManager when switching modes to release VRAM.
+        """
+        if not self.is_loaded:
+            logger.info("LTX-2 models not loaded, nothing to unload")
+            return
+        
+        logger.info("Unloading LTX-2 models...")
+        
+        if self.components is not None:
+            import gc
+            try:
+                import torch
+                
+                # Delete the pipeline
+                if hasattr(self.components, 'pipeline') and self.components.pipeline is not None:
+                    del self.components.pipeline
+                
+                # Clear the components container
+                self.components = None
+                self._upscaler = None  # Remove upscaler reference
+                
+                # Force garbage collection and clear CUDA cache
+                gc.collect()
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
+                    torch.cuda.synchronize()
+                    
+            except ImportError:
+                self.components = None
+                gc.collect()
+        
+        self.is_loaded = False
+        logger.info("LTX-2 models unloaded successfully")
 
     async def _generate_minimal_placeholder(
         self, 

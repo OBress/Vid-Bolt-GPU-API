@@ -1,4 +1,16 @@
-"""Application configuration using pydantic-settings."""
+"""Application configuration.
+
+Environment variables (from .env):
+- MOCK_MODE: Enable mock mode for testing (default: true)
+- API_KEY: API authentication key (required)
+- LOG_LEVEL: Logging level (default: INFO)
+- CORS_ALLOWED_ORIGINS: Comma-separated allowed origins (default: http://localhost:3000)
+- PORT: Server port (default: 8000) - used by uvicorn, not this config
+
+All model paths, inference parameters, and hardware settings are hardcoded
+as sensible defaults below. Override them by editing this file directly
+if needed for your specific deployment.
+"""
 
 from functools import lru_cache
 from typing import Literal
@@ -6,8 +18,84 @@ from typing import Literal
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
+# =============================================================================
+# Hardcoded Model Configuration (not in .env)
+# =============================================================================
+
+class ModelPaths:
+    """Hardcoded model paths relative to project root."""
+    
+    # Z-Image Turbo (text-to-image)
+    ZIMAGE_MODEL = "models/z-image-turbo"
+    ZIMAGE_LORA = "models/loras/z-image"
+    
+    # LightX2V / Qwen-Image-Edit (image editing)
+    LIGHTX2V_MODEL = "models/qwen-image-edit-2511"
+    LIGHTX2V_LORA = "models/loras/qwen-image-edit-2511"
+    LIGHTX2V_LORA_FILE = "Qwen-Image-Edit-2511-Lightning-8steps-V1.0-fp32.safetensors"
+    
+    # LTX-2 (video generation)
+    LTX2_CHECKPOINT = "models/ltx-2/ltx-2-19b-dev.safetensors"
+    LTX2_DISTILLED_LORA = "models/ltx-2/ltx-2-19b-distilled-lora-384.safetensors"
+    LTX2_SPATIAL_UPSAMPLER = "models/ltx-2/ltx-2-spatial-upsampler-x2-1.0.safetensors"
+    LTX2_GEMMA_ROOT = "models/ltx-2/gemma-3-12b-it-qat-q4_0-unquantized"
+    
+    # Stream-DiffVSR (video upscaling)
+    STREAM_DIFFVSR_MODEL_ID = "Jamichsu/Stream-DiffVSR"
+
+
+class InferenceConfig:
+    """Hardcoded inference parameters."""
+    
+    # Device settings
+    DEVICE = "cuda"
+    DTYPE: Literal["bfloat16", "float16"] = "bfloat16"
+    
+    # Concurrency limits
+    MAX_CONCURRENT_IMAGE_GENERATIONS = 2  # Across Z-Image + Qwen-Image-Edit
+    MAX_CONCURRENT_VIDEO_GENERATIONS = 1  # LTX-2 + Stream-DiffVSR workflow
+    
+    # Z-Image settings
+    ZIMAGE_COMPILE = False
+    ZIMAGE_ATTENTION_BACKEND = "_native_flash"
+    
+    # LightX2V settings
+    LIGHTX2V_ATTN_MODE = "flash_attn3"
+    LIGHTX2V_INFER_STEPS = 8
+    LIGHTX2V_GUIDANCE_SCALE = 1.0
+    LIGHTX2V_RESIZE_MODE = "adaptive"
+    LIGHTX2V_CPU_OFFLOAD = False
+    LIGHTX2V_TEXT_ENCODER_OFFLOAD = True
+    
+    # LTX-2 settings
+    LTX2_FP8_ENABLED = False
+    LTX2_NUM_INFERENCE_STEPS = 40
+    LTX2_CFG_GUIDANCE_SCALE = 4.0
+    LTX2_DEFAULT_FRAME_RATE = 24.0
+    
+    # Stream-DiffVSR settings
+    STREAM_DIFFVSR_ENABLED = True
+    STREAM_DIFFVSR_NUM_INFERENCE_STEPS = 4
+    STREAM_DIFFVSR_ENABLE_TENSORRT = False
+    
+    # Limits
+    MAX_IMAGE_SIZE_MB = 10
+    MAX_VIDEO_DURATION_SECONDS = 8
+
+
+# =============================================================================
+# Environment-based Settings (from .env)
+# =============================================================================
+
 class Settings(BaseSettings):
-    """Application settings loaded from environment variables."""
+    """Application settings loaded from environment variables.
+    
+    Only runtime/deployment settings are loaded from .env:
+    - mock_mode: Run with mock generators (no GPU needed)
+    - api_key: Authentication key
+    - log_level: Logging verbosity
+    - cors_allowed_origins: CORS configuration
+    """
 
     model_config = SettingsConfigDict(
         env_file=".env",
@@ -15,68 +103,192 @@ class Settings(BaseSettings):
         case_sensitive=False,
     )
 
-    # Mock Mode
+    # Runtime Settings (from .env)
     mock_mode: bool = True
-
-    # API Authentication
     api_key: str = ""
-
-    # ComfyUI Settings (future use)
-    comfy_host: str = "127.0.0.1"
-    comfy_port: int = 8188
-
-    # Limits
-    max_image_size_mb: int = 10
-    max_video_duration_seconds: int = 8
-
-    # Logging
     log_level: str = "INFO"
-
-    # CORS - comma-separated list of allowed origins
     cors_allowed_origins: str = "http://localhost:3000"
+    
+    # Model mode (default startup mode)
+    default_model_mode: Literal["image", "video"] = "image"
 
-    # Z-Image Settings
-    zimage_model_path: str = "models/z-image-turbo"
-    zimage_lora_path: str = "models/loras"
-    zimage_device: str = "cuda"
-    zimage_dtype: Literal["bfloat16", "float16"] = "bfloat16"
-    zimage_compile: bool = False  # torch.compile for faster inference after warmup
-    zimage_attention_backend: str = "_native_flash"  # flash, _flash_3, sdpa, _native_flash
-    zimage_dry_run: bool = False  # Test workflow without loading models
-
-    # LightX2V Settings (Qwen-Image-Edit-2511)
-    lightx2v_model_path: str = "models/qwen-image-edit-2511"
-    lightx2v_lora_path: str = "models/loras/qwen-image-edit-2511"
-    lightx2v_lora_filename: str = "Qwen-Image-Edit-2511-Lightning-8steps-V1.0-fp32.safetensors"
-    lightx2v_device: str = "cuda"
-    lightx2v_attn_mode: str = "flash_attn3"  # flash_attn2, flash_attn3, sage_attn2
-    lightx2v_infer_steps: int = 8  # 8-step with LORA, 40 for base
-    lightx2v_guidance_scale: float = 1.0  # CFG disabled with distill LORA
-    lightx2v_resize_mode: str = "adaptive"
-    lightx2v_dry_run: bool = False  # Test workflow without loading models
-    lightx2v_cpu_offload: bool = False  # Enable for lower VRAM usage
-    lightx2v_text_encoder_offload: bool = True  # Offload text encoder to CPU
-
-    # LTX-2 Video Generation Settings
-    ltx2_checkpoint_path: str = "models/ltx-2/ltx-2-19b-dev.safetensors"
-    ltx2_distilled_lora_path: str = "models/ltx-2/ltx-2-19b-distilled-lora-384.safetensors"
-    ltx2_spatial_upsampler_path: str = "models/ltx-2/ltx-2-spatial-upsampler-x2-1.0.safetensors"
-    ltx2_gemma_root: str = "models/ltx-2/gemma-3-12b-it-qat-q4_0-unquantized"
-    ltx2_device: str = "cuda"
-    ltx2_fp8_enabled: bool = False  # Enable FP8 for lower VRAM usage (~16GB instead of 24GB)
-    ltx2_dry_run: bool = False  # Test workflow without loading models
-    ltx2_num_inference_steps: int = 40  # Stage 1 denoising steps
-    ltx2_cfg_guidance_scale: float = 4.0  # CFG scale for stage 1
-    ltx2_default_frame_rate: float = 24.0  # Default FPS
-
+    # ==========================================================================
+    # Computed properties exposing hardcoded config
+    # ==========================================================================
+    
+    # --- Model Paths ---
+    @property
+    def zimage_model_path(self) -> str:
+        return ModelPaths.ZIMAGE_MODEL
+    
+    @property
+    def zimage_lora_path(self) -> str:
+        return ModelPaths.ZIMAGE_LORA
+    
+    @property
+    def lightx2v_model_path(self) -> str:
+        return ModelPaths.LIGHTX2V_MODEL
+    
+    @property
+    def lightx2v_lora_path(self) -> str:
+        return ModelPaths.LIGHTX2V_LORA
+    
+    @property
+    def lightx2v_lora_filename(self) -> str:
+        return ModelPaths.LIGHTX2V_LORA_FILE
+    
+    @property
+    def ltx2_checkpoint_path(self) -> str:
+        return ModelPaths.LTX2_CHECKPOINT
+    
+    @property
+    def ltx2_distilled_lora_path(self) -> str:
+        return ModelPaths.LTX2_DISTILLED_LORA
+    
+    @property
+    def ltx2_spatial_upsampler_path(self) -> str:
+        return ModelPaths.LTX2_SPATIAL_UPSAMPLER
+    
+    @property
+    def ltx2_gemma_root(self) -> str:
+        return ModelPaths.LTX2_GEMMA_ROOT
+    
+    @property
+    def stream_diffvsr_model_id(self) -> str:
+        return ModelPaths.STREAM_DIFFVSR_MODEL_ID
+    
+    # --- Device & Dtype ---
+    @property
+    def zimage_device(self) -> str:
+        return InferenceConfig.DEVICE
+    
+    @property
+    def zimage_dtype(self) -> Literal["bfloat16", "float16"]:
+        return InferenceConfig.DTYPE
+    
+    @property
+    def lightx2v_device(self) -> str:
+        return InferenceConfig.DEVICE
+    
+    @property
+    def ltx2_device(self) -> str:
+        return InferenceConfig.DEVICE
+    
+    @property
+    def stream_diffvsr_device(self) -> str:
+        return InferenceConfig.DEVICE
+    
+    # --- Z-Image ---
+    @property
+    def zimage_compile(self) -> bool:
+        return InferenceConfig.ZIMAGE_COMPILE
+    
+    @property
+    def zimage_attention_backend(self) -> str:
+        return InferenceConfig.ZIMAGE_ATTENTION_BACKEND
+    
+    @property
+    def zimage_dry_run(self) -> bool:
+        """In mock_mode, all generators run in dry-run mode."""
+        return self.mock_mode
+    
+    # --- LightX2V ---
+    @property
+    def lightx2v_attn_mode(self) -> str:
+        return InferenceConfig.LIGHTX2V_ATTN_MODE
+    
+    @property
+    def lightx2v_infer_steps(self) -> int:
+        return InferenceConfig.LIGHTX2V_INFER_STEPS
+    
+    @property
+    def lightx2v_guidance_scale(self) -> float:
+        return InferenceConfig.LIGHTX2V_GUIDANCE_SCALE
+    
+    @property
+    def lightx2v_resize_mode(self) -> str:
+        return InferenceConfig.LIGHTX2V_RESIZE_MODE
+    
+    @property
+    def lightx2v_cpu_offload(self) -> bool:
+        return InferenceConfig.LIGHTX2V_CPU_OFFLOAD
+    
+    @property
+    def lightx2v_text_encoder_offload(self) -> bool:
+        return InferenceConfig.LIGHTX2V_TEXT_ENCODER_OFFLOAD
+    
+    @property
+    def lightx2v_dry_run(self) -> bool:
+        """In mock_mode, all generators run in dry-run mode."""
+        return self.mock_mode
+    
+    # --- LTX-2 ---
+    @property
+    def ltx2_fp8_enabled(self) -> bool:
+        return InferenceConfig.LTX2_FP8_ENABLED
+    
+    @property
+    def ltx2_num_inference_steps(self) -> int:
+        return InferenceConfig.LTX2_NUM_INFERENCE_STEPS
+    
+    @property
+    def ltx2_cfg_guidance_scale(self) -> float:
+        return InferenceConfig.LTX2_CFG_GUIDANCE_SCALE
+    
+    @property
+    def ltx2_default_frame_rate(self) -> float:
+        return InferenceConfig.LTX2_DEFAULT_FRAME_RATE
+    
+    @property
+    def ltx2_dry_run(self) -> bool:
+        """In mock_mode, all generators run in dry-run mode."""
+        return self.mock_mode
+    
+    # --- Stream-DiffVSR ---
+    @property
+    def stream_diffvsr_enabled(self) -> bool:
+        return InferenceConfig.STREAM_DIFFVSR_ENABLED
+    
+    @property
+    def stream_diffvsr_num_inference_steps(self) -> int:
+        return InferenceConfig.STREAM_DIFFVSR_NUM_INFERENCE_STEPS
+    
+    @property
+    def stream_diffvsr_enable_tensorrt(self) -> bool:
+        return InferenceConfig.STREAM_DIFFVSR_ENABLE_TENSORRT
+    
+    @property
+    def stream_diffvsr_dry_run(self) -> bool:
+        """In mock_mode, all generators run in dry-run mode."""
+        return self.mock_mode
+    
+    # --- Limits ---
+    @property
+    def max_image_size_mb(self) -> int:
+        return InferenceConfig.MAX_IMAGE_SIZE_MB
+    
+    @property
+    def max_video_duration_seconds(self) -> int:
+        return InferenceConfig.MAX_VIDEO_DURATION_SECONDS
+    
     @property
     def max_image_size_bytes(self) -> int:
         """Get max image size in bytes."""
         return self.max_image_size_mb * 1024 * 1024
+    
+    # --- Concurrency ---
+    @property
+    def max_concurrent_image_generations(self) -> int:
+        """Max concurrent image generations (Z-Image + Qwen-Image-Edit combined)."""
+        return InferenceConfig.MAX_CONCURRENT_IMAGE_GENERATIONS
+    
+    @property
+    def max_concurrent_video_generations(self) -> int:
+        """Max concurrent video generations (LTX-2 + upscaling workflow)."""
+        return InferenceConfig.MAX_CONCURRENT_VIDEO_GENERATIONS
 
 
 @lru_cache
 def get_settings() -> Settings:
     """Get cached settings instance."""
     return Settings()
-

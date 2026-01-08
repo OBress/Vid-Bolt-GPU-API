@@ -14,7 +14,7 @@ from app import __version__
 from app.config import get_settings
 from app.exceptions import APIError
 from app.models.common import ErrorResponse
-from app.routers import health, image_generation, image_editing, video_generation, ltx2_generation
+from app.routers import health, image_generation, image_editing, video_generation, ltx2_generation, mode, system
 from app.utils.logging import setup_logging
 
 # Initialize settings
@@ -28,9 +28,7 @@ logger = logging.getLogger(__name__)
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     """Application lifespan handler."""
-    from pathlib import Path
-    
-    from app.dependencies import set_generator_instance
+    from app.dependencies import set_generator_instance, set_model_manager_instance
     from app.services.mock_generator import MockGenerator
 
     # Startup
@@ -39,70 +37,34 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         extra={
             "mock_mode": settings.mock_mode,
             "log_level": settings.log_level,
+            "default_mode": settings.default_model_mode,
         },
     )
 
-    # Initialize generator based on mode
+    # Initialize based on mode
     if settings.mock_mode:
+        # Mock mode: use MockGenerator for all requests
         logger.info("Running in MOCK MODE - no actual GPU processing")
         generator = MockGenerator(settings)
+        set_generator_instance(generator)
+        logger.info("Mock generator initialized successfully")
     else:
-        # Check for LTX-2 generator first (video generation with audio)
-        ltx2_checkpoint_path = Path(settings.ltx2_checkpoint_path)
+        # Production mode: use ModelManager for dynamic mode switching
+        from app.services.model_manager import ModelManager
         
-        use_ltx2 = (
-            settings.ltx2_dry_run or
-            ltx2_checkpoint_path.exists()
-        )
+        logger.info("Initializing ModelManager for dynamic mode switching...")
+        model_manager = ModelManager(settings)
+        set_model_manager_instance(model_manager)
         
-        if use_ltx2:
-            # Use LTX-2 for video generation
-            from app.services.ltx2_generator import LTX2Generator
-            
-            generator = LTX2Generator(settings)
-            
-            if settings.ltx2_dry_run:
-                logger.info("Running LTX-2 in DRY RUN MODE - workflow testing without models")
-            else:
-                logger.info("Loading LTX-2 models (this may take a moment)...")
+        # Load the default mode
+        if settings.default_model_mode == "image":
+            logger.info("Loading Image Mode (Z-Image + LightX2V)...")
+            await model_manager.switch_to_image_mode()
+        else:
+            logger.info("Loading Video Mode (LTX-2 + Stream-DiffVSR)...")
+            await model_manager.switch_to_video_mode()
         
-        # Check for LightX2V (image editing)
-        elif not use_ltx2:
-            lightx2v_model_path = Path(settings.lightx2v_model_path)
-            lightx2v_lora_path = Path(settings.lightx2v_lora_path) / settings.lightx2v_lora_filename
-            
-            use_lightx2v = (
-                settings.lightx2v_dry_run or 
-                (lightx2v_model_path.exists() and lightx2v_lora_path.exists())
-            )
-            
-            if use_lightx2v:
-                # Use LightX2V for image editing
-                from app.services.lightx2v_generator import LightX2VImageEditGenerator
-                
-                generator = LightX2VImageEditGenerator(settings)
-                
-                if settings.lightx2v_dry_run:
-                    logger.info("Running LightX2V in DRY RUN MODE - workflow testing without models")
-                else:
-                    logger.info("Loading LightX2V models (Qwen-Image-Edit-2511)...")
-            else:
-                # Fall back to Z-Image generator
-                from app.services.zimage_generator import ZImageGenerator
-
-                generator = ZImageGenerator(settings)
-
-                if settings.zimage_dry_run:
-                    logger.info("Running Z-Image in DRY RUN MODE - workflow testing without models")
-                else:
-                    logger.info("Loading Z-Image models (this may take a moment)...")
-
-        # Load models (or validate dry-run configuration)
-        generator.load_models()
-
-    # Set the global generator instance
-    set_generator_instance(generator)
-    logger.info("Generator initialized successfully")
+        logger.info(f"ModelManager initialized in {settings.default_model_mode} mode")
 
     yield
 
@@ -271,7 +233,10 @@ async def general_exception_handler(
 
 # Include routers
 app.include_router(health.router)
+app.include_router(mode.router)
+app.include_router(system.router)
 app.include_router(image_generation.router)
 app.include_router(image_editing.router)
 app.include_router(video_generation.router)
 app.include_router(ltx2_generation.router)
+

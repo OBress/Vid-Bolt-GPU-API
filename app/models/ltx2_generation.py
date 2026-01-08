@@ -4,7 +4,7 @@ This module contains Pydantic models for both I2V (image-to-video) generation
 and keyframe interpolation endpoints using the LTX-2 model.
 """
 
-from typing import Literal
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
@@ -101,6 +101,10 @@ class LTX2GenerateResponse(BaseModel):
     save_url: str = Field(..., description="The URL where the video was saved")
     duration_seconds: float = Field(..., description="Final video duration in seconds")
     has_audio: bool = Field(default=True, description="Whether the video contains audio")
+    upscale_info: dict[str, Any] | None = Field(
+        default=None,
+        description="Upscaling metadata if video was upscaled (720p→1080p)"
+    )
 
     model_config = {
         "json_schema_extra": {
@@ -110,7 +114,13 @@ class LTX2GenerateResponse(BaseModel):
                     "generation_time": 45.2,
                     "save_url": "https://example.com/upload/video.mp4",
                     "duration_seconds": 5.0,
-                    "has_audio": True
+                    "has_audio": True,
+                    "upscale_info": {
+                        "original_resolution": "1280x720",
+                        "upscaled_resolution": "1920x1080",
+                        "upscale_time_seconds": 8.5,
+                        "was_upscaled": True
+                    }
                 }
             ]
         }
@@ -204,6 +214,10 @@ class KeyframeInterpolateResponse(BaseModel):
     save_url: str = Field(..., description="The URL where the video was saved")
     duration_seconds: float = Field(..., description="Final video duration in seconds")
     has_audio: bool = Field(default=True, description="Whether the video contains audio")
+    upscale_info: dict[str, Any] | None = Field(
+        default=None,
+        description="Upscaling metadata if video was upscaled (720p→1080p)"
+    )
 
     model_config = {
         "json_schema_extra": {
@@ -213,7 +227,13 @@ class KeyframeInterpolateResponse(BaseModel):
                     "generation_time": 45.2,
                     "save_url": "https://example.com/upload/video.mp4",
                     "duration_seconds": 5.0,
-                    "has_audio": True
+                    "has_audio": True,
+                    "upscale_info": {
+                        "original_resolution": "1280x720",
+                        "upscaled_resolution": "1920x1080",
+                        "upscale_time_seconds": 8.5,
+                        "was_upscaled": True
+                    }
                 }
             ]
         }

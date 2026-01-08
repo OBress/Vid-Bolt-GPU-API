@@ -352,3 +352,56 @@ class ZImageGenerator:
             "current_lora": self._current_lora,
             "attention_backend": self.settings.zimage_attention_backend,
         }
+
+    @property
+    def _loaded(self) -> bool:
+        """Alias for is_loaded for ModelManager compatibility."""
+        return self.is_loaded
+
+    def unload_models(self) -> None:
+        """Unload models and free GPU memory.
+        
+        This is called by ModelManager when switching modes to release VRAM.
+        """
+        if not self.is_loaded:
+            logger.info("Z-Image models not loaded, nothing to unload")
+            return
+        
+        logger.info("Unloading Z-Image Turbo models...")
+        
+        if self.components is not None:
+            import gc
+            try:
+                import torch
+                
+                # Delete individual components
+                if hasattr(self.components, 'transformer') and self.components.transformer is not None:
+                    del self.components.transformer
+                if hasattr(self.components, 'vae') and self.components.vae is not None:
+                    del self.components.vae
+                if hasattr(self.components, 'text_encoder') and self.components.text_encoder is not None:
+                    del self.components.text_encoder
+                if hasattr(self.components, 'tokenizer') and self.components.tokenizer is not None:
+                    del self.components.tokenizer
+                if hasattr(self.components, 'scheduler') and self.components.scheduler is not None:
+                    del self.components.scheduler
+                
+                # Clear the components container
+                self.components = None
+                self._generate_func = None
+                self._current_lora = None
+                
+                # Force garbage collection and clear CUDA cache
+                gc.collect()
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
+                    torch.cuda.synchronize()
+                    
+            except ImportError:
+                # torch not available (shouldn't happen if models were loaded)
+                self.components = None
+                self._generate_func = None
+                gc.collect()
+        
+        self.is_loaded = False
+        logger.info("Z-Image Turbo models unloaded successfully")

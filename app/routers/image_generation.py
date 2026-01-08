@@ -5,7 +5,7 @@ import time
 
 from fastapi import APIRouter
 
-from app.dependencies import APIKeyDep, StorageDep, GeneratorDep
+from app.dependencies import APIKeyDep, StorageDep, GeneratorDep, ImageModeDep
 from app.models.common import ErrorResponse, get_dimensions
 from app.models.image_generation import ImageGenerateRequest, ImageGenerateResponse
 from app.services.mock_generator import ImageGenerationParams
@@ -24,6 +24,7 @@ router = APIRouter(
     responses={
         400: {"model": ErrorResponse, "description": "Validation error"},
         401: {"model": ErrorResponse, "description": "Authentication error"},
+        503: {"model": ErrorResponse, "description": "Image mode not active or system busy"},
         500: {"model": ErrorResponse, "description": "Generation or upload error"},
     },
     summary="Generate Image",
@@ -34,6 +35,7 @@ async def generate_image(
     api_key: APIKeyDep,
     storage: StorageDep,
     generator: GeneratorDep,
+    _mode_guard: ImageModeDep,
 ) -> ImageGenerateResponse:
     """Generate an image from a text prompt.
 

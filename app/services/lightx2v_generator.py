@@ -359,6 +359,47 @@ class LightX2VImageEditGenerator:
             "text_encoder_offload": self.settings.lightx2v_text_encoder_offload,
         }
 
+    @property
+    def _loaded(self) -> bool:
+        """Alias for is_loaded for ModelManager compatibility."""
+        return self.is_loaded
+
+    def unload_models(self) -> None:
+        """Unload models and free GPU memory.
+        
+        This is called by ModelManager when switching modes to release VRAM.
+        """
+        if not self.is_loaded:
+            logger.info("LightX2V models not loaded, nothing to unload")
+            return
+        
+        logger.info("Unloading LightX2V (Qwen-Image-Edit) models...")
+        
+        if self.components is not None:
+            import gc
+            try:
+                import torch
+                
+                # Delete the pipeline
+                if hasattr(self.components, 'pipeline') and self.components.pipeline is not None:
+                    del self.components.pipeline
+                
+                # Clear the components container
+                self.components = None
+                
+                # Force garbage collection and clear CUDA cache
+                gc.collect()
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
+                    torch.cuda.synchronize()
+                    
+            except ImportError:
+                self.components = None
+                gc.collect()
+        
+        self.is_loaded = False
+        logger.info("LightX2V models unloaded successfully")
+
     def __del__(self):
         """Cleanup temporary directory on deletion."""
         if self._temp_dir is not None:
