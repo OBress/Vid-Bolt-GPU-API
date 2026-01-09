@@ -313,21 +313,9 @@ class LTX2Generator(VideoGenerator):
             lambda: trim_video_to_duration(video_data, params.duration_seconds),
         )
 
-        # Center crop video to target dimensions if we used padded dimensions
-        if (padded_width, padded_height) != (target_width, target_height):
-            logger.info(
-                f"Cropping video from {padded_width}x{padded_height} to {target_width}x{target_height}",
-                extra={"job_id": params.job_id},
-            )
-            cropped_video = await loop.run_in_executor(
-                None,
-                lambda: center_crop_video(trimmed_video, target_width, target_height),
-            )
-        else:
-            cropped_video = trimmed_video
-
         # Apply video upscaling if upscaler is available and enabled
-        final_video = cropped_video
+        # Note: We upscale BEFORE cropping to keep 64-divisible dimensions for Stream-DiffVSR
+        upscaled_video = trimmed_video
         upscale_info: dict[str, Any] | None = None
 
         if (
@@ -338,18 +326,18 @@ class LTX2Generator(VideoGenerator):
             from app.services.video_upscaler import UpscaleParams
 
             logger.info(
-                f"Upscaling video from 720p to 1080p",
+                f"Upscaling video at {padded_width}x{padded_height}",
                 extra={"job_id": params.job_id},
             )
 
             upscale_params = UpscaleParams(
                 job_id=params.job_id,
-                video_data=cropped_video,
+                video_data=trimmed_video,
                 preserve_audio=True,
             )
 
             upscale_result = await self._upscaler.upscale_video(upscale_params)
-            final_video = upscale_result.video_data
+            upscaled_video = upscale_result.video_data
 
             upscale_info = {
                 "original_resolution": f"{upscale_result.original_width}x{upscale_result.original_height}",
@@ -367,10 +355,34 @@ class LTX2Generator(VideoGenerator):
                 },
             )
 
+        # Center crop AFTER upscaling to final target dimensions
+        # This keeps 64-divisible dimensions for Stream-DiffVSR, then crops to exact target
+        if (padded_width, padded_height) != (target_width, target_height):
+            # Calculate final dimensions after upscaling (2x scale)
+            if upscale_info and upscale_info.get("was_upscaled"):
+                final_target_w = target_width * 2
+                final_target_h = target_height * 2
+            else:
+                final_target_w = target_width
+                final_target_h = target_height
+            
+            logger.info(
+                f"Cropping video to {final_target_w}x{final_target_h}",
+                extra={"job_id": params.job_id},
+            )
+            final_video = await loop.run_in_executor(
+                None,
+                lambda: center_crop_video(upscaled_video, final_target_w, final_target_h),
+            )
+        else:
+            final_video = upscaled_video
+            final_target_w = target_width * 2 if (upscale_info and upscale_info.get("was_upscaled")) else target_width
+            final_target_h = target_height * 2 if (upscale_info and upscale_info.get("was_upscaled")) else target_height
+
         return LTX2VideoResult(
             video_data=final_video,
-            width=target_width,  # Use original target dimensions
-            height=target_height,
+            width=final_target_w,
+            height=final_target_h,
             duration_seconds=params.duration_seconds,
             frame_rate=params.frame_rate,
             has_audio=has_audio,
