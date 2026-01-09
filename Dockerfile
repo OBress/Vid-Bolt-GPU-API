@@ -78,6 +78,9 @@ RUN cat /tmp/requirements.txt | tr -d '\r' | \
 # Diffusers from source (for ZImagePipeline support)
 RUN pip install --no-cache-dir git+https://github.com/huggingface/diffusers
 
+# LightX2V dependencies (install before LightX2V since we use --no-deps)
+RUN pip install --no-cache-dir gguf einops loguru imageio imageio-ffmpeg decord || true
+
 # LightX2V (allow failure in case of issues)
 # Use --no-deps to prevent LightX2V from downgrading PyTorch
 RUN pip install --no-cache-dir --no-deps git+https://github.com/ModelTC/LightX2V.git || echo "LightX2V installation skipped"
