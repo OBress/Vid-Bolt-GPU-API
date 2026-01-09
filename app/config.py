@@ -61,7 +61,7 @@ class InferenceConfig:
     ZIMAGE_ATTENTION_BACKEND = "sdpa"
     
     # LightX2V settings
-    LIGHTX2V_ATTN_MODE = "flash_attn3"
+    LIGHTX2V_ATTN_MODE = "torch_sdpa"
     LIGHTX2V_INFER_STEPS = 8
     LIGHTX2V_GUIDANCE_SCALE = 1.0
     LIGHTX2V_RESIZE_MODE = "adaptive"

@@ -79,5 +79,11 @@ After both parts complete, you should see your GPU in both:
 
 ## Part 3: setup repos
 
-RUN THIS COMMAND IN THE REPO
+cd Vid-Bolt-GPU-API
 make setup-repos
+
+## Part 4: build & run
+
+docker compose build --no-cache
+docker compose up -d
+docker compose logs -f
