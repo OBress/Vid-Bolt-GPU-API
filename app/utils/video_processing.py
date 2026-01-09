@@ -126,3 +126,86 @@ def get_video_info(video_data: bytes) -> dict:
         return info
     finally:
         Path(temp_path).unlink(missing_ok=True)
+
+
+def center_crop_video(
+    video_data: bytes,
+    target_width: int,
+    target_height: int,
+    preserve_audio: bool = True,
+) -> bytes:
+    """Center crop video to target dimensions.
+    
+    Used after generating video at 64-divisible padded dimensions to
+    crop back to the true target resolution (e.g., 1280x768 -> 1280x720).
+    
+    Args:
+        video_data: Raw video bytes (MP4 format expected)
+        target_width: Target width after cropping
+        target_height: Target height after cropping
+        preserve_audio: Whether to preserve audio
+        
+    Returns:
+        Cropped video as bytes
+    """
+    try:
+        from moviepy import VideoFileClip
+    except ImportError:
+        from moviepy.editor import VideoFileClip
+    
+    with tempfile.NamedTemporaryFile(suffix=".mp4", delete=False) as input_file:
+        input_file.write(video_data)
+        input_path = input_file.name
+    
+    try:
+        clip = VideoFileClip(input_path)
+        orig_w, orig_h = clip.w, clip.h
+        
+        if (orig_w, orig_h) == (target_width, target_height):
+            # No cropping needed
+            clip.close()
+            return video_data
+        
+        # Calculate crop coordinates (center crop)
+        x_center = orig_w // 2
+        y_center = orig_h // 2
+        x1 = x_center - target_width // 2
+        y1 = y_center - target_height // 2
+        x2 = x1 + target_width
+        y2 = y1 + target_height
+        
+        # moviepy 2.x uses crop(), older versions use cropped()
+        try:
+            cropped_clip = clip.cropped(x1=x1, y1=y1, x2=x2, y2=y2)
+        except AttributeError:
+            cropped_clip = clip.crop(x1=x1, y1=y1, x2=x2, y2=y2)
+        
+        with tempfile.NamedTemporaryFile(suffix=".mp4", delete=False) as output_file:
+            output_path = output_file.name
+        
+        has_audio = clip.audio is not None and preserve_audio
+        cropped_clip.write_videofile(
+            output_path,
+            codec="libx264",
+            audio_codec="aac" if has_audio else None,
+            audio=has_audio,
+            verbose=False,
+            logger=None,
+        )
+        
+        with open(output_path, "rb") as f:
+            cropped_data = f.read()
+        
+        logger.info(
+            f"Center cropped video from {orig_w}x{orig_h} to {target_width}x{target_height}"
+        )
+        
+        clip.close()
+        cropped_clip.close()
+        Path(output_path).unlink(missing_ok=True)
+        
+        return cropped_data
+        
+    finally:
+        Path(input_path).unlink(missing_ok=True)
+

@@ -265,6 +265,18 @@ class LTX2Generator(VideoGenerator):
         # Determine seed
         seed = params.seed if params.seed is not None else random.randint(0, 2**32 - 1)
 
+        # Store original target dimensions (for final crop)
+        target_width = params.width
+        target_height = params.height
+        
+        # Calculate 64-divisible padded dimensions for two-stage pipeline
+        padded_width = ((target_width + 63) // 64) * 64
+        padded_height = ((target_height + 63) // 64) * 64
+        
+        # Update params to use padded dimensions for generation
+        params.width = padded_width
+        params.height = padded_height
+
         # Calculate frames needed for the requested duration
         requested_frames = math.ceil(params.duration_seconds * params.frame_rate) + 1
         num_frames = round_up_to_valid_frames(requested_frames)
@@ -273,8 +285,8 @@ class LTX2Generator(VideoGenerator):
             f"Generating keyframe interpolation video",
             extra={
                 "job_id": params.job_id,
-                "width": params.width,
-                "height": params.height,
+                "target_size": f"{target_width}x{target_height}",
+                "padded_size": f"{padded_width}x{padded_height}",
                 "requested_duration": params.duration_seconds,
                 "num_frames": num_frames,
                 "frame_rate": params.frame_rate,
@@ -295,14 +307,27 @@ class LTX2Generator(VideoGenerator):
         )
 
         # Trim video to exact requested duration
-        from app.utils.video_processing import trim_video_to_duration
+        from app.utils.video_processing import trim_video_to_duration, center_crop_video
         trimmed_video = await loop.run_in_executor(
             None,
             lambda: trim_video_to_duration(video_data, params.duration_seconds),
         )
 
+        # Center crop video to target dimensions if we used padded dimensions
+        if (padded_width, padded_height) != (target_width, target_height):
+            logger.info(
+                f"Cropping video from {padded_width}x{padded_height} to {target_width}x{target_height}",
+                extra={"job_id": params.job_id},
+            )
+            cropped_video = await loop.run_in_executor(
+                None,
+                lambda: center_crop_video(trimmed_video, target_width, target_height),
+            )
+        else:
+            cropped_video = trimmed_video
+
         # Apply video upscaling if upscaler is available and enabled
-        final_video = trimmed_video
+        final_video = cropped_video
         upscale_info: dict[str, Any] | None = None
 
         if (
@@ -319,7 +344,7 @@ class LTX2Generator(VideoGenerator):
 
             upscale_params = UpscaleParams(
                 job_id=params.job_id,
-                video_data=trimmed_video,
+                video_data=cropped_video,
                 preserve_audio=True,
             )
 
@@ -344,8 +369,8 @@ class LTX2Generator(VideoGenerator):
 
         return LTX2VideoResult(
             video_data=final_video,
-            width=params.width,
-            height=params.height,
+            width=target_width,  # Use original target dimensions
+            height=target_height,
             duration_seconds=params.duration_seconds,
             frame_rate=params.frame_rate,
             has_audio=has_audio,
@@ -373,11 +398,36 @@ class LTX2Generator(VideoGenerator):
         assert self.components is not None
 
         # Save keyframe images to temp files
+        # Preprocess each keyframe: center crop to target aspect ratio, then resize
         images: list[tuple[str, int, float]] = []
         for idx, (image_data, frame_idx, strength) in enumerate(params.keyframes):
             input_image = Image.open(io.BytesIO(image_data))
+            orig_w, orig_h = input_image.size
             
-            # Resize if needed to match target dimensions
+            # Center crop to match target aspect ratio (avoids stretching)
+            target_aspect = params.width / params.height
+            orig_aspect = orig_w / orig_h
+            
+            if abs(orig_aspect - target_aspect) > 0.01:  # Aspect ratios differ
+                if orig_aspect > target_aspect:
+                    # Image is wider, crop width
+                    new_w = int(orig_h * target_aspect)
+                    new_h = orig_h
+                    left = (orig_w - new_w) // 2
+                    top = 0
+                else:
+                    # Image is taller, crop height
+                    new_w = orig_w
+                    new_h = int(orig_w / target_aspect)
+                    left = 0
+                    top = (orig_h - new_h) // 2
+                
+                input_image = input_image.crop((left, top, left + new_w, top + new_h))
+                logger.info(
+                    f"Center cropped keyframe {idx} from {orig_w}x{orig_h} to {new_w}x{new_h}"
+                )
+            
+            # Resize to target dimensions (now with correct aspect ratio)
             if input_image.size != (params.width, params.height):
                 input_image = input_image.resize(
                     (params.width, params.height),
