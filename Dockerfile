@@ -79,7 +79,8 @@ RUN cat /tmp/requirements.txt | tr -d '\r' | \
 RUN pip install --no-cache-dir git+https://github.com/huggingface/diffusers
 
 # LightX2V (allow failure in case of issues)
-RUN pip install --no-cache-dir git+https://github.com/ModelTC/LightX2V.git || echo "LightX2V installation skipped"
+# Use --no-deps to prevent LightX2V from downgrading PyTorch
+RUN pip install --no-cache-dir --no-deps git+https://github.com/ModelTC/LightX2V.git || echo "LightX2V installation skipped"
 
 # =============================================================================
 # Copy Application Code
@@ -99,6 +100,20 @@ COPY Z-Image /app/Z-Image
 # Copy main application
 COPY app /app/app
 COPY .env.example /app/.env.example
+
+# =============================================================================
+# Final PyTorch Version Lock
+# Reinstall correct PyTorch/xformers after all other packages to fix any downgrades
+# =============================================================================
+RUN pip install --no-cache-dir --force-reinstall \
+    torch==2.9.1 \
+    torchvision==0.24.1 \
+    torchaudio==2.9.1 \
+    --index-url https://download.pytorch.org/whl/cu128
+
+# Reinstall xformers to match PyTorch 2.9.1
+RUN pip uninstall -y xformers || true \
+    && pip install --no-cache-dir xformers --index-url https://download.pytorch.org/whl/cu128
 
 # =============================================================================
 # Environment Configuration
