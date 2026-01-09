@@ -1,4 +1,9 @@
-.PHONY: install install-dev run test lint format clean
+.PHONY: install install-dev run test lint format clean setup-repos
+
+# Setup external repositories
+setup-repos:
+	bash scripts/setup_repos.sh
+
 
 # Install production dependencies
 install:
