@@ -21,7 +21,7 @@ models/
 ├── ltx-2/                        # LTX-2 (video generation with audio)
 │   ├── ltx-2-19b-dev.safetensors # Main checkpoint (~20GB)
 │   ├── ltx-2-19b-distilled-lora-384.safetensors  # Distilled LoRA
-│   ├── ltx-2-spatial-upsampler-x2-1.0.safetensors # Spatial upsampler
+│   ├── ltx-2-spatial-upscaler-x2-1.0.safetensors # Spatial upsampler
 │   └── gemma-3-12b-it-qat-q4_0-unquantized/      # Gemma text encoder
 └── loras/
     ├── z-image-turbo/            # LoRAs for Z-Image
@@ -148,7 +148,7 @@ huggingface-cli download Lightricks/LTX-2 ltx-2-19b-distilled-lora-384.safetenso
 ### Step 4: Download Spatial Upsampler
 
 ```bash
-huggingface-cli download Lightricks/LTX-2 ltx-2-spatial-upsampler-x2-1.0.safetensors \
+huggingface-cli download Lightricks/LTX-2 ltx-2-spatial-upscaler-x2-1.0.safetensors \
     --local-dir models/ltx-2 \
     --local-dir-use-symlinks False
 ```
@@ -169,7 +169,7 @@ ls -la models/ltx-2/
 # Expected:
 #   ltx-2-19b-dev.safetensors
 #   ltx-2-19b-distilled-lora-384.safetensors
-#   ltx-2-spatial-upsampler-x2-1.0.safetensors
+#   ltx-2-spatial-upscaler-x2-1.0.safetensors
 #   gemma-3-12b-it-qat-q4_0-unquantized/
 ```
 

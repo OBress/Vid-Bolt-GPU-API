@@ -321,7 +321,7 @@ huggingface-cli download lightx2v/Qwen-Image-Edit-2511-Lightning --local-dir mod
 # LTX-2 (~40GB total)
 huggingface-cli download Lightricks/LTX-2 ltx-2-19b-dev.safetensors --local-dir models/ltx-2
 huggingface-cli download Lightricks/LTX-2 ltx-2-19b-distilled-lora-384.safetensors --local-dir models/ltx-2
-huggingface-cli download Lightricks/LTX-2 ltx-2-spatial-upsampler-x2-1.0.safetensors --local-dir models/ltx-2
+huggingface-cli download Lightricks/LTX-2 ltx-2-spatial-upscaler-x2-1.0.safetensors --local-dir models/ltx-2
 huggingface-cli download google/gemma-3-12b-it-qat-q4_0-unquantized --local-dir models/ltx-2/gemma-3-12b-it-qat-q4_0-unquantized
 
 # Stream-DiffVSR (auto-downloaded at runtime)

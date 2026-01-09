@@ -131,7 +131,7 @@ class LTX2Generator(VideoGenerator):
             raise FileNotFoundError(
                 f"LTX-2 spatial upsampler not found at {spatial_upsampler_path.absolute()}. "
                 f"Download with: huggingface-cli download Lightricks/LTX-2 "
-                f"ltx-2-spatial-upsampler-x2-1.0.safetensors --local-dir {spatial_upsampler_path.parent}"
+                f"ltx-2-spatial-upscaler-x2-1.0.safetensors --local-dir {spatial_upsampler_path.parent}"
             )
 
         gemma_root = Path(self.settings.ltx2_gemma_root)

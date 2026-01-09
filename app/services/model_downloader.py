@@ -98,7 +98,7 @@ class ModelDownloader:
             "repo": "Lightricks/LTX-2",
             "local_dir": "models/ltx-2",
             "type": "file",
-            "filename": "ltx-2-spatial-upsampler-x2-1.0.safetensors",
+            "filename": "ltx-2-spatial-upscaler-x2-1.0.safetensors",
         },
         {
             "name": "gemma-text-encoder",

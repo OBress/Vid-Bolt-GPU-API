@@ -37,7 +37,7 @@ class ModelPaths:
     # LTX-2 (video generation)
     LTX2_CHECKPOINT = "models/ltx-2/ltx-2-19b-dev.safetensors"
     LTX2_DISTILLED_LORA = "models/ltx-2/ltx-2-19b-distilled-lora-384.safetensors"
-    LTX2_SPATIAL_UPSAMPLER = "models/ltx-2/ltx-2-spatial-upsampler-x2-1.0.safetensors"
+    LTX2_SPATIAL_UPSAMPLER = "models/ltx-2/ltx-2-spatial-upscaler-x2-1.0.safetensors"
     LTX2_GEMMA_ROOT = "models/ltx-2/gemma-3-12b-it-qat-q4_0-unquantized"
     
     # Stream-DiffVSR (video upscaling)
