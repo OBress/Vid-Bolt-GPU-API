@@ -1,5 +1,5 @@
 """Vid-Bolt GPU API - FastAPI application."""
-
+import asyncio
 import logging
 from contextlib import asynccontextmanager
 from typing import AsyncGenerator
