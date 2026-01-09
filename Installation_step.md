@@ -2,13 +2,9 @@
 
 # Ubuntu 22.04 LTS | RTX PRO 6000 / RTX 50-series
 
-# ================================================
+# ===============================================
 
-## Prerequisites
-
-git clone https://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@github.com/OBress/Vid-Bolt-GPU-API.git
-
-## Part 2: Install NVIDIA Driver, toolkit, & Docker
+## Part 1: Install NVIDIA Driver, toolkit, & Docker
 
 ```bash
 #!/bin/bash
@@ -77,10 +73,15 @@ After both parts complete, you should see your GPU in both:
 - `nvidia-smi` (host)
 - `docker run --rm --gpus all nvidia/cuda:12.8.0-base-ubuntu22.04 nvidia-smi` (container)
 
-## Part 3: setup repos
+## Part 3: setup repos and env
+
+git clone https://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@github.com/OBress/Vid-Bolt-GPU-API.git
 
 cd Vid-Bolt-GPU-API
 make setup-repos
+
+cp .env.example .env
+nano .env
 
 ## Part 4: build & run
 
