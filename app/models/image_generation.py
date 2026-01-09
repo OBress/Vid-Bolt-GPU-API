@@ -29,13 +29,13 @@ class ImageGenerateRequest(BaseModel):
         default=None,
         description="Custom width in pixels",
         ge=256,
-        le=1536,
+        le=2048,
     )
     height: Optional[int] = Field(
         default=None,
         description="Custom height in pixels",
         ge=256,
-        le=1536,
+        le=2048,
     )
     num_inference_steps: int = Field(
         20,

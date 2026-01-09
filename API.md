@@ -241,6 +241,8 @@ Generate an image from a text prompt.
 | `job_id` | string | ✅ | Unique job identifier | - |
 | `prompt` | string | ✅ | Text description (max 2000 chars) | - |
 | `aspect_ratio` | string | ❌ | `16:9`, `9:16`, `1:1`, `4:3`, `3:4` | `16:9` |
+| `width` | integer | ❌ | Custom width (256-2048) | `null` |
+| `height` | integer | ❌ | Custom height (256-2048) | `null` |
 | `seed` | integer | ❌ | Random seed for reproducibility | random |
 | `num_inference_steps` | integer | ❌ | Diffusion steps (1-50) | `20` |
 | `save_url` | string | ✅ | Presigned PUT URL for output | - |
