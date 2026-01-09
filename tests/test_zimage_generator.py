@@ -91,7 +91,7 @@ class TestZImageGenerator:
         assert status["device"] == "cuda"
         assert status["dtype"] == "bfloat16"
         assert status["current_lora"] is None
-        assert status["attention_backend"] == "_native_flash"
+        assert status["attention_backend"] == "sdpa"
 
     @pytest.mark.asyncio
     async def test_generate_image_dry_run(self, settings):

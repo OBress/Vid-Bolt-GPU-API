@@ -96,3 +96,33 @@ class StatusResponse(HealthResponse):
         }
     }
 
+
+class ReadinessResponse(BaseModel):
+    """Readiness check response for VM provisioning.
+    
+    Returns whether the API is fully ready to accept generation requests.
+    Used by external orchestrators to know when VM has finished startup.
+    """
+
+    ready: bool = Field(..., description="Whether API is ready for requests")
+    status: str = Field(..., description="Current status description")
+    version: str = Field(..., description="API version")
+    mock_mode: bool = Field(..., description="Whether mock mode is enabled")
+    current_mode: str | None = Field(None, description="Current model mode (image/video)")
+    models_loaded: bool = Field(..., description="Whether models are loaded")
+
+    model_config = {
+        "json_schema_extra": {
+            "examples": [
+                {
+                    "ready": True,
+                    "status": "ready",
+                    "version": "0.1.0",
+                    "mock_mode": False,
+                    "current_mode": "image",
+                    "models_loaded": True,
+                }
+            ]
+        }
+    }
+

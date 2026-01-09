@@ -1,20 +1,17 @@
-"""Z-Image Turbo Generation Service.
+"""Z-Image Turbo Generation Service using Diffusers.
 
 This module provides the ZImageGenerator service for generating images using
-the Z-Image-Turbo model. It supports:
-- Model loading on startup
+the Z-Image-Turbo model via Hugging Face Diffusers. It supports:
+- Model loading on startup via ZImagePipeline
+- Native Diffusers LoRA loading/unloading
 - Async wrapper for synchronous PyTorch inference
-- LoRA loading/unloading
 - Dry-run mode for testing without models
 """
 
 import asyncio
 import io
 import logging
-import os
 import random
-import sys
-from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, Optional
 
@@ -27,26 +24,16 @@ from app.models.internal import ImageGenerationParams, ImageGenerationResult
 logger = logging.getLogger(__name__)
 
 
-@dataclass
-class ZImageComponents:
-    """Container for loaded Z-Image model components."""
-
-    transformer: Any
-    vae: Any
-    text_encoder: Any
-    tokenizer: Any
-    scheduler: Any
-
-
 class ZImageGenerator(ImageGenerator):
-    """Z-Image Turbo image generation service.
+    """Z-Image Turbo image generation service using Diffusers.
     
-    This service handles loading the Z-Image model components and generating
-    images from text prompts. Models are loaded on startup when MOCK_MODE=false.
+    This service uses the official ZImagePipeline from Diffusers for cleaner
+    LoRA handling and better maintainability. Models are loaded on startup
+    when MOCK_MODE=false.
     
     Attributes:
         settings: Application settings
-        components: Loaded model components (None if dry_run or not loaded)
+        pipeline: ZImagePipeline instance (None if dry_run or not loaded)
         is_loaded: Whether models are loaded
         dry_run: Whether running in dry-run mode (workflow testing without models)
     """
@@ -58,15 +45,14 @@ class ZImageGenerator(ImageGenerator):
             settings: Application settings containing model paths and configuration
         """
         self.settings = settings
-        self.components: Optional[ZImageComponents] = None
+        self.pipeline: Optional[Any] = None  # ZImagePipeline
         self.is_loaded = False
         self.dry_run = settings.zimage_dry_run
-        self._generate_func: Optional[callable] = None
         self._current_lora: Optional[str] = None
         self._lora_scale: Optional[float] = None
 
     def load_models(self) -> None:
-        """Load Z-Image model components.
+        """Load Z-Image model via ZImagePipeline.
         
         This should be called during application startup when MOCK_MODE=false.
         If dry_run is True, this will skip actual model loading and log the
@@ -85,10 +71,11 @@ class ZImageGenerator(ImageGenerator):
 
         try:
             import torch
+            from diffusers import ZImagePipeline
         except ImportError as e:
             raise ImportError(
-                "PyTorch is required for Z-Image generation. "
-                "Install with: pip install torch"
+                "PyTorch and Diffusers are required for Z-Image generation. "
+                "Install with: pip install torch diffusers>=0.33.0"
             ) from e
 
         model_path = Path(self.settings.zimage_model_path)
@@ -99,61 +86,35 @@ class ZImageGenerator(ImageGenerator):
                 f"--local-dir {model_path}"
             )
 
-        # Check for essential files
-        transformer_dir = model_path / "transformer"
-        if not transformer_dir.exists():
-            raise FileNotFoundError(
-                f"Transformer weights not found at {transformer_dir}. "
-                f"Model may not be fully downloaded."
-            )
-
         logger.info(f"Loading Z-Image models from {model_path}")
-
-        # Set up the Z-Image source path
-        zimage_src_path = Path(__file__).parent.parent.parent.parent / "Z-Image" / "src"
-        if zimage_src_path.exists():
-            sys.path.insert(0, str(zimage_src_path))
-            logger.info(f"Added Z-Image source to path: {zimage_src_path}")
-        else:
-            logger.warning(f"Z-Image source not found at {zimage_src_path}")
-
-        # Import Z-Image utilities
-        try:
-            from utils import load_from_local_dir, set_attention_backend
-            from zimage import generate
-        except ImportError as e:
-            raise ImportError(
-                f"Failed to import Z-Image modules. Ensure Z-Image repo is cloned "
-                f"at the project root level. Error: {e}"
-            ) from e
 
         # Determine dtype
         dtype = torch.bfloat16 if self.settings.zimage_dtype == "bfloat16" else torch.float16
 
-        # Load model components
+        # Load via ZImagePipeline
         logger.info(f"Loading with dtype={dtype}, device={self.settings.zimage_device}")
-        components_dict = load_from_local_dir(
-            model_dir=str(model_path),
-            device=self.settings.zimage_device,
-            dtype=dtype,
-            verbose=True,
-            compile=self.settings.zimage_compile,
-        )
+        self.pipeline = ZImagePipeline.from_pretrained(
+            str(model_path),
+            torch_dtype=dtype,
+            low_cpu_mem_usage=True,
+        ).to(self.settings.zimage_device)
 
-        # Set attention backend
-        set_attention_backend(self.settings.zimage_attention_backend)
-        logger.info(f"Attention backend set to: {self.settings.zimage_attention_backend}")
+        # Set attention backend if specified
+        # Diffusers uses SDPA by default; options: "sdpa", "flash", "_flash_3"
+        if self.settings.zimage_attention_backend and self.settings.zimage_attention_backend != "sdpa":
+            try:
+                self.pipeline.transformer.set_attention_backend(self.settings.zimage_attention_backend)
+                logger.info(f"Attention backend set to: {self.settings.zimage_attention_backend}")
+            except Exception as e:
+                logger.warning(f"Failed to set attention backend: {e}")
 
-        self.components = ZImageComponents(
-            transformer=components_dict["transformer"],
-            vae=components_dict["vae"],
-            text_encoder=components_dict["text_encoder"],
-            tokenizer=components_dict["tokenizer"],
-            scheduler=components_dict["scheduler"],
-        )
-        self._generate_func = generate
+        # Optionally compile for faster inference
+        if self.settings.zimage_compile:
+            logger.info("Compiling transformer for faster inference...")
+            self.pipeline.transformer = torch.compile(self.pipeline.transformer)
+
         self.is_loaded = True
-        logger.info("Z-Image models loaded successfully")
+        logger.info("Z-Image models loaded successfully via ZImagePipeline")
 
     async def generate_image(self, params: ImageGenerationParams) -> ImageGenerationResult:
         """Generate an image from a text prompt.
@@ -182,7 +143,6 @@ class ZImageGenerator(ImageGenerator):
                 "job_id": params.job_id,
                 "width": params.width,
                 "height": params.height,
-                "seed": seed,
                 "seed": seed,
                 "lora_name": params.lora_name,
                 "dry_run": self.dry_run,
@@ -246,23 +206,18 @@ class ZImageGenerator(ImageGenerator):
             },
         )
 
-        # Generate images
-        images = self._generate_func(
+        # Generate image using ZImagePipeline
+        output = self.pipeline(
             prompt=params.prompt,
-            transformer=self.components.transformer,
-            vae=self.components.vae,
-            text_encoder=self.components.text_encoder,
-            tokenizer=self.components.tokenizer,
-            scheduler=self.components.scheduler,
             height=gen_height,
             width=gen_width,
             num_inference_steps=params.num_inference_steps or 8,
             guidance_scale=0.0,  # Z-Image-Turbo uses 0 guidance
             generator=generator,
         )
+        image = output.images[0]
 
         # Crop back to target dimensions if needed
-        image = images[0]
         if gen_width != target_width or gen_height != target_height:
             left = (gen_width - target_width) // 2
             top = (gen_height - target_height) // 2
@@ -336,11 +291,7 @@ class ZImageGenerator(ImageGenerator):
         )
 
     async def load_lora(self, lora_name: str, weight: float = 1.0) -> None:
-        """Load a LoRA adapter by merging weights into the transformer.
-        
-        This implementation loads LoRA weights from a safetensors file and
-        merges them into the transformer model. Z-Image uses a Flux-based
-        architecture, so we look for standard LoRA key patterns.
+        """Load a LoRA adapter using Diffusers native method.
         
         Args:
             lora_name: Name of the LoRA file (without .safetensors extension)
@@ -363,178 +314,26 @@ class ZImageGenerator(ImageGenerator):
         logger.info(f"Loading LoRA '{lora_name}' with weight {weight} from {lora_path}")
         
         try:
-            from safetensors.torch import load_file
-            import torch
+            # Use Diffusers native LoRA loading - just 1 line!
+            self.pipeline.load_lora_weights(str(lora_path))
             
-            # Load LoRA weights from safetensors
-            lora_weights = load_file(str(lora_path))
-            
-            if not lora_weights:
-                raise RuntimeError(f"No weights found in LoRA file: {lora_path}")
-            
-            logger.info(f"Loaded LoRA with {len(lora_weights)} weight tensors")
-            
-            # Apply LoRA weights to transformer
-            applied_count = self._apply_lora_to_transformer(lora_weights, weight)
-            
-            if applied_count == 0:
-                logger.warning(
-                    f"No LoRA weights were applied. The LoRA format may be incompatible "
-                    f"with Z-Image. Found keys: {list(lora_weights.keys())[:5]}..."
-                )
-            else:
-                logger.info(f"Successfully applied LoRA to {applied_count} layer pairs")
+            # Set adapter scale if not 1.0
+            if weight != 1.0:
+                self.pipeline.set_adapters(["default"], adapter_weights=[weight])
             
             self._current_lora = lora_name
             self._lora_scale = weight
-            self._lora_applied_layers: list[str] = []  # Track for potential unmerge
+            logger.info(f"Successfully loaded LoRA '{lora_name}'")
             
-        except ImportError as e:
-            raise RuntimeError(
-                f"safetensors is required for LoRA loading. Install with: pip install safetensors"
-            ) from e
         except Exception as e:
             logger.error(f"Failed to load LoRA '{lora_name}': {e}")
             raise RuntimeError(f"Failed to load LoRA: {e}") from e
 
-    def _apply_lora_to_transformer(self, lora_weights: dict, scale: float) -> int:
-        """Apply LoRA weights to the transformer model.
-        
-        Standard LoRA format uses low-rank decomposition: W' = W + scale * (B @ A)
-        Keys typically follow patterns like:
-        - "transformer.blocks.0.attn.to_q.lora_A.weight"
-        - "transformer.blocks.0.attn.to_q.lora_B.weight"
-        
-        Args:
-            lora_weights: Dictionary of LoRA weight tensors
-            scale: Scale factor for the LoRA weights
-            
-        Returns:
-            Number of layer pairs successfully applied
-        """
-        import torch
-        
-        if self.components is None or self.components.transformer is None:
-            raise RuntimeError("Transformer not loaded")
-        
-        applied_count = 0
-        processed_keys: set[str] = set()
-        
-        # Find all lora_A keys and match with lora_B
-        for key in lora_weights.keys():
-            if key in processed_keys:
-                continue
-                
-            # Handle different LoRA key patterns
-            if ".lora_A" in key or ".lora_down" in key:
-                # Determine matching lora_B key
-                if ".lora_A" in key:
-                    lora_a_key = key
-                    lora_b_key = key.replace(".lora_A", ".lora_B")
-                    base_key = key.replace(".lora_A.weight", "").replace(".lora_A", "")
-                else:
-                    lora_a_key = key
-                    lora_b_key = key.replace(".lora_down", ".lora_up")
-                    base_key = key.replace(".lora_down.weight", "").replace(".lora_down", "")
-                
-                if lora_b_key not in lora_weights:
-                    logger.debug(f"Skipping {lora_a_key}: no matching B weight found")
-                    continue
-                
-                lora_a = lora_weights[lora_a_key]
-                lora_b = lora_weights[lora_b_key]
-                
-                # Find target layer in transformer
-                target_layer = self._find_layer_by_key(base_key)
-                
-                if target_layer is not None and hasattr(target_layer, 'weight'):
-                    try:
-                        # Compute delta: B @ A (low-rank update)
-                        # lora_a shape: (rank, in_features) or (in_features, rank)
-                        # lora_b shape: (out_features, rank) or (rank, out_features)
-                        
-                        # Handle different dimension orderings
-                        if lora_a.dim() == 2 and lora_b.dim() == 2:
-                            if lora_b.shape[1] == lora_a.shape[0]:
-                                # B @ A format
-                                delta = (lora_b @ lora_a) * scale
-                            elif lora_a.shape[1] == lora_b.shape[0]:
-                                # A @ B format (transposed)
-                                delta = (lora_a @ lora_b).T * scale
-                            else:
-                                logger.debug(f"Incompatible shapes for {base_key}: A={lora_a.shape}, B={lora_b.shape}")
-                                continue
-                            
-                            # Ensure delta matches target shape
-                            if delta.shape == target_layer.weight.shape:
-                                target_layer.weight.data += delta.to(
-                                    device=target_layer.weight.device,
-                                    dtype=target_layer.weight.dtype
-                                )
-                                applied_count += 1
-                                processed_keys.add(lora_a_key)
-                                processed_keys.add(lora_b_key)
-                            else:
-                                logger.debug(
-                                    f"Shape mismatch for {base_key}: "
-                                    f"delta={delta.shape}, target={target_layer.weight.shape}"
-                                )
-                        else:
-                            logger.debug(f"Unexpected tensor dimensions for {base_key}")
-                            
-                    except Exception as e:
-                        logger.debug(f"Failed to apply LoRA to {base_key}: {e}")
-                else:
-                    logger.debug(f"Layer not found for key: {base_key}")
-        
-        return applied_count
-
-    def _find_layer_by_key(self, key: str) -> Any:
-        """Find a layer in the transformer by its key path.
-        
-        Args:
-            key: Dot-separated path to the layer (e.g., "blocks.0.attn.to_q")
-            
-        Returns:
-            The layer module if found, None otherwise
-        """
-        # Clean up the key - remove common prefixes
-        clean_key = key
-        for prefix in ["transformer.", "model.", "lora_unet_", "lora_te_"]:
-            if clean_key.startswith(prefix):
-                clean_key = clean_key[len(prefix):]
-        
-        # Also handle diffusers-style keys with underscores instead of dots
-        clean_key = clean_key.replace("_", ".")
-        
-        try:
-            obj = self.components.transformer
-            for part in clean_key.split('.'):
-                if part.isdigit():
-                    obj = obj[int(part)]
-                elif hasattr(obj, part):
-                    obj = getattr(obj, part)
-                elif hasattr(obj, 'named_modules'):
-                    # Try to find in named modules
-                    found = False
-                    for name, module in obj.named_modules():
-                        if name == part or name.endswith('.' + part):
-                            obj = module
-                            found = True
-                            break
-                    if not found:
-                        return None
-                else:
-                    return None
-            return obj
-        except (AttributeError, IndexError, KeyError, TypeError):
-            return None
-
     async def unload_lora(self) -> None:
-        """Unload the current LoRA adapter.
+        """Unload the current LoRA adapter using Diffusers native method.
         
-        Since LoRA weights are merged into the model, unloading requires
-        reloading the base model weights. This ensures a clean state.
+        Unlike the previous implementation, this does NOT require reloading
+        the entire model - Diffusers handles this cleanly.
         """
         if self._current_lora is None:
             return
@@ -545,22 +344,16 @@ class ZImageGenerator(ImageGenerator):
             self._lora_scale = None
             return
         
-        logger.info(f"Unloading LoRA '{self._current_lora}' by reloading base model")
-        
-        # Since we merged LoRA into weights, we need to reload base model
-        # to get clean weights. This is the safest approach.
-        old_is_loaded = self.is_loaded
+        logger.info(f"Unloading LoRA '{self._current_lora}'")
         
         try:
-            self.unload_models()
+            # Diffusers native unload - no model reload needed!
+            self.pipeline.unload_lora_weights()
             self._current_lora = None
             self._lora_scale = None
-            
-            if old_is_loaded:
-                self.load_models()
-                logger.info("Base model reloaded, LoRA unloaded successfully")
+            logger.info("LoRA unloaded successfully")
         except Exception as e:
-            logger.error(f"Failed to reload base model after LoRA unload: {e}")
+            logger.error(f"Failed to unload LoRA: {e}")
             raise
 
     def get_status(self) -> Dict[str, Any]:
@@ -595,27 +388,16 @@ class ZImageGenerator(ImageGenerator):
         
         logger.info("Unloading Z-Image Turbo models...")
         
-        if self.components is not None:
+        if self.pipeline is not None:
             import gc
             try:
                 import torch
                 
-                # Delete individual components
-                if hasattr(self.components, 'transformer') and self.components.transformer is not None:
-                    del self.components.transformer
-                if hasattr(self.components, 'vae') and self.components.vae is not None:
-                    del self.components.vae
-                if hasattr(self.components, 'text_encoder') and self.components.text_encoder is not None:
-                    del self.components.text_encoder
-                if hasattr(self.components, 'tokenizer') and self.components.tokenizer is not None:
-                    del self.components.tokenizer
-                if hasattr(self.components, 'scheduler') and self.components.scheduler is not None:
-                    del self.components.scheduler
-                
-                # Clear the components container
-                self.components = None
-                self._generate_func = None
+                # Delete the pipeline
+                del self.pipeline
+                self.pipeline = None
                 self._current_lora = None
+                self._lora_scale = None
                 
                 # Force garbage collection and clear CUDA cache
                 gc.collect()
@@ -624,10 +406,18 @@ class ZImageGenerator(ImageGenerator):
                     torch.cuda.synchronize()
                     
             except ImportError:
-                # torch not available (shouldn't happen if models were loaded)
-                self.components = None
-                self._generate_func = None
+                self.pipeline = None
                 gc.collect()
         
         self.is_loaded = False
         logger.info("Z-Image Turbo models unloaded successfully")
+
+    # Legacy property for backwards compatibility with old tests
+    @property
+    def components(self) -> Optional[Any]:
+        """Legacy accessor - returns None in new implementation.
+        
+        The new Diffusers-based implementation uses self.pipeline instead.
+        This property is kept for backwards compatibility with tests.
+        """
+        return None

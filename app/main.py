@@ -14,7 +14,7 @@ from app import __version__
 from app.config import get_settings
 from app.exceptions import APIError
 from app.models.common import ErrorResponse
-from app.routers import health, image_generation, image_editing, video_generation, ltx2_generation, mode, system, lora_management, jobs, gpu
+from app.routers import health, image_generation, image_editing, video_generation, ltx2_generation, mode, system, lora_management, jobs, gpu, download_status
 from app.utils.logging import setup_logging
 
 # Initialize settings
@@ -30,6 +30,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     """Application lifespan handler."""
     from app.dependencies import set_generator_instance, set_model_manager_instance
     from app.services.mock_generator import MockGenerator
+    from pathlib import Path
 
     # Startup
     logger.info(
@@ -48,9 +49,48 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         generator = MockGenerator(settings)
         set_generator_instance(generator)
         logger.info("Mock generator initialized successfully")
-    else:
-        # Production mode: use ModelManager for dynamic mode switching
+
+        # Initialize ModelManager (Dry Run) for API compatibility
+        # This ensures /mode endpoints work even in mock mode
         from app.services.model_manager import ModelManager
+        logger.info("Initializing ModelManager (Dry Run) for API compatibility...")
+        model_manager = ModelManager(settings)
+        set_model_manager_instance(model_manager)
+
+        # Set initial mode (dry run)
+        if settings.default_model_mode == "image":
+            await model_manager.switch_to_image_mode()
+        else:
+            await model_manager.switch_to_video_mode()
+    else:
+        # Production mode: check for models and download if missing
+        from app.services.model_downloader import init_model_downloader
+        from app.services.model_manager import ModelManager
+        
+        # Initialize model downloader
+        base_path = Path(__file__).parent.parent  # Project root
+        downloader = init_model_downloader(base_path)
+        
+        # Check if models exist
+        if downloader.check_all_models_exist():
+            logger.info("All models found locally")
+        else:
+            logger.info("Missing models detected - starting background download...")
+            downloader.start_download()
+            
+            # Wait for downloads to complete before loading models
+            logger.info("Waiting for model downloads to complete...")
+            while not downloader.is_ready():
+                status = downloader.get_status()
+                if status.status == "failed":
+                    logger.error(f"Model download failed: {status.error}")
+                    break
+                await asyncio.sleep(5)  # Check every 5 seconds
+                logger.info(f"Download progress: {status.completed_models}/{status.total_models} models")
+            
+            if not downloader.is_ready():
+                logger.error("Model downloads did not complete successfully")
+                # Continue anyway - ModelManager will fail gracefully if models missing
         
         logger.info("Initializing ModelManager for dynamic mode switching...")
         model_manager = ModelManager(settings)
@@ -257,4 +297,4 @@ app.include_router(ltx2_generation.router)
 app.include_router(lora_management.router)
 app.include_router(jobs.router)
 app.include_router(gpu.router)
-
+app.include_router(download_status.router)

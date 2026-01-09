@@ -1,0 +1,79 @@
+# =============================================================================
+# Docker Ignore - Exclude from build context
+# =============================================================================
+
+# Git
+.git
+.gitignore
+.gitattributes
+
+# Python
+__pycache__
+*.py[cod]
+*$py.class
+*.so
+.Python
+.venv
+venv
+ENV
+env
+.eggs
+*.egg-info
+*.egg
+.pytest_cache
+.mypy_cache
+.ruff_cache
+
+# IDE
+.vscode
+.idea
+*.swp
+*.swo
+*~
+
+# Documentation (not needed in container)
+*.md
+!README.md
+docs/
+
+# Tests
+tests/
+.pytest_cache/
+htmlcov/
+.coverage
+
+# Environment files (use docker-compose env vars instead)
+.env
+.env.local
+.env.*.local
+
+# Models (mounted as volume, not baked in)
+models/
+*.safetensors
+*.bin
+*.pt
+*.pth
+*.ckpt
+
+# Logs and temp files
+logs/
+*.log
+tmp/
+temp/
+.cache/
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Build artifacts
+dist/
+build/
+*.whl
+
+# Large git submodule content we don't need for build
+LTX-2/.git
+LightX2V/.git
+Stream-DiffVSR/.git
+Z-Image/.git
+LTX-2/uv.lock

@@ -55,9 +55,10 @@ class InferenceConfig:
     MAX_CONCURRENT_IMAGE_GENERATIONS = 2  # Across Z-Image + Qwen-Image-Edit
     MAX_CONCURRENT_VIDEO_GENERATIONS = 1  # LTX-2 + Stream-DiffVSR workflow
     
-    # Z-Image settings
+    # Z-Image settings (uses Diffusers ZImagePipeline)
     ZIMAGE_COMPILE = False
-    ZIMAGE_ATTENTION_BACKEND = "_native_flash"
+    # Diffusers uses SDPA by default; options: "sdpa", "flash", "_flash_3"
+    ZIMAGE_ATTENTION_BACKEND = "sdpa"
     
     # LightX2V settings
     LIGHTX2V_ATTN_MODE = "flash_attn3"

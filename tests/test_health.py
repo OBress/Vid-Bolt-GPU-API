@@ -59,3 +59,25 @@ def test_status_with_valid_auth(
     assert data["version"] == "0.1.0"
     assert "mock_mode" in data
 
+
+def test_readiness_check(client: TestClient) -> None:
+    """Test readiness check endpoint for VM provisioning."""
+    response = client.get("/health/ready")
+
+    assert response.status_code == 200
+    data = response.json()
+    assert "ready" in data
+    assert "status" in data
+    assert "version" in data
+    assert "mock_mode" in data
+    assert "models_loaded" in data
+    # In mock mode (test default), should be ready
+    assert data["ready"] is True
+    assert data["models_loaded"] is True
+
+
+def test_readiness_check_no_auth_required(client: TestClient) -> None:
+    """Test that readiness check does not require authentication."""
+    response = client.get("/health/ready")
+    assert response.status_code == 200
+
