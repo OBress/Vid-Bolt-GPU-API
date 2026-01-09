@@ -116,6 +116,10 @@ RUN pip install --no-cache-dir --force-reinstall \
 RUN pip uninstall -y xformers || true \
     && pip install --no-cache-dir xformers --index-url https://download.pytorch.org/whl/cu128
 
+# Upgrade core libraries for Blackwell GPU compatibility (Issue #10)
+# These upgrades ensure xformers/attention kernels work correctly on RTX 50-series/6000 Pro
+RUN pip install --no-cache-dir --upgrade transformers peft diffusers accelerate
+
 # =============================================================================
 # Environment Configuration
 # =============================================================================

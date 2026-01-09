@@ -152,9 +152,12 @@ class StreamDiffVSRUpscaler(Upscaler):
             scheduler=scheduler,
         )
 
-        # Move to device and enable memory optimizations
-        pipeline = pipeline.to(device)
-        pipeline.enable_xformers_memory_efficient_attention()
+        # Move pipeline to GPU with bfloat16 for Blackwell compatibility (Issue #10)
+        # - We avoid enable_xformers_memory_efficient_attention() because xformers kernels
+        #   don't support float32 on Blackwell (Compute Capability 12.0)
+        # - Using bfloat16 enables PyTorch's native SDPA which works on all modern GPUs
+        # - No CPU offload needed with ample VRAM (RTX 6000 Pro has plenty)
+        pipeline = pipeline.to(device, dtype=torch.bfloat16)
 
         logger.info("Loading RAFT optical flow model...")
 
