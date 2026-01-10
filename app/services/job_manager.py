@@ -280,6 +280,9 @@ class JobManager:
                 
                 logger.info(f"Job {job_id} completed successfully")
                 
+                # Clean up GPU memory after every job to prevent VRAM accumulation
+                self._cleanup_gpu_memory()
+                
             except asyncio.TimeoutError:
                 logger.error(f"Job {job_id} timed out after {timeout_seconds}s")
                 job.status = JobStatus.FAILED
@@ -287,6 +290,9 @@ class JobManager:
                 job.error_message = f"Job timed out after {timeout_seconds} seconds"
                 job.error_code = "JOB_TIMEOUT"
                 job.progress_stage = "timeout"
+                
+                # Clean up GPU memory after timeout
+                self._cleanup_gpu_memory()
                 
             except Exception as e:
                 error_message = str(e)
@@ -296,8 +302,6 @@ class JobManager:
                 is_oom = self._check_oom_error(e, error_message)
                 
                 if is_oom:
-                    # Clean up GPU memory
-                    self._cleanup_gpu_memory()
                     error_message = "GPU out of memory. Try reducing resolution or duration."
                     error_code = "GPU_OUT_OF_MEMORY"
                     logger.error(f"Job {job_id} failed with OOM: {e}")
@@ -309,6 +313,9 @@ class JobManager:
                 job.error_message = error_message
                 job.error_code = error_code
                 job.progress_stage = "failed"
+                
+                # Clean up GPU memory for ALL exceptions
+                self._cleanup_gpu_memory()
 
     def _check_oom_error(self, exception: Exception, error_message: str) -> bool:
         """Check if an exception is an OOM error.
