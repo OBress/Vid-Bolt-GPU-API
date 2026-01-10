@@ -38,7 +38,7 @@ mkdir -p "$MODELS_DIR/ltx-2/gemma-3-12b-it-qat-q4_0-unquantized"
 # Check for HuggingFace CLI
 if ! command -v huggingface-cli &> /dev/null; then
     echo -e "${YELLOW}Installing huggingface-cli...${NC}"
-    pip install -q huggingface-hub
+    python3 -m pip install -q huggingface-hub || pip install -q huggingface-hub
 fi
 
 # =============================================================================

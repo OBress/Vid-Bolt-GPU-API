@@ -84,14 +84,7 @@ class ModelDownloader:
             "repo": "Lightricks/LTX-2",
             "local_dir": "models/ltx-2",
             "type": "file",
-            "filename": "ltx-2-19b-dev.safetensors",
-        },
-        {
-            "name": "ltx2-distilled-lora",
-            "repo": "Lightricks/LTX-2",
-            "local_dir": "models/ltx-2",
-            "type": "file",
-            "filename": "ltx-2-19b-distilled-lora-384.safetensors",
+            "filename": "ltx-2-19b-distilled-fp8.safetensors",
         },
         {
             "name": "ltx2-spatial-upsampler",
