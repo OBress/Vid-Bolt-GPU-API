@@ -99,6 +99,9 @@ async def generate_video(
         raise HTTPException(status_code=400, detail=str(e))
 
     width, height = get_dimensions(body.aspect_ratio)
+    # Override with explicit dimensions if provided
+    if body.width is not None and body.height is not None:
+        width, height = body.width, body.height
 
     params = VideoGenerationParams(
         job_id=body.job_id,

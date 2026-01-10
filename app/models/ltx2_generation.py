@@ -66,6 +66,18 @@ class LTX2GenerateRequest(BaseModel):
         default=AspectRatio.r_16_9,
         description="Aspect ratio of the generated video"
     )
+    width: int | None = Field(
+        default=None,
+        ge=512,
+        le=1920,
+        description="Target width (overrides aspect_ratio default). Use 1920 for 1080p."
+    )
+    height: int | None = Field(
+        default=None,
+        ge=512,
+        le=1920,
+        description="Target height (overrides aspect_ratio default). Use 1080 for 1080p."
+    )
     end_image_url: str | None = Field(
         default=None,
         description="Optional URL of the end frame image for interpolation"
@@ -179,6 +191,18 @@ class KeyframeInterpolateRequest(BaseModel):
     aspect_ratio: AspectRatio = Field(
         default=AspectRatio.r_16_9,
         description="Aspect ratio of the generated video"
+    )
+    width: int | None = Field(
+        default=None,
+        ge=512,
+        le=1920,
+        description="Target width (overrides aspect_ratio default). Use 1920 for 1080p."
+    )
+    height: int | None = Field(
+        default=None,
+        ge=512,
+        le=1920,
+        description="Target height (overrides aspect_ratio default). Use 1080 for 1080p."
     )
     seed: int | None = Field(default=None, description="Random seed for reproducibility")
     enhance_prompt: bool = Field(

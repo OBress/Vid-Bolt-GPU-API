@@ -19,6 +19,18 @@ class VideoGenerateRequest(BaseModel):
         default=AspectRatio.r_16_9,
         description="Aspect ratio of the generated video",
     )
+    width: int | None = Field(
+        default=None,
+        ge=512,
+        le=1920,
+        description="Target width (overrides aspect_ratio default). Must be divisible by 8."
+    )
+    height: int | None = Field(
+        default=None,
+        ge=512,
+        le=1920,
+        description="Target height (overrides aspect_ratio default). Must be divisible by 8."
+    )
     seed: int | None = Field(default=None, description="Random seed for reproducibility")
     end_image_url: str | None = Field(default=None, description="Optional URL of the end frame image")
     save_url: str = Field(..., description="Presigned URL (PUT) for direct storage upload")
