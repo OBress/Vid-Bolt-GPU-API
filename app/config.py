@@ -70,8 +70,8 @@ class InferenceConfig:
     LIGHTX2V_TEXT_ENCODER_OFFLOAD = True
     
     # LTX-2 settings (Optimized for Distilled LoRA)
-    LTX2_FP8_ENABLED = True  # Enable FP8 for lower VRAM usage and faster inference
-    LTX2_NUM_INFERENCE_STEPS = 8  # Distilled LoRA requires fewer steps (8 vs 40)
+    LTX2_FP8_ENABLED = False  # Disable FP8 for cleaner quality (BF16), uses ~40GB VRAM
+    LTX2_NUM_INFERENCE_STEPS = 25  # Increased for keyframe quality (I2V runs fast @ 8 steps)
     LTX2_CFG_GUIDANCE_SCALE = 1.0  # Distilled LoRA works best without CFG (1.0)
     LTX2_DEFAULT_FRAME_RATE = 24.0
     
