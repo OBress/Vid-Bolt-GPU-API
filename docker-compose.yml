@@ -41,12 +41,12 @@ services:
       - R2_ENDPOINT_URL=${R2_ENDPOINT_URL:-}
       # HuggingFace
       - HF_TOKEN=${HF_TOKEN:-}
-      - HF_HOME=/models
+      - HF_HOME=/app/models
 
     # Volume mounts
     volumes:
       # Models directory - persist across container restarts
-      - ./models:/models
+      - ./models:/app/models
       # Optional: mount local app for development
       - ./app:/app/app
 
@@ -91,7 +91,7 @@ services:
       - LOG_LEVEL=DEBUG
 
     volumes:
-      - ./models:/models
+      - ./models:/app/models
       - ./app:/app/app # Hot-reload app changes
 
     command:

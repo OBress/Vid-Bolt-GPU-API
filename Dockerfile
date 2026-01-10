@@ -120,10 +120,10 @@ RUN pip install --no-cache-dir --upgrade transformers peft diffusers accelerate
 # =============================================================================
 
 # HuggingFace cache - mount volume here for persistence
-ENV HF_HOME=/models
-ENV HF_HUB_CACHE=/models/hub
-ENV TRANSFORMERS_CACHE=/models/transformers
-ENV TORCH_HOME=/models/torch
+ENV HF_HOME=/app/models
+ENV HF_HUB_CACHE=/app/models/hub
+ENV TRANSFORMERS_CACHE=/app/models/transformers
+ENV TORCH_HOME=/app/models/torch
 
 # Application settings
 ENV MOCK_MODE=false
