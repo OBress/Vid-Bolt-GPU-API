@@ -52,7 +52,8 @@ logger = logging.getLogger(__name__)
 class LTX2Components:
     """Container for loaded LTX-2 pipeline components."""
 
-    distilled_pipeline: Any  # DistilledPipeline instance for all video generation
+    distilled_pipeline: Any  # DistilledPipeline instance for I2V (single keyframe)
+    keyframe_pipeline: Any  # KeyframeInterpolationPipeline for multi-keyframe
 
 
 class LTX2Generator(VideoGenerator):
@@ -126,20 +127,48 @@ class LTX2Generator(VideoGenerator):
         try:
             import torch
             from ltx_pipelines.distilled import DistilledPipeline
+            from ltx_pipelines.keyframe_interpolation import KeyframeInterpolationPipeline
+            from ltx_core.loader import LoraPathStrengthAndSDOps
         except ImportError as e:
             raise ImportError(
                 "LTX-2 packages are required. Install with: "
                 "pip install -e path/to/LTX-2/packages/ltx-pipelines"
             ) from e
 
-        # Initialize pipeline
+        # Validate distilled LoRA path for KeyframeInterpolationPipeline
+        distilled_lora_path = Path(self.settings.ltx2_distilled_lora_path)
+        if not distilled_lora_path.exists():
+            raise FileNotFoundError(
+                f"LTX-2 distilled LoRA not found at {distilled_lora_path.absolute()}. "
+                f"Download with: huggingface-cli download Lightricks/LTX-2 "
+                f"ltx-2-19b-distilled-lora-384.safetensors --local-dir {distilled_lora_path.parent}"
+            )
+
+        # Initialize pipelines
         device = torch.device(self.settings.ltx2_device)
         
-        # DistilledPipeline for all video generation (I2V and multi-keyframe)
-        # Using latent replacement for keyframe conditioning
-        logger.info("Loading DistilledPipeline for video generation...")
+        # DistilledPipeline for I2V (single keyframe, fastest)
+        logger.info("Loading DistilledPipeline for I2V generation...")
         distilled_pipeline = DistilledPipeline(
             checkpoint_path=str(checkpoint_path.absolute()),
+            spatial_upsampler_path=str(spatial_upsampler_path.absolute()),
+            gemma_root=str(gemma_root.absolute()),
+            loras=[],  # No extra LoRAs
+            device=device,
+            fp8transformer=self.settings.ltx2_fp8_enabled,
+        )
+        
+        # KeyframeInterpolationPipeline for multi-keyframe (start + end frames)
+        # Uses guiding latents for smooth transitions between keyframes
+        logger.info("Loading KeyframeInterpolationPipeline for keyframe interpolation...")
+        distilled_lora_spec = LoraPathStrengthAndSDOps(
+            path=str(distilled_lora_path.absolute()),
+            strength=1.0,
+            sd_ops=None,
+        )
+        keyframe_pipeline = KeyframeInterpolationPipeline(
+            checkpoint_path=str(checkpoint_path.absolute()),
+            distilled_lora=[distilled_lora_spec],
             spatial_upsampler_path=str(spatial_upsampler_path.absolute()),
             gemma_root=str(gemma_root.absolute()),
             loras=[],  # No extra LoRAs
@@ -149,13 +178,14 @@ class LTX2Generator(VideoGenerator):
 
         self.components = LTX2Components(
             distilled_pipeline=distilled_pipeline,
+            keyframe_pipeline=keyframe_pipeline,
         )
         self.is_loaded = True
 
         # Create temp directory for intermediate files
         self._temp_dir = tempfile.TemporaryDirectory(prefix="ltx2_")
 
-        logger.info("LTX-2 pipeline loaded successfully")
+        logger.info("LTX-2 pipelines loaded successfully")
 
     # ========================================================================
     # I2V (Image-to-Video) Generation
@@ -332,6 +362,25 @@ class LTX2Generator(VideoGenerator):
         from ltx_pipelines.utils.media_io import encode_video
         from ltx_pipelines.utils.constants import AUDIO_SAMPLE_RATE
 
+        # Wrap entire generation in inference_mode to match official LTX-2 CLI pattern
+        # This ensures encode_video (which iterates the video generator) runs in the same context
+        with torch.inference_mode():
+            return self._generate_sync_inner(
+                params, num_frames, seed, TilingConfig, get_video_chunks_number, encode_video, AUDIO_SAMPLE_RATE
+            )
+
+    def _generate_sync_inner(
+        self,
+        params: KeyframeInterpolationParams,
+        num_frames: int,
+        seed: int,
+        TilingConfig,
+        get_video_chunks_number,
+        encode_video,
+        AUDIO_SAMPLE_RATE,
+    ) -> tuple[bytes, bool]:
+        """Inner implementation of _generate_sync - runs inside inference_mode context."""
+
         assert self._temp_dir is not None
         assert self.components is not None
 
@@ -380,21 +429,40 @@ class LTX2Generator(VideoGenerator):
         # Configure tiling for video decoding
         tiling_config = TilingConfig.default()
 
-        # Use DistilledPipeline for all generation (including multi-keyframe)
-        # DistilledPipeline supports multiple keyframes via latent replacement
-        # and doesn't have the inference_mode conflict that KeyframeInterpolationPipeline has
-        logger.info(f"Using DistilledPipeline for {len(params.keyframes)} keyframe(s)")
-        video_chunks, audio = self.components.distilled_pipeline(
-            prompt=params.prompt,
-            seed=seed,
-            height=params.height,
-            width=params.width,
-            num_frames=num_frames,
-            frame_rate=params.frame_rate,
-            images=images,
-            tiling_config=tiling_config,
-            enhance_prompt=params.enhance_prompt,
-        )
+        # Choose pipeline based on keyframe count:
+        # - 1 keyframe (I2V): Use DistilledPipeline (fastest, latent replacement)
+        # - 2+ keyframes: Use KeyframeInterpolationPipeline (guiding latents for smooth transitions)
+        use_keyframe_pipeline = len(params.keyframes) >= 2
+        
+        if use_keyframe_pipeline:
+            logger.info(f"Using KeyframeInterpolationPipeline for {len(params.keyframes)} keyframes")
+            video_chunks, audio = self.components.keyframe_pipeline(
+                prompt=params.prompt,
+                negative_prompt=params.negative_prompt,
+                seed=seed,
+                height=params.height,
+                width=params.width,
+                num_frames=num_frames,
+                frame_rate=params.frame_rate,
+                num_inference_steps=self.settings.ltx2_num_inference_steps,
+                cfg_guidance_scale=self.settings.ltx2_cfg_guidance_scale,
+                images=images,
+                tiling_config=tiling_config,
+                enhance_prompt=params.enhance_prompt,
+            )
+        else:
+            logger.info("Using DistilledPipeline for single-frame I2V")
+            video_chunks, audio = self.components.distilled_pipeline(
+                prompt=params.prompt,
+                seed=seed,
+                height=params.height,
+                width=params.width,
+                num_frames=num_frames,
+                frame_rate=params.frame_rate,
+                images=images,
+                tiling_config=tiling_config,
+                enhance_prompt=params.enhance_prompt,
+            )
 
         # Encode to MP4 with audio
         output_path = Path(self._temp_dir.name) / f"{params.job_id}_output.mp4"
