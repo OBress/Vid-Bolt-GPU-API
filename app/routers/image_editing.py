@@ -6,7 +6,7 @@ from fastapi import APIRouter, Request, HTTPException
 
 from app.dependencies import APIKeyDep, StorageDep, GeneratorDep, JobManagerDep, ModelManagerDep, SettingsDep
 from app.exceptions import ValidationError
-from app.models.common import ErrorResponse, get_dimensions
+from app.models.common import ErrorResponse
 from app.models.image_editing import ImageEditRequest
 from app.models.job import AsyncJobResponse, JobResult
 from app.models.internal import ImageEditParams
@@ -90,7 +90,15 @@ async def edit_image(
         # Wrap storage/validation errors
         raise HTTPException(status_code=400, detail=str(e))
 
-    width, height = get_dimensions(body.aspect_ratio)
+    # Extract dimensions from input image to preserve original resolution
+    from PIL import Image
+    import io
+    try:
+        input_image = Image.open(io.BytesIO(input_image_data))
+        width, height = input_image.size
+        input_image.close()
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Failed to read input image dimensions: {e}")
 
     params = ImageEditParams(
         job_id=body.job_id,

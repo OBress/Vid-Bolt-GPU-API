@@ -128,6 +128,7 @@ class LTX2Generator(VideoGenerator):
             import torch
             from ltx_pipelines.distilled import DistilledPipeline
             from ltx_pipelines.keyframe_interpolation import KeyframeInterpolationPipeline
+            from ltx_core.loader import LoraPathStrengthAndSDOps
         except ImportError as e:
             raise ImportError(
                 "LTX-2 packages are required. Install with: "
@@ -160,9 +161,17 @@ class LTX2Generator(VideoGenerator):
         # KeyframeInterpolationPipeline for multi-keyframe interpolation
         # Uses guiding latents for smooth transitions between keyframes
         logger.info("Loading KeyframeInterpolationPipeline for keyframe interpolation...")
+        
+        # Create proper LoraPathStrengthAndSDOps for distilled_lora
+        distilled_lora_spec = LoraPathStrengthAndSDOps(
+            path=str(distilled_lora_path.absolute()),
+            strength=1.0,
+            sd_ops=None,
+        )
+        
         keyframe_pipeline = KeyframeInterpolationPipeline(
             checkpoint_path=str(checkpoint_path.absolute()),
-            distilled_lora=[(str(distilled_lora_path.absolute()), 1.0, None)],
+            distilled_lora=[distilled_lora_spec],
             spatial_upsampler_path=str(spatial_upsampler_path.absolute()),
             gemma_root=str(gemma_root.absolute()),
             loras=[],  # No extra LoRAs

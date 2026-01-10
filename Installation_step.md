@@ -88,3 +88,7 @@ nano .env
 docker compose build --no-cache
 docker compose up -d
 docker compose logs -f
+
+# clean up old containers
+
+docker system prune
