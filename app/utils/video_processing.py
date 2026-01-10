@@ -74,7 +74,6 @@ def trim_video_to_duration(
             codec="libx264",
             audio_codec="aac" if has_audio else None,
             audio=has_audio,
-            verbose=False,
             logger=None,
         )
         
@@ -192,7 +191,6 @@ def center_crop_video(
             codec="libx264",
             audio_codec="aac" if has_audio else None,
             audio=has_audio,
-            verbose=False,
             logger=None,
         )
         
