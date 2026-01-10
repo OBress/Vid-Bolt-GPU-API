@@ -220,6 +220,15 @@ class LightX2VImageEditGenerator(ImageEditor):
         # Get original image dimensions
         input_image = Image.open(io.BytesIO(params.input_image_data))
         orig_width, orig_height = input_image.size
+        
+        # Cap dimensions at 2048x2048 (preserve aspect ratio)
+        max_dim = 2048
+        target_width, target_height = orig_width, orig_height
+        if orig_width > max_dim or orig_height > max_dim:
+            scale = min(max_dim / orig_width, max_dim / orig_height)
+            target_width = int(orig_width * scale)
+            target_height = int(orig_height * scale)
+            logger.info(f"Capping resolution from {orig_width}x{orig_height} to {target_width}x{target_height}")
 
         # Save input image to temp file (LightX2V expects file paths)
         assert self._temp_dir is not None
@@ -237,9 +246,17 @@ class LightX2VImageEditGenerator(ImageEditor):
             save_result_path=str(output_path),
         )
 
-        # Load output image and convert to bytes
+        # Load output image
         output_image = Image.open(output_path)
-        out_width, out_height = output_image.size
+        model_out_w, model_out_h = output_image.size
+        
+        # Resize output to match target dimensions (original or capped)
+        if output_image.size != (target_width, target_height):
+            logger.info(f"Resizing output from {model_out_w}x{model_out_h} to {target_width}x{target_height}")
+            output_image = output_image.resize(
+                (target_width, target_height),
+                Image.Resampling.LANCZOS
+            )
 
         buffer = io.BytesIO()
         output_image.save(buffer, format="PNG")
@@ -252,7 +269,7 @@ class LightX2VImageEditGenerator(ImageEditor):
         except Exception as e:
             logger.warning(f"Failed to clean up temp files: {e}")
 
-        return buffer.getvalue(), orig_width, orig_height, out_width, out_height
+        return buffer.getvalue(), orig_width, orig_height, target_width, target_height
 
     async def _edit_dry_run(
         self, params: ImageEditParams, seed: int
