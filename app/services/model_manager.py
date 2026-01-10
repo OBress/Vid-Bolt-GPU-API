@@ -230,8 +230,8 @@ class ModelManager:
         self._mode = ModelMode.SWITCHING
         
         try:
-            # Unload video models -> DISABLED for static loading
-            # await self._unload_video_models()
+            # Unload video models
+            await self._unload_video_models()
             
             # Load image models (if not already loaded)
             await self._load_image_models()
@@ -263,8 +263,8 @@ class ModelManager:
         self._mode = ModelMode.SWITCHING
         
         try:
-            # Unload image models -> DISABLED for static loading
-            # await self._unload_image_models()
+            # Unload image models
+            await self._unload_image_models()
             
             # Load video models (if not already loaded)
             await self._load_video_models()
