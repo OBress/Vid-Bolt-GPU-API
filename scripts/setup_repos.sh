@@ -13,7 +13,6 @@ REPOS=(
     "https://github.com/Lightricks/LTX-2.git"
     "https://github.com/Tongyi-MAI/Z-Image.git"
     "https://github.com/ModelTC/LightX2V.git"
-    "https://github.com/jamichss/Stream-DiffVSR.git"
 )
 
 for repo in "${REPOS[@]}"; do
