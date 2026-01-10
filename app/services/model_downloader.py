@@ -65,12 +65,14 @@ class ModelDownloader:
             "repo": "Tongyi-MAI/Z-Image-Turbo",
             "local_dir": "models/z-image-turbo",
             "type": "full",  # Download entire repo
+            "indicator_file": "model_index.json",
         },
         {
             "name": "qwen-image-edit-2511",
             "repo": "Qwen/Qwen-Image-Edit-2511",
             "local_dir": "models/qwen-image-edit-2511",
             "type": "full",
+            "indicator_file": "config.json",
         },
         {
             "name": "lightx2v-lora",
@@ -98,6 +100,7 @@ class ModelDownloader:
             "repo": "google/gemma-3-12b-it-qat-q4_0-unquantized",
             "local_dir": "models/ltx-2/gemma-3-12b-it-qat-q4_0-unquantized",
             "type": "full",
+            "indicator_file": "config.json",
         },
     ]
 
@@ -126,8 +129,9 @@ class ModelDownloader:
         if model["type"] == "file":
             return (local_path / model["filename"]).exists()
         else:
-            # For full repos, check if directory exists and has files
-            return local_path.exists() and any(local_path.iterdir())
+            # For full repos, check for specific indicator file
+            indicator = model.get("indicator_file", "config.json")
+            return (local_path / indicator).exists()
 
     def check_all_models_exist(self) -> bool:
         """Check if all required models are already downloaded."""
