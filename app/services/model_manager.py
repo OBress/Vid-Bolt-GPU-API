@@ -121,6 +121,22 @@ class ModelManager:
             loaded_models=loaded_models,
         )
 
+    async def load_all_models(self) -> None:
+        """Load all models (Image + Video) into VRAM.
+        
+        This enables static mode where all models are kept loaded for instant
+        switching, at the cost of higher VRAM usage.
+        """
+        logger.info("Loading ALL models into VRAM (Static Mode)...")
+        
+        # Load everything
+        await self._load_image_models()
+        await self._load_video_models()
+        
+        # Default to Image mode initially, but everything is ready
+        self._mode = ModelMode.IMAGE
+        logger.info("All models loaded successfully")
+
     async def acquire_job_lock(self, job_id: str) -> bool:
         """Try to acquire the job lock for generation.
         
@@ -214,10 +230,10 @@ class ModelManager:
         self._mode = ModelMode.SWITCHING
         
         try:
-            # Unload video models
-            await self._unload_video_models()
+            # Unload video models -> DISABLED for static loading
+            # await self._unload_video_models()
             
-            # Load image models
+            # Load image models (if not already loaded)
             await self._load_image_models()
             
             self._mode = ModelMode.IMAGE
@@ -247,10 +263,10 @@ class ModelManager:
         self._mode = ModelMode.SWITCHING
         
         try:
-            # Unload image models
-            await self._unload_image_models()
+            # Unload image models -> DISABLED for static loading
+            # await self._unload_image_models()
             
-            # Load video models
+            # Load video models (if not already loaded)
             await self._load_video_models()
             
             self._mode = ModelMode.VIDEO

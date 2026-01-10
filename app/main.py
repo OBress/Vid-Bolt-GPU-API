@@ -96,12 +96,9 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         model_manager = ModelManager(settings)
         set_model_manager_instance(model_manager)
         
-        if settings.default_model_mode == "image":
-            logger.info("Loading Image Mode (Z-Image + LightX2V)...")
-            await model_manager.switch_to_image_mode()
-        else:
-            logger.info("Loading Video Mode (LTX-2 + Stream-DiffVSR)...")
-            await model_manager.switch_to_video_mode()
+        # Static Loading: Load ALL models at startup
+        logger.info("Loading ALL models for static VRAM usage (Instant Switching)...")
+        await model_manager.load_all_models()
         
         logger.info(f"ModelManager initialized in {settings.default_model_mode} mode")
 
