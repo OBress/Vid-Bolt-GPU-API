@@ -84,11 +84,6 @@ class VideoGenerator(BaseModelGenerator):
     """Interface for video generators."""
 
     @abstractmethod
-    def set_upscaler(self, upscaler: Any) -> None:
-        """Set the video upscaler for post-generation enhancement."""
-        pass
-
-    @abstractmethod
     async def generate_video(self, params: VideoGenerationParams) -> VideoGenerationResult:
         """Generate a video from a start frame (I2V)."""
         pass
