@@ -58,8 +58,8 @@ RUN pip install --no-cache-dir \
     torchaudio==2.9.1 \
     --index-url https://download.pytorch.org/whl/cu128
 
-# xformers from PyTorch index
-RUN pip install --no-cache-dir xformers --index-url https://download.pytorch.org/whl/cu128
+# NOTE: xformers is NOT installed because it doesn't support Blackwell GPUs (compute capability 12.0)
+# All libraries (LTX-2, LightX2V, etc.) automatically fall back to PyTorch native SDPA
 
 # Triton for torch.compile
 RUN pip install --no-cache-dir "triton>=3.3.0"
@@ -112,12 +112,10 @@ RUN pip install --no-cache-dir --force-reinstall \
     torchaudio==2.9.1 \
     --index-url https://download.pytorch.org/whl/cu128
 
-# Reinstall xformers to match PyTorch 2.9.1
-RUN pip uninstall -y xformers || true \
-    && pip install --no-cache-dir xformers --index-url https://download.pytorch.org/whl/cu128
+# NOTE: xformers is intentionally NOT installed - Blackwell GPU compatibility
+# PyTorch native SDPA is used instead (automatic fallback in all libraries)
 
 # Upgrade core libraries for Blackwell GPU compatibility (Issue #10)
-# These upgrades ensure xformers/attention kernels work correctly on RTX 50-series/6000 Pro
 RUN pip install --no-cache-dir --upgrade transformers peft diffusers accelerate
 
 # =============================================================================
