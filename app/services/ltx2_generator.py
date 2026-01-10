@@ -159,7 +159,7 @@ class LTX2Generator(VideoGenerator):
             LoraPathStrengthAndSDOps(
                 str(distilled_lora_path.absolute()),
                 1.0,
-                {}  # Use default key mapping
+                None  # Use default key mapping (no special sd_ops)
             )
         ]
 
