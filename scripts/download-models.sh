@@ -85,6 +85,13 @@ huggingface-cli download Lightricks/LTX-2 \
     --local-dir "$MODELS_DIR/ltx-2" \
     --local-dir-use-symlinks False
 
+# Distilled LoRA (required for KeyframeInterpolationPipeline)
+echo -e "  Downloading ltx-2-19b-distilled-lora-384.safetensors..."
+huggingface-cli download Lightricks/LTX-2 \
+    ltx-2-19b-distilled-lora-384.safetensors \
+    --local-dir "$MODELS_DIR/ltx-2" \
+    --local-dir-use-symlinks False
+
 echo -e "${GREEN}  ✓ LTX-2 components downloaded${NC}"
 
 # =============================================================================
@@ -116,6 +123,7 @@ echo -e "  │   └── qwen-image-edit-2511/"
 echo -e "  └── ltx-2/"
 echo -e "      ├── ltx-2-19b-distilled-fp8.safetensors"
 echo -e "      ├── ltx-2-spatial-upscaler-x2-1.0.safetensors"
+echo -e "      ├── ltx-2-19b-distilled-lora-384.safetensors"
 echo -e "      └── gemma-3-12b-it-qat-q4_0-unquantized/"
 echo ""
 du -sh "$MODELS_DIR" 2>/dev/null || echo "Total size: ~80GB"

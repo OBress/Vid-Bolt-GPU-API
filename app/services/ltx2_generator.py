@@ -52,16 +52,18 @@ logger = logging.getLogger(__name__)
 class LTX2Components:
     """Container for loaded LTX-2 pipeline components."""
 
-    pipeline: Any  # KeyframeInterpolationPipeline instance
+    distilled_pipeline: Any  # DistilledPipeline instance for I2V
+    keyframe_pipeline: Any  # KeyframeInterpolationPipeline instance
 
 
 class LTX2Generator(VideoGenerator):
     """LTX-2 video generation service.
 
-    This service handles loading the LTX-2 DistilledPipeline
-    with 19b-distilled checkpoint for fast two-stage video generation.
-    Supports both I2V and keyframe interpolation modes.
+    This service handles loading two LTX-2 pipelines:
+    - DistilledPipeline: For fast I2V (single start frame) generation
+    - KeyframeInterpolationPipeline: For multi-keyframe interpolation
     
+    Both use the 19b-distilled checkpoint with FP8 for optimal performance.
     The pipeline generates synchronized audio alongside video.
     """
 
@@ -120,20 +122,33 @@ class LTX2Generator(VideoGenerator):
                 f"--local-dir {gemma_root}"
             )
 
-        logger.info(f"Loading LTX-2 DistilledPipeline from {checkpoint_path}")
+        logger.info(f"Loading LTX-2 pipelines from {checkpoint_path}")
 
         try:
             import torch
             from ltx_pipelines.distilled import DistilledPipeline
+            from ltx_pipelines.keyframe_interpolation import KeyframeInterpolationPipeline
         except ImportError as e:
             raise ImportError(
                 "LTX-2 packages are required. Install with: "
                 "pip install -e path/to/LTX-2/packages/ltx-pipelines"
             ) from e
 
-        # Initialize pipeline
+        # Validate distilled LoRA path for KeyframeInterpolationPipeline
+        distilled_lora_path = Path(self.settings.ltx2_distilled_lora_path)
+        if not distilled_lora_path.exists():
+            raise FileNotFoundError(
+                f"LTX-2 distilled LoRA not found at {distilled_lora_path.absolute()}. "
+                f"Download with: huggingface-cli download Lightricks/LTX-2 "
+                f"ltx-2-19b-distilled-lora-384.safetensors --local-dir {distilled_lora_path.parent}"
+            )
+
+        # Initialize pipelines
         device = torch.device(self.settings.ltx2_device)
-        pipeline = DistilledPipeline(
+        
+        # DistilledPipeline for I2V (single start frame, fastest)
+        logger.info("Loading DistilledPipeline for I2V generation...")
+        distilled_pipeline = DistilledPipeline(
             checkpoint_path=str(checkpoint_path.absolute()),
             spatial_upsampler_path=str(spatial_upsampler_path.absolute()),
             gemma_root=str(gemma_root.absolute()),
@@ -141,14 +156,30 @@ class LTX2Generator(VideoGenerator):
             device=device,
             fp8transformer=self.settings.ltx2_fp8_enabled,
         )
+        
+        # KeyframeInterpolationPipeline for multi-keyframe interpolation
+        # Uses guiding latents for smooth transitions between keyframes
+        logger.info("Loading KeyframeInterpolationPipeline for keyframe interpolation...")
+        keyframe_pipeline = KeyframeInterpolationPipeline(
+            checkpoint_path=str(checkpoint_path.absolute()),
+            distilled_lora=[(str(distilled_lora_path.absolute()), 1.0, None)],
+            spatial_upsampler_path=str(spatial_upsampler_path.absolute()),
+            gemma_root=str(gemma_root.absolute()),
+            loras=[],  # No extra LoRAs
+            device=device,
+            fp8transformer=self.settings.ltx2_fp8_enabled,
+        )
 
-        self.components = LTX2Components(pipeline=pipeline)
+        self.components = LTX2Components(
+            distilled_pipeline=distilled_pipeline,
+            keyframe_pipeline=keyframe_pipeline,
+        )
         self.is_loaded = True
 
         # Create temp directory for intermediate files
         self._temp_dir = tempfile.TemporaryDirectory(prefix="ltx2_")
 
-        logger.info("LTX-2 DistilledPipeline loaded successfully")
+        logger.info("LTX-2 pipelines loaded successfully")
 
     # ========================================================================
     # I2V (Image-to-Video) Generation
@@ -313,6 +344,10 @@ class LTX2Generator(VideoGenerator):
     ) -> tuple[bytes, bool]:
         """Synchronous video generation (runs in thread pool).
         
+        Routes to the appropriate pipeline based on keyframe count:
+        - 1 keyframe: Uses DistilledPipeline (fastest, for I2V)
+        - 2+ keyframes: Uses KeyframeInterpolationPipeline (guiding latents)
+        
         Returns:
             Tuple of (video_bytes, has_audio)
         """
@@ -369,18 +404,43 @@ class LTX2Generator(VideoGenerator):
         # Configure tiling for video decoding
         tiling_config = TilingConfig.default()
 
-        # Generate video with audio using DistilledPipeline
-        video_chunks, audio = self.components.pipeline(
-            prompt=params.prompt,
-            seed=seed,
-            height=params.height,
-            width=params.width,
-            num_frames=num_frames,
-            frame_rate=params.frame_rate,
-            images=images,
-            tiling_config=tiling_config,
-            enhance_prompt=params.enhance_prompt,
-        )
+        # Choose pipeline based on keyframe count
+        # - 1 keyframe: Use DistilledPipeline (fastest, single conditioning)
+        # - 2+ keyframes: Use KeyframeInterpolationPipeline (guiding latents for smooth transitions)
+        use_keyframe_pipeline = len(params.keyframes) >= 2
+        
+        if use_keyframe_pipeline:
+            logger.info(f"Using KeyframeInterpolationPipeline for {len(params.keyframes)} keyframes")
+            # KeyframeInterpolationPipeline uses guiding latents for smooth transitions
+            # It requires negative_prompt, num_inference_steps, and cfg_guidance_scale
+            video_chunks, audio = self.components.keyframe_pipeline(
+                prompt=params.prompt,
+                negative_prompt=params.negative_prompt,
+                seed=seed,
+                height=params.height,
+                width=params.width,
+                num_frames=num_frames,
+                frame_rate=params.frame_rate,
+                num_inference_steps=self.settings.ltx2_num_inference_steps,
+                cfg_guidance_scale=self.settings.ltx2_cfg_guidance_scale,
+                images=images,
+                tiling_config=tiling_config,
+                enhance_prompt=params.enhance_prompt,
+            )
+        else:
+            logger.info("Using DistilledPipeline for single-frame I2V")
+            # DistilledPipeline is fastest for single conditioning frame
+            video_chunks, audio = self.components.distilled_pipeline(
+                prompt=params.prompt,
+                seed=seed,
+                height=params.height,
+                width=params.width,
+                num_frames=num_frames,
+                frame_rate=params.frame_rate,
+                images=images,
+                tiling_config=tiling_config,
+                enhance_prompt=params.enhance_prompt,
+            )
 
         # Encode to MP4 with audio
         output_path = Path(self._temp_dir.name) / f"{params.job_id}_output.mp4"
@@ -565,13 +625,14 @@ class LTX2Generator(VideoGenerator):
             try:
                 import torch
                 
-                # Delete the pipeline
-                if hasattr(self.components, 'pipeline') and self.components.pipeline is not None:
-                    del self.components.pipeline
+                # Delete both pipelines
+                if hasattr(self.components, 'distilled_pipeline') and self.components.distilled_pipeline is not None:
+                    del self.components.distilled_pipeline
+                if hasattr(self.components, 'keyframe_pipeline') and self.components.keyframe_pipeline is not None:
+                    del self.components.keyframe_pipeline
                 
                 # Clear the components container
                 self.components = None
-                self._upscaler = None  # Remove upscaler reference
                 
                 # Force garbage collection and clear CUDA cache
                 gc.collect()

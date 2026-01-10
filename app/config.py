@@ -39,6 +39,7 @@ class ModelPaths:
     LTX2_CHECKPOINT = "models/ltx-2/ltx-2-19b-distilled-fp8.safetensors"
     LTX2_SPATIAL_UPSAMPLER = "models/ltx-2/ltx-2-spatial-upscaler-x2-1.0.safetensors"
     LTX2_GEMMA_ROOT = "models/ltx-2/gemma-3-12b-it-qat-q4_0-unquantized"
+    LTX2_DISTILLED_LORA = "models/ltx-2/ltx-2-19b-distilled-lora-384.safetensors"
     
     # Stream-DiffVSR (video upscaling)
     STREAM_DIFFVSR_MODEL_ID = "Jamichsu/Stream-DiffVSR"
@@ -157,6 +158,10 @@ class Settings(BaseSettings):
     @property
     def ltx2_gemma_root(self) -> str:
         return ModelPaths.LTX2_GEMMA_ROOT
+    
+    @property
+    def ltx2_distilled_lora_path(self) -> str:
+        return ModelPaths.LTX2_DISTILLED_LORA
     
     @property
     def stream_diffvsr_model_id(self) -> str:

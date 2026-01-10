@@ -96,6 +96,13 @@ class ModelDownloader:
             "filename": "ltx-2-spatial-upscaler-x2-1.0.safetensors",
         },
         {
+            "name": "ltx2-distilled-lora",
+            "repo": "Lightricks/LTX-2",
+            "local_dir": "models/ltx-2",
+            "type": "file",
+            "filename": "ltx-2-19b-distilled-lora-384.safetensors",
+        },
+        {
             "name": "gemma-text-encoder",
             "repo": "google/gemma-3-12b-it-qat-q4_0-unquantized",
             "local_dir": "models/ltx-2/gemma-3-12b-it-qat-q4_0-unquantized",
