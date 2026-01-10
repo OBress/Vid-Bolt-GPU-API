@@ -29,9 +29,6 @@ from typing import TYPE_CHECKING, Any
 
 from PIL import Image
 
-if TYPE_CHECKING:
-    from app.services.video_upscaler import StreamDiffVSRUpscaler
-
 from app.config import Settings
 from app.services.interfaces import VideoGenerator
 from app.models.internal import (
@@ -79,16 +76,6 @@ class LTX2Generator(VideoGenerator):
         self.is_loaded = False
         self.dry_run = settings.ltx2_dry_run
         self._temp_dir: tempfile.TemporaryDirectory | None = None
-        self._upscaler: StreamDiffVSRUpscaler | None = None
-
-    def set_upscaler(self, upscaler: Any) -> None:
-        """Set the video upscaler for post-generation enhancement.
-
-        Args:
-            upscaler: StreamDiffVSRUpscaler instance to use for upscaling
-        """
-        self._upscaler = upscaler
-        logger.info("Video upscaler connected to LTX-2 generator")
 
     def load_models(self) -> None:
         """Load LTX-2 pipeline components.
@@ -313,81 +300,29 @@ class LTX2Generator(VideoGenerator):
             lambda: trim_video_to_duration(video_data, params.duration_seconds),
         )
 
-        # Apply video upscaling if upscaler is available and enabled
-        # Note: We upscale BEFORE cropping to keep 64-divisible dimensions for Stream-DiffVSR
-        upscaled_video = trimmed_video
-        upscale_info: dict[str, Any] | None = None
-
-        if (
-            self._upscaler is not None
-            and self._upscaler.is_loaded
-            and self.settings.stream_diffvsr_enabled
-        ):
-            from app.services.video_upscaler import UpscaleParams
-
-            logger.info(
-                f"Upscaling video at {padded_width}x{padded_height}",
-                extra={"job_id": params.job_id},
-            )
-
-            upscale_params = UpscaleParams(
-                job_id=params.job_id,
-                video_data=trimmed_video,
-                preserve_audio=True,
-            )
-
-            upscale_result = await self._upscaler.upscale_video(upscale_params)
-            upscaled_video = upscale_result.video_data
-
-            upscale_info = {
-                "original_resolution": f"{upscale_result.original_width}x{upscale_result.original_height}",
-                "upscaled_resolution": f"{upscale_result.upscaled_width}x{upscale_result.upscaled_height}",
-                "frame_count": upscale_result.frame_count,
-                "upscale_time_seconds": round(upscale_result.processing_time_seconds, 2),
-                "was_upscaled": upscale_result.was_upscaled,
-            }
-
-            logger.info(
-                f"Video upscaling completed",
-                extra={
-                    "job_id": params.job_id,
-                    "upscale_time_s": upscale_info["upscale_time_seconds"],
-                },
-            )
-
-        # Center crop AFTER upscaling to final target dimensions
-        # This keeps 64-divisible dimensions for Stream-DiffVSR, then crops to exact target
+        # Center crop to final target dimensions if we padded for 64-divisibility
+        # LTX-2's native 2x upsampler already handles resolution (Stage 1 + Stage 2)
         if (padded_width, padded_height) != (target_width, target_height):
-            # Calculate final dimensions after upscaling (2x scale)
-            if upscale_info and upscale_info.get("was_upscaled"):
-                final_target_w = target_width * 2
-                final_target_h = target_height * 2
-            else:
-                final_target_w = target_width
-                final_target_h = target_height
-            
             logger.info(
-                f"Cropping video to {final_target_w}x{final_target_h}",
+                f"Cropping video from {padded_width}x{padded_height} to {target_width}x{target_height}",
                 extra={"job_id": params.job_id},
             )
             final_video = await loop.run_in_executor(
                 None,
-                lambda: center_crop_video(upscaled_video, final_target_w, final_target_h),
+                lambda: center_crop_video(trimmed_video, target_width, target_height),
             )
         else:
-            final_video = upscaled_video
-            final_target_w = target_width * 2 if (upscale_info and upscale_info.get("was_upscaled")) else target_width
-            final_target_h = target_height * 2 if (upscale_info and upscale_info.get("was_upscaled")) else target_height
+            final_video = trimmed_video
 
         return LTX2VideoResult(
             video_data=final_video,
-            width=final_target_w,
-            height=final_target_h,
+            width=target_width,
+            height=target_height,
             duration_seconds=params.duration_seconds,
             frame_rate=params.frame_rate,
             has_audio=has_audio,
             seed=seed,
-            upscale_info=upscale_info,
+            upscale_info=None,  # No external upscaling, LTX-2 handles it natively
         )
 
     def _generate_sync(

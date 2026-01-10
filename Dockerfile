@@ -92,9 +92,6 @@ COPY LTX-2/packages /app/LTX-2/packages
 RUN pip install --no-cache-dir -e /app/LTX-2/packages/ltx-core \
     && pip install --no-cache-dir -e /app/LTX-2/packages/ltx-pipelines
 
-# Copy Stream-DiffVSR
-COPY Stream-DiffVSR /app/Stream-DiffVSR
-
 # Copy Z-Image (for native inference if needed)
 COPY Z-Image /app/Z-Image
 

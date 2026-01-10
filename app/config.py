@@ -74,11 +74,6 @@ class InferenceConfig:
     LTX2_CFG_GUIDANCE_SCALE = 1.0  # Distilled LoRA works best without CFG (1.0)
     LTX2_DEFAULT_FRAME_RATE = 24.0
     
-    # Stream-DiffVSR settings
-    STREAM_DIFFVSR_ENABLED = True
-    STREAM_DIFFVSR_NUM_INFERENCE_STEPS = 4
-    STREAM_DIFFVSR_ENABLE_TENSORRT = False
-    
     # Job timeouts (seconds)
     IMAGE_JOB_TIMEOUT = 120      # 2 minutes for image jobs
     VIDEO_JOB_TIMEOUT = 600      # 10 minutes for video jobs
@@ -121,7 +116,6 @@ class Settings(BaseSettings):
     zimage_dry_run_override: Optional[bool] = None
     lightx2v_dry_run_override: Optional[bool] = None
     ltx2_dry_run_override: Optional[bool] = None
-    stream_diffvsr_dry_run_override: Optional[bool] = None
 
     # ==========================================================================
     # Computed properties exposing hardcoded config
@@ -259,26 +253,6 @@ class Settings(BaseSettings):
         """In mock_mode, all generators run in dry-run mode."""
         if self.ltx2_dry_run_override is not None:
             return self.ltx2_dry_run_override
-        return self.mock_mode
-    
-    # --- Stream-DiffVSR ---
-    @property
-    def stream_diffvsr_enabled(self) -> bool:
-        return InferenceConfig.STREAM_DIFFVSR_ENABLED
-    
-    @property
-    def stream_diffvsr_num_inference_steps(self) -> int:
-        return InferenceConfig.STREAM_DIFFVSR_NUM_INFERENCE_STEPS
-    
-    @property
-    def stream_diffvsr_enable_tensorrt(self) -> bool:
-        return InferenceConfig.STREAM_DIFFVSR_ENABLE_TENSORRT
-    
-    @property
-    def stream_diffvsr_dry_run(self) -> bool:
-        """In mock_mode, all generators run in dry-run mode."""
-        if self.stream_diffvsr_dry_run_override is not None:
-            return self.stream_diffvsr_dry_run_override
         return self.mock_mode
     
     # --- Limits ---

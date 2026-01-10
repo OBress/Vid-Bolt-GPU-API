@@ -9,8 +9,7 @@ Image Mode loads:
 - LightX2VImageEditGenerator (image editing)
 
 Video Mode loads:
-- LTX2Generator (video generation)
-- StreamDiffVSRUpscaler (video upscaling)
+- LTX2Generator (video generation with native 2x upsampling)
 """
 
 import asyncio
@@ -24,7 +23,6 @@ if TYPE_CHECKING:
     from app.services.interfaces import (
         ImageEditor,
         ImageGenerator,
-        Upscaler,
         VideoGenerator,
     )
 
@@ -87,7 +85,6 @@ class ModelManager:
         self._zimage_generator: Optional["ImageGenerator"] = None
         self._lightx2v_generator: Optional["ImageEditor"] = None
         self._ltx2_generator: Optional["VideoGenerator"] = None
-        self._upscaler: Optional["Upscaler"] = None
         
         logger.info("ModelManager initialized")
 
@@ -116,8 +113,6 @@ class ModelManager:
             loaded_models.append("qwen-image-edit-2511")
         if self._ltx2_generator and self._ltx2_generator._loaded:
             loaded_models.append("ltx-2-19b")
-        if self._upscaler and self._upscaler._loaded:
-            loaded_models.append("stream-diffvsr")
             
         return ModeStatus(
             mode=self._mode,
@@ -236,7 +231,7 @@ class ModelManager:
     async def switch_to_video_mode(self) -> None:
         """Switch to Video Mode.
         
-        Unloads image models and loads video models (LTX-2 + Stream-DiffVSR).
+        Unloads image models and loads video models (LTX-2).
         
         Raises:
             RuntimeError: If currently busy with a job
@@ -310,9 +305,8 @@ class ModelManager:
     async def _load_video_models(self) -> None:
         """Load video generation models."""
         from app.services.ltx2_generator import LTX2Generator
-        from app.services.video_upscaler import StreamDiffVSRUpscaler
         
-        # Load LTX-2 for video generation
+        # Load LTX-2 for video generation (includes native 2x upsampling)
         if self._ltx2_generator is None:
             self._ltx2_generator = LTX2Generator(self._settings)
         
@@ -320,25 +314,10 @@ class ModelManager:
             logger.info("Loading LTX-2 19B models...")
             await asyncio.to_thread(self._ltx2_generator.load_models)
         
-        # Load Stream-DiffVSR for upscaling (if enabled)
-        if self._settings.stream_diffvsr_enabled:
-            if self._upscaler is None:
-                self._upscaler = StreamDiffVSRUpscaler(self._settings)
-            
-            if not self._upscaler._loaded:
-                logger.info("Loading Stream-DiffVSR upscaler...")
-                await asyncio.to_thread(self._upscaler.load_models)
-            
-            # Connect upscaler to LTX-2
-            if self._ltx2_generator:
-                self._ltx2_generator.set_upscaler(self._upscaler)
+        logger.info("Successfully switched to Video Mode")
 
     async def _unload_video_models(self) -> None:
         """Unload video generation models and free VRAM."""
-        if self._upscaler and self._upscaler._loaded:
-            logger.info("Unloading Stream-DiffVSR models...")
-            await asyncio.to_thread(self._upscaler.unload_models)
-        
         if self._ltx2_generator and self._ltx2_generator._loaded:
             logger.info("Unloading LTX-2 models...")
             await asyncio.to_thread(self._ltx2_generator.unload_models)
@@ -403,17 +382,3 @@ class ModelManager:
             raise RuntimeError("LTX-2 generator not loaded")
         
         return self._ltx2_generator
-
-    def get_upscaler(self) -> Optional["Upscaler"]:
-        """Get the upscaler if available.
-        
-        Returns:
-            Upscaler instance or None
-        """
-        if self._mode != ModelMode.VIDEO:
-            return None
-        
-        if self._upscaler and self._upscaler._loaded:
-            return self._upscaler
-        
-        return None

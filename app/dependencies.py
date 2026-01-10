@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from typing import TYPE_CHECKING, Annotated, Union, Optional
-from app.services.interfaces import BaseModelGenerator, ImageGenerator, ImageEditor, VideoGenerator, Upscaler
+from app.services.interfaces import BaseModelGenerator, ImageGenerator, ImageEditor, VideoGenerator
 
 from fastapi import Depends, Header, HTTPException
 
@@ -13,7 +13,6 @@ from app.services.storage import StorageService
 from app.services.mock_generator import MockGenerator
 
 if TYPE_CHECKING:
-    from app.services.video_upscaler import StreamDiffVSRUpscaler
     from app.services.model_manager import ModelManager
     from app.services.job_manager import JobManager
     from app.services.zimage_generator import ZImageGenerator
@@ -22,7 +21,6 @@ if TYPE_CHECKING:
 
 # Global instances (set during startup)
 _generator_instance: Union[MockGenerator, BaseModelGenerator, None] = None
-_upscaler_instance: Optional[Upscaler] = None
 _model_manager_instance: Optional["ModelManager"] = None
 _job_manager_instance: Optional["JobManager"] = None
 
@@ -79,14 +77,10 @@ def set_generator_instance(
     _generator_instance = instance
 
 
-def set_upscaler_instance(instance: Upscaler) -> None:
-    """Set the global upscaler instance (called during startup).
-
-    Args:
-        instance: The Upscaler instance to use for video upscaling
-    """
-    global _upscaler_instance
-    _upscaler_instance = instance
+def set_job_manager_instance(instance: "JobManager") -> None:
+    """Set the global JobManager instance (called during startup)."""
+    global _job_manager_instance
+    _job_manager_instance = instance
 
 
 def set_model_manager_instance(instance: "ModelManager") -> None:
@@ -97,12 +91,6 @@ def set_model_manager_instance(instance: "ModelManager") -> None:
     """
     global _model_manager_instance
     _model_manager_instance = instance
-
-
-def set_job_manager_instance(instance: "JobManager") -> None:
-    """Set the global JobManager instance (called during startup)."""
-    global _job_manager_instance
-    _job_manager_instance = instance
 
 
 def get_model_manager() -> "ModelManager":
@@ -131,15 +119,6 @@ def get_job_manager() -> "JobManager":
     if _job_manager_instance is None:
         raise RuntimeError("JobManager not initialized. Server startup may have failed.")
     return _job_manager_instance
-
-
-def get_upscaler() -> Optional[Upscaler]:
-    """Get the upscaler instance, if available.
-
-    Returns:
-        Upscaler instance or None if not initialized
-    """
-    return _upscaler_instance
 
 
 def get_generator(
