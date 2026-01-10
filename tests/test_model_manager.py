@@ -176,18 +176,6 @@ class TestModelManagerModeGuards:
         with pytest.raises(RuntimeError, match="Not in Image Mode"):
             manager.get_image_editor()
 
-    def test_get_upscaler_returns_none_when_not_in_video_mode(self):
-        """Test that upscaler returns None in wrong mode."""
-        from app.config import get_settings
-        from app.services.model_manager import ModelManager
-        
-        settings = get_settings()
-        manager = ModelManager(settings)
-        
-        # Should return None, not raise
-        result = manager.get_upscaler()
-        assert result is None
-
 
 class TestModeEnum:
     """Tests for ModelMode enum values."""

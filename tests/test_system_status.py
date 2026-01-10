@@ -55,16 +55,17 @@ class TestSystemStatusEndpoint:
         # GPU info should be None in mock mode
         assert data["gpu"] is None
 
-    def test_system_status_no_mode_info_in_mock(
+    def test_system_status_mode_info_present(
         self, client: TestClient, api_key_headers: dict
     ):
-        """Test that mode info is None in mock mode (no ModelManager)."""
+        """Test that mode info is present (ModelManager is initialized)."""
         response = client.get("/api/v1/system/status", headers=api_key_headers)
         assert response.status_code == 200
         
         data = response.json()
-        # In mock mode, ModelManager isn't initialized
-        assert data["mode"] is None
+        # ModelManager is now initialized, so mode info should be present
+        assert data["mode"] is not None
+        assert "mode" in data["mode"]
 
 
 class TestConcurrencyLimitsConfig:

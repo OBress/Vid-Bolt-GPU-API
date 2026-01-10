@@ -111,6 +111,10 @@ class Settings(BaseSettings):
     
     # Model mode (default startup mode)
     default_model_mode: Literal["image", "video"] = "image"
+    
+    # External service tokens (optional)
+    github_access_token: str = ""
+    hf_token: str = ""
 
     # Test Overrides (hidden from .env, used for testing real generators without weights)
     zimage_dry_run_override: Optional[bool] = None
