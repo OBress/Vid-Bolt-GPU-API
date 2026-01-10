@@ -134,6 +134,7 @@ class TestLTX2Generator:
         assert status["dry_run"] is True
         assert status["generator_type"] == "LTX2Generator"
         assert "checkpoint_path" in status
+        assert "spatial_upsampler_path" in status
         assert "device" in status
 
 

@@ -71,17 +71,10 @@ echo -e "${GREEN}  ✓ LightX2V LoRA downloaded${NC}"
 # =============================================================================
 echo -e "${YELLOW}[4/5] Downloading LTX-2 components...${NC}"
 
-# Main checkpoint
-echo -e "  Downloading ltx-2-19b-dev.safetensors..."
+# Main checkpoint (Distilled FP8 for 8-step inference)
+echo -e "  Downloading ltx-2-19b-distilled-fp8.safetensors..."
 huggingface-cli download Lightricks/LTX-2 \
-    ltx-2-19b-dev.safetensors \
-    --local-dir "$MODELS_DIR/ltx-2" \
-    --local-dir-use-symlinks False
-
-# Distilled LoRA
-echo -e "  Downloading ltx-2-19b-distilled-lora-384.safetensors..."
-huggingface-cli download Lightricks/LTX-2 \
-    ltx-2-19b-distilled-lora-384.safetensors \
+    ltx-2-19b-distilled-fp8.safetensors \
     --local-dir "$MODELS_DIR/ltx-2" \
     --local-dir-use-symlinks False
 
@@ -121,8 +114,7 @@ echo -e "  ├── loras/"
 echo -e "  │   ├── z-image/"
 echo -e "  │   └── qwen-image-edit-2511/"
 echo -e "  └── ltx-2/"
-echo -e "      ├── ltx-2-19b-dev.safetensors"
-echo -e "      ├── ltx-2-19b-distilled-lora-384.safetensors"
+echo -e "      ├── ltx-2-19b-distilled-fp8.safetensors"
 echo -e "      ├── ltx-2-spatial-upscaler-x2-1.0.safetensors"
 echo -e "      └── gemma-3-12b-it-qat-q4_0-unquantized/"
 echo ""

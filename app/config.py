@@ -35,8 +35,7 @@ class ModelPaths:
     LIGHTX2V_LORA_FILE = "Qwen-Image-Edit-2511-Lightning-8steps-V1.0-fp32.safetensors"
     
     # LTX-2 (video generation)
-    LTX2_CHECKPOINT = "models/ltx-2/ltx-2-19b-dev.safetensors"
-    LTX2_DISTILLED_LORA = "models/ltx-2/ltx-2-19b-distilled-lora-384.safetensors"
+    LTX2_CHECKPOINT = "models/ltx-2/ltx-2-19b-distilled-fp8.safetensors"
     LTX2_SPATIAL_UPSAMPLER = "models/ltx-2/ltx-2-spatial-upscaler-x2-1.0.safetensors"
     LTX2_GEMMA_ROOT = "models/ltx-2/gemma-3-12b-it-qat-q4_0-unquantized"
     
@@ -149,10 +148,6 @@ class Settings(BaseSettings):
     @property
     def ltx2_checkpoint_path(self) -> str:
         return ModelPaths.LTX2_CHECKPOINT
-    
-    @property
-    def ltx2_distilled_lora_path(self) -> str:
-        return ModelPaths.LTX2_DISTILLED_LORA
     
     @property
     def ltx2_spatial_upsampler_path(self) -> str:

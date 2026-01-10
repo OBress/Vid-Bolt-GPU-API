@@ -58,8 +58,8 @@ class LTX2Components:
 class LTX2Generator(VideoGenerator):
     """LTX-2 video generation service.
 
-    This service handles loading the LTX-2 KeyframeInterpolationPipeline
-    with 19b-dev checkpoint and distilled LoRA for two-stage video generation.
+    This service handles loading the LTX-2 DistilledPipeline
+    with 19b-distilled checkpoint for fast two-stage video generation.
     Supports both I2V and keyframe interpolation modes.
     
     The pipeline generates synchronized audio alongside video.
@@ -87,7 +87,6 @@ class LTX2Generator(VideoGenerator):
         if self.dry_run:
             logger.info("LTX-2 dry-run mode enabled - skipping model loading")
             logger.info(f"  Checkpoint: {self.settings.ltx2_checkpoint_path}")
-            logger.info(f"  Distilled LoRA: {self.settings.ltx2_distilled_lora_path}")
             logger.info(f"  Spatial upsampler: {self.settings.ltx2_spatial_upsampler_path}")
             logger.info(f"  Gemma root: {self.settings.ltx2_gemma_root}")
             logger.info(f"  Device: {self.settings.ltx2_device}")
@@ -102,15 +101,7 @@ class LTX2Generator(VideoGenerator):
             raise FileNotFoundError(
                 f"LTX-2 checkpoint not found at {checkpoint_path.absolute()}. "
                 f"Download with: huggingface-cli download Lightricks/LTX-2 "
-                f"ltx-2-19b-dev.safetensors --local-dir {checkpoint_path.parent}"
-            )
-
-        distilled_lora_path = Path(self.settings.ltx2_distilled_lora_path)
-        if not distilled_lora_path.exists():
-            raise FileNotFoundError(
-                f"LTX-2 distilled LoRA not found at {distilled_lora_path.absolute()}. "
-                f"Download with: huggingface-cli download Lightricks/LTX-2 "
-                f"ltx-2-19b-distilled-lora-384.safetensors --local-dir {distilled_lora_path.parent}"
+                f"ltx-2-19b-distilled-fp8.safetensors --local-dir {checkpoint_path.parent}"
             )
 
         spatial_upsampler_path = Path(self.settings.ltx2_spatial_upsampler_path)
@@ -129,35 +120,24 @@ class LTX2Generator(VideoGenerator):
                 f"--local-dir {gemma_root}"
             )
 
-        logger.info(f"Loading LTX-2 KeyframeInterpolationPipeline from {checkpoint_path}")
+        logger.info(f"Loading LTX-2 DistilledPipeline from {checkpoint_path}")
 
         try:
             import torch
-            from ltx_core.loader import LoraPathStrengthAndSDOps
-            from ltx_pipelines.keyframe_interpolation import KeyframeInterpolationPipeline
+            from ltx_pipelines.distilled import DistilledPipeline
         except ImportError as e:
             raise ImportError(
                 "LTX-2 packages are required. Install with: "
                 "pip install -e path/to/LTX-2/packages/ltx-pipelines"
             ) from e
 
-        # Prepare distilled LoRA
-        distilled_lora = [
-            LoraPathStrengthAndSDOps(
-                str(distilled_lora_path.absolute()),
-                1.0,
-                None  # Use default key mapping (no special sd_ops)
-            )
-        ]
-
         # Initialize pipeline
         device = torch.device(self.settings.ltx2_device)
-        pipeline = KeyframeInterpolationPipeline(
+        pipeline = DistilledPipeline(
             checkpoint_path=str(checkpoint_path.absolute()),
-            distilled_lora=distilled_lora,
             spatial_upsampler_path=str(spatial_upsampler_path.absolute()),
             gemma_root=str(gemma_root.absolute()),
-            loras=[],  # No additional LoRAs
+            loras=[],  # No extra LoRAs
             device=device,
             fp8transformer=self.settings.ltx2_fp8_enabled,
         )
@@ -168,7 +148,7 @@ class LTX2Generator(VideoGenerator):
         # Create temp directory for intermediate files
         self._temp_dir = tempfile.TemporaryDirectory(prefix="ltx2_")
 
-        logger.info("LTX-2 KeyframeInterpolationPipeline loaded successfully")
+        logger.info("LTX-2 DistilledPipeline loaded successfully")
 
     # ========================================================================
     # I2V (Image-to-Video) Generation
@@ -385,20 +365,18 @@ class LTX2Generator(VideoGenerator):
             input_image.save(image_path, format="PNG")
             images.append((str(image_path), frame_idx, strength))
 
+        
         # Configure tiling for video decoding
         tiling_config = TilingConfig.default()
 
-        # Generate video with audio
+        # Generate video with audio using DistilledPipeline
         video_chunks, audio = self.components.pipeline(
             prompt=params.prompt,
-            negative_prompt=params.negative_prompt,
             seed=seed,
             height=params.height,
             width=params.width,
             num_frames=num_frames,
             frame_rate=params.frame_rate,
-            num_inference_steps=self.settings.ltx2_num_inference_steps,
-            cfg_guidance_scale=self.settings.ltx2_cfg_guidance_scale,
             images=images,
             tiling_config=tiling_config,
             enhance_prompt=params.enhance_prompt,
@@ -558,7 +536,6 @@ class LTX2Generator(VideoGenerator):
             "is_loaded": self.is_loaded,
             "dry_run": self.dry_run,
             "checkpoint_path": self.settings.ltx2_checkpoint_path,
-            "distilled_lora_path": self.settings.ltx2_distilled_lora_path,
             "spatial_upsampler_path": self.settings.ltx2_spatial_upsampler_path,
             "gemma_root": self.settings.ltx2_gemma_root,
             "device": self.settings.ltx2_device,
