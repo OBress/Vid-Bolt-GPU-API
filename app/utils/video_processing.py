@@ -57,8 +57,11 @@ def trim_video_to_duration(
             clip.close()
             return video_data
         
-        # Trim to target duration
-        trimmed_clip = clip.subclip(0, target_duration)
+        # Trim to target duration (moviepy 2.x uses subclipped, 1.x uses subclip)
+        try:
+            trimmed_clip = clip.subclipped(0, target_duration)
+        except AttributeError:
+            trimmed_clip = clip.subclip(0, target_duration)
         
         # Write to temp output file
         with tempfile.NamedTemporaryFile(suffix=".mp4", delete=False) as output_file:
@@ -174,7 +177,7 @@ def center_crop_video(
         x2 = x1 + target_width
         y2 = y1 + target_height
         
-        # moviepy 2.x uses crop(), older versions use cropped()
+        # moviepy 2.x uses cropped(), older versions use crop()
         try:
             cropped_clip = clip.cropped(x1=x1, y1=y1, x2=x2, y2=y2)
         except AttributeError:
