@@ -108,6 +108,10 @@ class Settings(BaseSettings):
     log_level: str = "INFO"
     cors_allowed_origins: str = "http://localhost:3000"
     
+    # Model storage path (can be absolute or relative to project root)
+    # Inside Docker, this defaults to /models where the volume is mounted.
+    models_dir: str = "/models" if Path("/models").exists() else "models"
+    
     # Model mode (default startup mode)
     default_model_mode: Literal["image", "video"] = "image"
     
@@ -125,37 +129,48 @@ class Settings(BaseSettings):
     # ==========================================================================
     
     # --- Model Paths ---
+    def _resolve_model_path(self, relative_path: str) -> str:
+        """Resolve a model path relative to the configured models_dir."""
+        # Strip 'models/' prefix if it's already there and we're using models_dir
+        path = relative_path
+        if path.startswith("models/"):
+            path = path[len("models/"):]
+        
+        models_path = Path(self.models_dir)
+        if not models_path.is_absolute():
+            # If relative, anchor to project root
+            project_root = Path(__file__).parent.parent
+            models_path = project_root / models_path
+            
+        return str((models_path / path).absolute())
+
     @property
     def zimage_model_path(self) -> str:
-        return ModelPaths.ZIMAGE_MODEL
+        return self._resolve_model_path(ModelPaths.ZIMAGE_MODEL)
     
     @property
     def zimage_lora_path(self) -> str:
-        return ModelPaths.ZIMAGE_LORA
+        return self._resolve_model_path(ModelPaths.ZIMAGE_LORA)
     
     @property
     def lightx2v_model_path(self) -> str:
-        return ModelPaths.LIGHTX2V_MODEL
+        return self._resolve_model_path(ModelPaths.LIGHTX2V_MODEL)
     
     @property
     def lightx2v_lora_path(self) -> str:
-        return ModelPaths.LIGHTX2V_LORA
-    
-    @property
-    def lightx2v_lora_filename(self) -> str:
-        return ModelPaths.LIGHTX2V_LORA_FILE
+        return self._resolve_model_path(ModelPaths.LIGHTX2V_LORA)
     
     @property
     def ltx2_checkpoint_path(self) -> str:
-        return ModelPaths.LTX2_CHECKPOINT
+        return self._resolve_model_path(ModelPaths.LTX2_CHECKPOINT)
     
     @property
     def ltx2_spatial_upsampler_path(self) -> str:
-        return ModelPaths.LTX2_SPATIAL_UPSAMPLER
+        return self._resolve_model_path(ModelPaths.LTX2_SPATIAL_UPSAMPLER)
     
     @property
     def ltx2_gemma_root(self) -> str:
-        return ModelPaths.LTX2_GEMMA_ROOT
+        return self._resolve_model_path(ModelPaths.LTX2_GEMMA_ROOT)
     
     @property
     def stream_diffvsr_model_id(self) -> str:
