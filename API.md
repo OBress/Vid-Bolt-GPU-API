@@ -24,12 +24,11 @@ A high-performance FastAPI backend for AI-powered image and video generation.
 
 Vid-Bolt GPU API provides AI-powered generation capabilities:
 
-| Capability           | Model                | Description                       |
-| -------------------- | -------------------- | --------------------------------- |
-| **Text-to-Image**    | Z-Image Turbo        | Generate images from text prompts |
-| **Image Editing**    | Qwen-Image-Edit-2511 | Edit images with AI instructions  |
-| **Video Generation** | LTX-2 19B            | Generate videos from images       |
-| **Video Upscaling**  | Stream-DiffVSR       | Upscale 720p → 1080p              |
+| Capability           | Model                | Description                              |
+| -------------------- | -------------------- | ---------------------------------------- |
+| **Text-to-Image**    | Z-Image Turbo        | Generate images from text prompts        |
+| **Image Editing**    | Qwen-Image-Edit-2511 | Edit images with AI instructions         |
+| **Video Generation** | LTX-2 19B            | Generate videos from images (720p/1080p) |
 
 ### Architecture
 
@@ -42,11 +41,11 @@ Vid-Bolt GPU API provides AI-powered generation capabilities:
 │     IMAGE MODE       │          VIDEO MODE              │
 │  ┌────────────────┐  │  ┌────────────────────────────┐  │
 │  │ Z-Image Turbo  │  │  │ LTX-2 19B                  │  │
-│  │ (text-to-img)  │  │  │ (image-to-video)           │  │
-│  ├────────────────┤  │  ├────────────────────────────┤  │
-│  │ Qwen-Image-Edit│  │  │ Stream-DiffVSR             │  │
-│  │ (image editing)│  │  │ (video upscaling)          │  │
-│  └────────────────┘  │  └────────────────────────────┘  │
+│  │ (text-to-img)  │  │  │ (image-to-video, 720p/1080p│  │
+│  ├────────────────┤  │  │ with native 2x upsampling) │  │
+│  │ Qwen-Image-Edit│  │  └────────────────────────────┘  │
+│  │ (image editing)│  │                                  │
+│  └────────────────┘  │                                  │
 └──────────────────────┴──────────────────────────────────┘
 ```
 
@@ -100,7 +99,7 @@ The API operates in either **Image Mode** or **Video Mode** to efficiently manag
 | Mode    | Loaded Models                  | Endpoints Available                 |
 | ------- | ------------------------------ | ----------------------------------- |
 | `image` | Z-Image Turbo, Qwen-Image-Edit | `/api/v1/image/*`                   |
-| `video` | LTX-2, Stream-DiffVSR          | `/api/v1/video/*`, `/api/v1/ltx2/*` |
+| `video` | LTX-2 19B                      | `/api/v1/video/*`, `/api/v1/ltx2/*` |
 
 ### Mode Behavior
 
@@ -329,9 +328,13 @@ Generate a video from an input image.
 | `duration_seconds` | float | ❌ | Video length (1.0-8.0) | `4.0` |
 | `fps` | integer | ❌ | 8, 12, 16, 24, or 30 | `24` |
 | `aspect_ratio` | string | ❌ | Output aspect ratio | `16:9` |
+| `width` | integer | ❌ | Target width (512-1920), e.g. 1920 for 1080p | `null` |
+| `height` | integer | ❌ | Target height (512-1920), e.g. 1080 for 1080p | `null` |
 | `end_image_url` | string | ❌ | Optional final frame | `null` |
 | `seed` | integer | ❌ | Random seed | random |
 | `save_url` | string | ✅ | Presigned PUT URL for output | - |
+
+> **Note:** For 1080p video, set `width: 1920` and `height: 1080`. Without explicit dimensions, 16:9 defaults to 720p.
 
 **Example:**
 
@@ -378,10 +381,14 @@ Image-to-video generation with optional end frame.
 | `duration_seconds` | float | ❌ | Video length (1.0-8.0) | `4.0` |
 | `frame_rate` | float | ❌ | Frames per second | `24.0` |
 | `aspect_ratio` | string | ❌ | Output aspect ratio | `16:9` |
+| `width` | integer | ❌ | Target width (512-1920), e.g. 1920 for 1080p | `null` |
+| `height` | integer | ❌ | Target height (512-1920), e.g. 1080 for 1080p | `null` |
 | `end_image_url` | string | ❌ | Final frame for interpolation | `null` |
 | `seed` | integer | ❌ | Random seed | random |
-| `enhance_prompt` | boolean | ❌ | AI prompt enhancement | `true` |
+| `enhance_prompt` | boolean | ❌ | AI prompt enhancement | `false` |
 | `save_url` | string | ✅ | Presigned PUT URL | - |
+
+> **Note:** For 1080p video, set `width: 1920` and `height: 1080`. Without explicit dimensions, 16:9 defaults to 720p.
 
 **Response:**
 
@@ -391,12 +398,7 @@ Image-to-video generation with optional end frame.
   "generation_time": 52.3,
   "save_url": "https://storage.example.com/video.mp4",
   "duration_seconds": 4.0,
-  "has_audio": true,
-  "upscale_info": {
-    "original_resolution": "720p",
-    "upscaled_resolution": "1080p",
-    "upscale_time_seconds": 8.5
-  }
+  "has_audio": false
 }
 ```
 
@@ -433,9 +435,13 @@ Keyframe interpolation between multiple images.
   ],
   "duration_seconds": 4.0,
   "frame_rate": 24.0,
+  "width": 1920,
+  "height": 1080,
   "save_url": "https://storage.example.com/interpolated.mp4?sig=..."
 }
 ```
+
+> **Note:** For 1080p, include `width` and `height`. Keyframe images should match target resolution.
 
 ---
 
@@ -511,12 +517,17 @@ Exceeded requests receive `503 Service Unavailable`.
 
 ## Changelog
 
+### v0.2.0
+
+- Removed Stream-DiffVSR upscaler (using LTX-2 native 2x upsampling)
+- Added `width` and `height` parameters for explicit 1080p support
+- Fixed video resolution handling
+
 ### v0.1.0
 
 - Initial release
 - Image generation (Z-Image Turbo)
 - Image editing (Qwen-Image-Edit)
 - Video generation (LTX-2)
-- Video upscaling (Stream-DiffVSR)
 - Dynamic mode switching
 - GPU monitoring endpoint
