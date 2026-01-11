@@ -196,3 +196,79 @@ class TestModeEnum:
         # Should be usable as string
         assert isinstance(ModelMode.IMAGE.value, str)
         assert str(ModelMode.IMAGE) == "ModelMode.IMAGE"
+
+
+class TestVRAMMode:
+    """Tests for VRAM loading mode functionality."""
+
+    @pytest.mark.asyncio
+    async def test_set_vram_mode_static_loads_all_models(self):
+        """Test valid VRAM mode transition to static."""
+        from app.config import get_settings
+        from app.services.model_manager import ModelManager, VRAMLoadMode
+        
+        settings = get_settings()
+        manager = ModelManager(settings)
+        
+        # Mock loading methods
+        manager._load_image_models = AsyncMock()
+        manager._load_video_models = AsyncMock()
+        
+        await manager.set_vram_mode(VRAMLoadMode.STATIC)
+        
+        assert manager.vram_mode == VRAMLoadMode.STATIC
+        manager._load_image_models.assert_called_once()
+        manager._load_video_models.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_set_vram_mode_dynamic_unloads_unused(self):
+        """Test valid VRAM mode transition to dynamic unloads unused."""
+        from app.config import get_settings
+        from app.services.model_manager import ModelManager, VRAMLoadMode, ModelMode
+        
+        settings = get_settings()
+        manager = ModelManager(settings)
+        manager._mode = ModelMode.IMAGE
+        manager._vram_mode = VRAMLoadMode.STATIC # Start in static
+        
+        # Mock unloading methods
+        manager._unload_video_models = AsyncMock()
+        manager._unload_image_models = AsyncMock()
+        
+        # Switch to dynamic while in Image mode -> should unload video
+        await manager.set_vram_mode(VRAMLoadMode.DYNAMIC)
+        
+        assert manager.vram_mode == VRAMLoadMode.DYNAMIC
+        manager._unload_video_models.assert_called_once()
+        manager._unload_image_models.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_ensure_mode_static_prevents_unloading(self):
+        """Test that switching modes in static VRAM mode prevents unloading."""
+        from app.config import get_settings
+        from app.services.model_manager import ModelManager, VRAMLoadMode, ModelMode
+        
+        settings = get_settings()
+        manager = ModelManager(settings)
+        manager._vram_mode = VRAMLoadMode.STATIC
+        manager._mode = ModelMode.IMAGE
+        
+        # Mock methods
+        manager._unload_video_models = AsyncMock()
+        manager._load_video_models = AsyncMock()
+        manager._unload_image_models = AsyncMock()
+        manager._load_image_models = AsyncMock()
+        
+        # Switch to video mode
+        # Since we are static, verify we DO NOT unload image models
+        # We still "load" video models (idempotent, effectively checks they are loaded)
+        
+        # NOTE: logic in switch_to_video_mode does:
+        # if static: skips unload
+        # calls load_video_models
+        
+        await manager.switch_to_video_mode()
+        
+        manager._unload_image_models.assert_not_called()
+        manager._load_video_models.assert_called_once()
+        assert manager.current_mode == ModelMode.VIDEO

@@ -39,6 +39,12 @@ class ModelMode(str, Enum):
     SWITCHING = "switching"
 
 
+class VRAMLoadMode(str, Enum):
+    """VRAM loading strategy."""
+    DYNAMIC = "dynamic"  # Load/unload models as needed (saves VRAM)
+    STATIC = "static"    # Keep all models in VRAM (instant switching)
+
+
 @dataclass
 class ModeStatus:
     """Status information about the current mode."""
@@ -77,6 +83,7 @@ class ModelManager:
         """
         self._settings = settings
         self._mode = ModelMode.NONE
+        self._vram_mode = VRAMLoadMode.DYNAMIC
         self._is_busy = False
         self._active_job_id: Optional[str] = None
         self._lock = asyncio.Lock()
@@ -121,6 +128,42 @@ class ModelManager:
             loaded_models=loaded_models,
         )
 
+    @property
+    def vram_mode(self) -> VRAMLoadMode:
+        """Get the current VRAM loading mode."""
+        return self._vram_mode
+
+    async def set_vram_mode(self, mode: VRAMLoadMode) -> None:
+        """Set the VRAM loading mode.
+        
+        Args:
+            mode: Target VRAM mode (DYNAMIC or STATIC)
+            
+        Raises:
+            RuntimeError: If currently busy with a job
+        """
+        if self._is_busy:
+            raise RuntimeError("Cannot change VRAM mode while a job is in progress")
+        
+        if mode == self._vram_mode:
+            logger.info(f"Already in {mode.value} VRAM mode")
+            return
+        
+        logger.info(f"Switching VRAM mode from {self._vram_mode.value} to {mode.value}")
+        
+        if mode == VRAMLoadMode.STATIC:
+            # Load all models for instant switching
+            await self.load_all_models()
+        else:
+            # Switch to dynamic: unload models not needed for current mode
+            if self._mode == ModelMode.IMAGE:
+                await self._unload_video_models()
+            elif self._mode == ModelMode.VIDEO:
+                await self._unload_image_models()
+        
+        self._vram_mode = mode
+        logger.info(f"VRAM mode set to {mode.value}")
+
     async def load_all_models(self) -> None:
         """Load all models (Image + Video) into VRAM.
         
@@ -133,7 +176,8 @@ class ModelManager:
         await self._load_image_models()
         await self._load_video_models()
         
-        # Default to Image mode initially, but everything is ready
+        # Set VRAM mode to static and default to Image mode
+        self._vram_mode = VRAMLoadMode.STATIC
         self._mode = ModelMode.IMAGE
         logger.info("All models loaded successfully")
 
@@ -230,8 +274,9 @@ class ModelManager:
         self._mode = ModelMode.SWITCHING
         
         try:
-            # Unload video models
-            await self._unload_video_models()
+            # Unload video models (if not in static mode)
+            if self._vram_mode != VRAMLoadMode.STATIC:
+                await self._unload_video_models()
             
             # Load image models (if not already loaded)
             await self._load_image_models()
@@ -263,8 +308,9 @@ class ModelManager:
         self._mode = ModelMode.SWITCHING
         
         try:
-            # Unload image models
-            await self._unload_image_models()
+            # Unload image models (if not in static mode)
+            if self._vram_mode != VRAMLoadMode.STATIC:
+                await self._unload_image_models()
             
             # Load video models (if not already loaded)
             await self._load_video_models()
