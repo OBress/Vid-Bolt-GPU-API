@@ -138,6 +138,96 @@ class TestLTX2Generator:
         assert "device" in status
 
 
+    @pytest.mark.asyncio
+    async def test_generate_keyframe_video_full_pipeline_trimming(self, settings, sample_image_bytes):
+        """Test trimming and cropping logic integration."""
+        from app.services.ltx2_generator import LTX2Generator, KeyframeInterpolationParams, LTX2Components
+        import torch
+        import sys
+        import tempfile
+
+        # Force non-dry-run
+        settings.ltx2_dry_run_override = False
+        generator = LTX2Generator(settings)
+        # Mock internal state as loaded
+        generator.is_loaded = True
+        # Use real temp dir so image saving works
+        temp_dir = tempfile.TemporaryDirectory()
+        generator._temp_dir = temp_dir
+        
+        # Generated: 10 frames, 100x100
+        generated_frames = 10
+        h, w = 100, 100
+        chunk = torch.zeros((generated_frames, h, w, 3), dtype=torch.uint8)
+        
+        # Mock pipeline components
+        pipeline_mock = MagicMock()
+        pipeline_mock.return_value = ([chunk], None)
+        generator.components = LTX2Components(
+            distilled_pipeline=pipeline_mock,
+            keyframe_pipeline=pipeline_mock,
+        )
+        
+        # Request: 0.1s (2 frames), 60x60
+        params = KeyframeInterpolationParams(
+            job_id="test-trim-001",
+            prompt="test",
+            negative_prompt="",
+            keyframes=[(sample_image_bytes, 0, 1.0)],
+            duration_seconds=0.1,
+            frame_rate=20.0, # 0.1 * 20 = 2 frames exact
+            width=60,
+            height=60,
+            seed=123,
+        )
+        
+        # Mock external LTX dependencies that are missing in test env
+        mock_ltx_pipelines = MagicMock()
+        mock_media_io = MagicMock()
+        mock_ltx_pipelines.utils.media_io = mock_media_io
+        # Setup encode_video mock
+        mock_encode = MagicMock()
+        def create_dummy_output(*args, **kwargs):
+             if "output_path" in kwargs:
+                 with open(kwargs["output_path"], "wb") as f:
+                     f.write(b"dummy_video_content")
+        mock_encode.side_effect = create_dummy_output
+        mock_media_io.encode_video = mock_encode
+        
+        mock_ltx_core = MagicMock()
+        mock_video_vae = MagicMock()
+        mock_ltx_core.model.video_vae = mock_video_vae
+        # Setup helpers
+        mock_video_vae.get_video_chunks_number.return_value = 1
+        
+        modules = {
+            "ltx_pipelines": mock_ltx_pipelines,
+            "ltx_pipelines.utils": mock_ltx_pipelines.utils,
+            "ltx_pipelines.utils.media_io": mock_media_io,
+            "ltx_pipelines.utils.constants": MagicMock(),
+            "ltx_core": mock_ltx_core,
+            "ltx_core.model": mock_ltx_core.model,
+            "ltx_core.model.video_vae": mock_video_vae,
+        }
+        
+        with patch.dict(sys.modules, modules), \
+             patch("torch.inference_mode"):
+            
+            await generator.generate_keyframe_video(params)
+            
+            # Verify encode_video received the modifed tensor
+            assert mock_encode.called
+            call_kwargs = mock_encode.call_args[1]
+            video_tensor = call_kwargs["video"]
+            
+            # Check trimming: 10 -> 2
+            assert video_tensor.shape[0] == 2
+            
+            # Check cropping: 100x100 -> 60x60
+            assert video_tensor.shape[1] == 60
+            assert video_tensor.shape[2] == 60
+
+
 class TestFrameRounding:
     """Test frame rounding utility function."""
 

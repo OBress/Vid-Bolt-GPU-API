@@ -307,32 +307,17 @@ class LTX2Generator(VideoGenerator):
         loop = asyncio.get_event_loop()
         video_data, has_audio = await loop.run_in_executor(
             None,
-            lambda: self._generate_sync(params, num_frames, seed),
+            lambda: self._generate_sync(
+                params, 
+                num_frames, 
+                seed, 
+                target_width=target_width, 
+                target_height=target_height
+            ),
         )
-
-        # Trim video to exact requested duration
-        from app.utils.video_processing import trim_video_to_duration, center_crop_video
-        trimmed_video = await loop.run_in_executor(
-            None,
-            lambda: trim_video_to_duration(video_data, params.duration_seconds),
-        )
-
-        # Center crop to final target dimensions if we padded for 64-divisibility
-        # LTX-2's native 2x upsampler already handles resolution (Stage 1 + Stage 2)
-        if (padded_width, padded_height) != (target_width, target_height):
-            logger.info(
-                f"Cropping video from {padded_width}x{padded_height} to {target_width}x{target_height}",
-                extra={"job_id": params.job_id},
-            )
-            final_video = await loop.run_in_executor(
-                None,
-                lambda: center_crop_video(trimmed_video, target_width, target_height),
-            )
-        else:
-            final_video = trimmed_video
 
         return LTX2VideoResult(
-            video_data=final_video,
+            video_data=video_data,
             width=target_width,
             height=target_height,
             duration_seconds=params.duration_seconds,
@@ -346,7 +331,9 @@ class LTX2Generator(VideoGenerator):
         self, 
         params: KeyframeInterpolationParams, 
         num_frames: int,
-        seed: int
+        seed: int,
+        target_width: int,
+        target_height: int,
     ) -> tuple[bytes, bool]:
         """Synchronous video generation (runs in thread pool).
         
@@ -366,7 +353,8 @@ class LTX2Generator(VideoGenerator):
         # This ensures encode_video (which iterates the video generator) runs in the same context
         with torch.inference_mode():
             return self._generate_sync_inner(
-                params, num_frames, seed, TilingConfig, get_video_chunks_number, encode_video, AUDIO_SAMPLE_RATE
+                params, num_frames, seed, target_width, target_height,
+                TilingConfig, get_video_chunks_number, encode_video, AUDIO_SAMPLE_RATE
             )
 
     def _generate_sync_inner(
@@ -374,6 +362,8 @@ class LTX2Generator(VideoGenerator):
         params: KeyframeInterpolationParams,
         num_frames: int,
         seed: int,
+        target_width: int,
+        target_height: int,
         TilingConfig,
         get_video_chunks_number,
         encode_video,
@@ -464,12 +454,54 @@ class LTX2Generator(VideoGenerator):
                 enhance_prompt=params.enhance_prompt,
             )
 
+        # Consolidate video chunks into a single tensor for cropping/trimming
+        import torch
+        if isinstance(video_chunks, torch.Tensor):
+            video_tensor = video_chunks
+        else:
+            # Materialize iterator (list of tensors) and concatenate
+            chunks = list(video_chunks)
+            if not chunks:
+                 raise RuntimeError("No video chunks generated")
+            video_tensor = torch.cat(chunks, dim=0)
+
+        # Apply In-Memory Optimization
+        logger.info("Applying in-memory cropping and trimming...")
+        
+        # Calculate target frames based on exact duration
+        # +1 frame because start frame is included (e.g. 24fps * 5s = 120 frames, but we might have generated 121 or 129)
+        # Actually video_processing logic used exact duration.
+        # params.duration_seconds * params.frame_rate gives float.
+        # We ceil-ed it for generation. Now we floor/exact it for trim.
+        target_frames_exact = int(params.duration_seconds * params.frame_rate)
+        
+        # Ensure we have at least 1 frame (sanity check)
+        target_frames_exact = max(1, target_frames_exact)
+        
+        video_tensor = self._crop_and_trim_video(
+            video_tensor,
+            current_width=params.width, # Padded width
+            current_height=params.height, # Padded height
+            target_width=target_width,
+            target_height=target_height,
+            target_frames=target_frames_exact
+        )
+
+        if audio is not None:
+            audio = self._trim_audio(
+                audio,
+                target_duration=params.duration_seconds,
+                sample_rate=AUDIO_SAMPLE_RATE
+            )
+
         # Encode to MP4 with audio
         output_path = Path(self._temp_dir.name) / f"{params.job_id}_output.mp4"
-        video_chunks_number = get_video_chunks_number(num_frames, tiling_config)
+        
+        # When passing a single tensor, video_chunks_number is 1
+        video_chunks_number = 1
 
         encode_video(
-            video=video_chunks,
+            video=video_tensor,
             fps=params.frame_rate,
             audio=audio,
             audio_sample_rate=AUDIO_SAMPLE_RATE,
@@ -494,6 +526,57 @@ class LTX2Generator(VideoGenerator):
             logger.warning(f"Failed to clean up temp files: {e}")
 
         return video_data, has_audio
+
+    def _crop_and_trim_video(
+        self,
+        video: "torch.Tensor",
+        current_width: int,
+        current_height: int,
+        target_width: int,
+        target_height: int,
+        target_frames: int,
+    ) -> "torch.Tensor":
+        """Crop and trim video tensor to target dimensions and frame count.
+
+        Assumes video tensor shape is (Frames, Height, Width, Channels).
+        """
+        # 1. Trim frames
+        if video.shape[0] > target_frames:
+            logger.info(f"Trimming video tensor from {video.shape[0]} to {target_frames} frames")
+            video = video[:target_frames]
+
+        # 2. Crop dimensions
+        if current_width != target_width or current_height != target_height:
+            logger.info(f"Cropping video tensor from {current_width}x{current_height} to {target_width}x{target_height}")
+            
+            # Center crop
+            x_center = current_width // 2
+            y_center = current_height // 2
+            x1 = x_center - target_width // 2
+            y1 = y_center - target_height // 2
+            x2 = x1 + target_width
+            y2 = y1 + target_height
+            
+            # Slice: (Frames, Height, Width, Channels)
+            video = video[:, y1:y2, x1:x2, :]
+        
+        return video
+
+    def _trim_audio(
+        self,
+        audio: "torch.Tensor",
+        target_duration: float,
+        sample_rate: int,
+    ) -> "torch.Tensor":
+        """Trim audio tensor to target duration."""
+        target_samples = int(target_duration * sample_rate)
+        
+        # Audio shape: (Samples, Channels) or (Samples,)
+        if audio.shape[0] > target_samples:
+            logger.info(f"Trimming audio tensor from {audio.shape[0]} to {target_samples} samples")
+            audio = audio[:target_samples]
+            
+        return audio
 
     async def _generate_dry_run(
         self, 
