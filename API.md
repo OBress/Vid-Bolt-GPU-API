@@ -17,6 +17,7 @@ A high-performance FastAPI backend for AI-powered image and video generation.
   - [LTX-2 Video Generation](#ltx-2-video-generation)
 - [Error Handling](#error-handling)
 - [Configuration](#configuration)
+- [System Settings](#system-settings)
 
 ---
 
@@ -37,6 +38,7 @@ Vid-Bolt GPU API provides AI-powered generation capabilities:
 │                    Vid-Bolt GPU API                      │
 ├─────────────────────────────────────────────────────────┤
 │  Mode Manager - Controls which models are loaded         │
+│  (Supports Static All-Load or Dynamic Loading)           │
 ├──────────────────────┬──────────────────────────────────┤
 │     IMAGE MODE       │          VIDEO MODE              │
 │  ┌────────────────┐  │  ┌────────────────────────────┐  │
@@ -103,9 +105,18 @@ The API operates in either **Image Mode** or **Video Mode** to efficiently manag
 
 ### Mode Behavior
 
-- **Wrong mode requests** → `503 Service Unavailable`
-- **Busy with generation** → `503 Service Unavailable`
-- **Mode switching** → Takes ~30-60 seconds (models unload/load)
+The API supports two VRAM loading strategies, configurable via `/api/v1/settings/vram-mode`:
+
+1. **Static Mode (Default)**:
+
+   - All models (Image + Video) are loaded at startup.
+   - **Switching is INSTANT**.
+   - Requires high VRAM (approx 24GB+).
+
+2. **Dynamic Mode**:
+   - Only models for the current mode are loaded.
+   - **Switching takes ~30-60 seconds** (unloading/reloading).
+   - Saves VRAM, allowing operation on smaller GPUs.
 
 ### Concurrency Limits
 
@@ -223,6 +234,44 @@ Switch between Image Mode and Video Mode.
 **Errors:**
 
 - `503` - Mode switch already in progress or system busy
+
+---
+
+### System Settings
+
+#### `GET /api/v1/settings/vram-mode`
+
+Get current VRAM loading strategy.
+
+**Response:**
+
+```json
+{
+  "mode": "static",
+  "description": "Static loading - instant switching, higher VRAM usage"
+}
+```
+
+#### `POST /api/v1/settings/vram-mode`
+
+Set VRAM loading strategy.
+
+**Request:**
+
+```json
+{
+  "mode": "dynamic"
+}
+```
+
+**Response:**
+
+```json
+{
+  "mode": "dynamic",
+  "description": "Dynamic loading - saves VRAM"
+}
+```
 
 ---
 
