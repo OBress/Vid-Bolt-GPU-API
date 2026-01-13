@@ -287,6 +287,10 @@ class ModelManager:
         logger.info("Loading ALL models into VRAM...")
         self._is_switching = True
         
+        # Clear any stale GPU memory before loading (helps with container restarts)
+        self._force_gc()
+        logger.info("Cleared GPU cache before loading models")
+        
         try:
             await self._load_zimage()
             await self._load_lightx2v()
