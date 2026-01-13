@@ -78,6 +78,12 @@ class InferenceConfig:
     LTX2_CFG_GUIDANCE_SCALE = 1.0  # Distilled LoRA works best without CFG (1.0)
     LTX2_DEFAULT_FRAME_RATE = 24.0
     
+    # LTX-2 Concurrent Generation Settings
+    # Enables parallel video generation using shared pipeline (stateless architecture)
+    LTX2_CONCURRENT_ENABLED = True  # Enable concurrent video generation
+    LTX2_MAX_CONCURRENT_VIDEOS = 4  # Absolute cap on concurrent videos
+    LTX2_CONCURRENT_VRAM_BUDGET_GB = 72.0  # VRAM available for activations (after base model)
+    
     # Job timeouts (seconds)
     IMAGE_JOB_TIMEOUT = 120      # 2 minutes for image jobs
     VIDEO_JOB_TIMEOUT = 600      # 10 minutes for video jobs
@@ -271,6 +277,21 @@ class Settings(BaseSettings):
         if self.ltx2_dry_run_override is not None:
             return self.ltx2_dry_run_override
         return self.mock_mode
+    
+    @property
+    def ltx2_concurrent_enabled(self) -> bool:
+        """Whether concurrent video generation is enabled."""
+        return InferenceConfig.LTX2_CONCURRENT_ENABLED
+    
+    @property
+    def ltx2_max_concurrent_videos(self) -> int:
+        """Maximum concurrent video generations."""
+        return InferenceConfig.LTX2_MAX_CONCURRENT_VIDEOS
+    
+    @property
+    def ltx2_concurrent_vram_budget_gb(self) -> float:
+        """VRAM budget for concurrent video activations."""
+        return InferenceConfig.LTX2_CONCURRENT_VRAM_BUDGET_GB
     
     # --- Limits ---
     @property

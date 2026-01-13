@@ -442,14 +442,21 @@ class JobManager:
                     timeout=timeout_seconds
                 )
             elif job_type == JobType.VIDEO_GENERATION:
-                # LTX-2: sequential batch with warm model
+                # LTX-2: concurrent batch with shared pipeline
                 generator = self._model_manager.get_video_generator()
-                # Scale timeout by number of videos (sequential processing)
-                batch_timeout = timeout_seconds * len(jobs)
-                results = await asyncio.wait_for(
-                    generator.generate_batch(params_list),
-                    timeout=batch_timeout
-                )
+                # Scale timeout by number of videos (even concurrent has limits)
+                batch_timeout = InferenceConfig.VIDEO_JOB_TIMEOUT * len(jobs)
+                # Use concurrent batch if enabled, otherwise sequential
+                if hasattr(generator, 'concurrent_enabled') and generator.concurrent_enabled:
+                    results = await asyncio.wait_for(
+                        generator.generate_concurrent_batch(params_list),
+                        timeout=batch_timeout
+                    )
+                else:
+                    results = await asyncio.wait_for(
+                        generator.generate_batch(params_list),
+                        timeout=batch_timeout
+                    )
             else:
                 raise RuntimeError(f"Unsupported job type for batching: {job_type}")
             

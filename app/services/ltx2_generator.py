@@ -37,6 +37,8 @@ from app.models.internal import (
     VideoGenerationResult as LTX2VideoResult,
 )
 from app.models.ltx2_generation import round_up_to_valid_frames
+from app.services.ltx2_concurrent import LTX2ConcurrencyController
+from app.services import vram_estimator
 
 logger = logging.getLogger(__name__)
 
@@ -78,6 +80,10 @@ class LTX2Generator(VideoGenerator):
         self.is_loaded = False
         self.dry_run = settings.ltx2_dry_run
         self._temp_dir: tempfile.TemporaryDirectory | None = None
+        
+        # Concurrent generation support
+        self._concurrent_controller: LTX2ConcurrencyController | None = None
+        self._concurrent_enabled = getattr(settings, 'ltx2_concurrent_enabled', True)
 
     def load_models(self) -> None:
         """Load LTX-2 pipeline components.
@@ -312,6 +318,122 @@ class LTX2Generator(VideoGenerator):
             f"{len(results)} videos succeeded"
         )
         return results
+
+    # ========================================================================
+    # Concurrent Batch Video Generation (Shared Pipeline)
+    # ========================================================================
+
+    async def generate_concurrent_batch(
+        self,
+        params_list: list[LTX2VideoParams],
+    ) -> list[LTX2VideoResult]:
+        """Generate multiple videos concurrently using shared pipeline.
+        
+        This method leverages the stateless nature of LTX-2's DistilledPipeline
+        to run multiple video generations in parallel. Concurrency is dynamically
+        limited based on video duration and available VRAM.
+        
+        Falls back to sequential processing if concurrent generation fails.
+        
+        Args:
+            params_list: List of video generation parameters
+            
+        Returns:
+            List of VideoGenerationResults in the same order as params_list
+            
+        Raises:
+            RuntimeError: If models are not loaded
+        """
+        if not params_list:
+            return []
+        
+        if not self.is_loaded:
+            raise RuntimeError(
+                "LTX-2 models not loaded. Call load_models() first or set "
+                "LTX2_DRY_RUN=true for testing."
+            )
+        
+        # Single item - use fast path
+        if len(params_list) == 1:
+            return [await self.generate_video(params_list[0])]
+        
+        # Check if concurrent is disabled - fall back to sequential
+        if not self._concurrent_enabled:
+            logger.info("Concurrent generation disabled, using sequential batch")
+            return await self.generate_batch(params_list)
+        
+        # Calculate dynamic concurrency based on longest video duration
+        max_duration = max(p.duration_seconds for p in params_list)
+        max_width = max(p.width for p in params_list)
+        max_height = max(p.height for p in params_list)
+        fps = params_list[0].frame_rate
+        
+        max_concurrent = vram_estimator.calculate_ltx2_max_concurrent(
+            duration_seconds=max_duration,
+            width=max_width,
+            height=max_height,
+            fps=fps,
+        )
+        
+        logger.info(
+            f"Starting concurrent batch of {len(params_list)} videos "
+            f"(max_concurrent={max_concurrent}, longest={max_duration:.1f}s)"
+        )
+        
+        # Create semaphore for this batch
+        semaphore = asyncio.Semaphore(max_concurrent)
+        
+        async def generate_one(idx: int, params: LTX2VideoParams) -> LTX2VideoResult:
+            """Generate a single video with semaphore-controlled concurrency."""
+            async with semaphore:
+                logger.debug(
+                    f"Starting video {idx+1}/{len(params_list)} "
+                    f"(job_id={params.job_id}, {params.duration_seconds}s)"
+                )
+                try:
+                    result = await self.generate_video(params)
+                    logger.debug(f"Completed video {idx+1}/{len(params_list)}")
+                    return result
+                except Exception as e:
+                    logger.error(
+                        f"Video {idx+1}/{len(params_list)} failed: {e}", 
+                        exc_info=True
+                    )
+                    # Return empty result to maintain ordering
+                    return LTX2VideoResult(
+                        video_data=b"",
+                        width=params.width,
+                        height=params.height,
+                        duration_seconds=params.duration_seconds,
+                        frame_rate=params.frame_rate,
+                        has_audio=False,
+                        seed=params.seed or 0,
+                    )
+        
+        # Run all generations concurrently (semaphore limits parallelism)
+        try:
+            results = await asyncio.gather(*[
+                generate_one(i, p) for i, p in enumerate(params_list)
+            ])
+        except Exception as e:
+            logger.error(
+                f"Concurrent batch failed: {e}. Falling back to sequential.",
+                exc_info=True
+            )
+            # Fallback to sequential processing
+            return await self.generate_batch(params_list)
+        
+        succeeded = sum(1 for r in results if r.video_data)
+        logger.info(
+            f"Concurrent batch complete: {succeeded}/{len(results)} videos succeeded"
+        )
+        
+        return list(results)
+
+    @property
+    def concurrent_enabled(self) -> bool:
+        """Whether concurrent video generation is enabled."""
+        return self._concurrent_enabled
 
     # ========================================================================
     # Keyframe Interpolation Generation

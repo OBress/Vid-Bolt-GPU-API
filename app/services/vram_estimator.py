@@ -68,9 +68,20 @@ LTX2_BASE_ACTIVATION_GB = 5.0           # Base overhead per video
 LTX2_GB_PER_MEGAPIXEL = 0.015           # Per megapixel scaling (at full res)
 LTX2_GB_PER_FRAME = 0.08                # Per frame scaling (at 1080p baseline)
 
-# Batch limit for LTX-2 (sequential only - no parallel batching)
-# Videos are processed one-at-a-time with warm model to avoid OOM
-MAX_BATCH_SIZE_LTX2 = 1  # Sequential batching only
+# Batch limit for LTX-2 sequential processing (fallback mode)
+MAX_BATCH_SIZE_LTX2 = 1  # Sequential batching when concurrent disabled
+
+# =============================================================================
+# LTX-2 Concurrent Video Generation Constants
+# =============================================================================
+# The LTX-2 DistilledPipeline.__call__ is stateless - all generation state
+# is local variables, model weights are read-only. This enables safe concurrent
+# video generation with a shared pipeline.
+
+LTX2_CONCURRENT_OVERHEAD_GB = 2.0      # Additional overhead per concurrent slot
+LTX2_MAX_CONCURRENT_VIDEOS = 4         # Absolute cap regardless of VRAM
+LTX2_CONCURRENT_VRAM_BUDGET_GB = 72.0  # Available VRAM after base model + safety
+LTX2_CONCURRENT_SAFETY_FACTOR = 0.9    # Use 90% of calculated capacity for safety
 
 
 @dataclass
@@ -439,4 +450,154 @@ def get_ltx2_base_vram(fp8_enabled: bool = True) -> float:
     if fp8_enabled:
         return LTX2_BASE_MODEL_FP8_GB
     return LTX2_BASE_MODEL_FP16_GB
+
+
+# =============================================================================
+# LTX-2 Concurrent Video Generation Functions
+# =============================================================================
+
+def estimate_ltx2_concurrent_vram(
+    duration_seconds: float,
+    width: int = 1920,
+    height: int = 1080,
+    fps: float = 24.0,
+) -> float:
+    """Estimate VRAM usage for a single concurrent LTX-2 video generation.
+    
+    This calculates the activation memory needed for one video during
+    concurrent generation with a shared pipeline.
+    
+    Args:
+        duration_seconds: Video duration in seconds
+        width: Video width in pixels
+        height: Video height in pixels
+        fps: Frames per second
+        
+    Returns:
+        Estimated VRAM usage in GB for one concurrent video
+    """
+    # Calculate frame count
+    num_frames = int(duration_seconds * fps) + 1
+    
+    # Calculate megapixels at full resolution
+    megapixels = (width * height) / 1_000_000
+    
+    # Normalize frame scaling to 1080p baseline (2.07 MP)
+    frame_scale = num_frames * (megapixels / 2.07)
+    
+    # Base activation + per-megapixel + per-frame + concurrent overhead
+    estimated_gb = (
+        LTX2_BASE_ACTIVATION_GB +
+        (megapixels * LTX2_GB_PER_MEGAPIXEL * num_frames) +
+        (frame_scale * LTX2_GB_PER_FRAME) +
+        LTX2_CONCURRENT_OVERHEAD_GB
+    )
+    
+    return estimated_gb
+
+
+def calculate_ltx2_max_concurrent(
+    duration_seconds: float,
+    width: int = 1920,
+    height: int = 1080,
+    fps: float = 24.0,
+    available_vram_gb: float | None = None,
+) -> int:
+    """Calculate maximum concurrent LTX-2 video generations.
+    
+    Determines how many videos of the given duration can be generated
+    concurrently based on available VRAM. Uses conservative estimates
+    with safety margins.
+    
+    Args:
+        duration_seconds: Video duration in seconds (use longest in batch)
+        width: Video width in pixels
+        height: Video height in pixels  
+        fps: Frames per second
+        available_vram_gb: Override for available VRAM (None = use default budget)
+        
+    Returns:
+        Maximum safe concurrent video count (1 to LTX2_MAX_CONCURRENT_VIDEOS)
+    """
+    # Use configured budget if not specified
+    if available_vram_gb is None:
+        available_vram_gb = LTX2_CONCURRENT_VRAM_BUDGET_GB
+    
+    # Check minimum threshold
+    if available_vram_gb < MIN_FREE_VRAM_GB:
+        logger.warning(
+            f"Low VRAM ({available_vram_gb:.1f}GB), limiting to 1 concurrent video"
+        )
+        return 1
+    
+    # Estimate VRAM per video at this duration
+    vram_per_video = estimate_ltx2_concurrent_vram(
+        duration_seconds=duration_seconds,
+        width=width,
+        height=height,
+        fps=fps,
+    )
+    
+    if vram_per_video <= 0:
+        logger.warning("Invalid VRAM estimation, defaulting to 1 concurrent")
+        return 1
+    
+    # Calculate max concurrent with safety factor
+    raw_max = available_vram_gb / vram_per_video
+    safe_max = int(raw_max * LTX2_CONCURRENT_SAFETY_FACTOR)
+    
+    # Apply bounds
+    max_concurrent = max(1, min(safe_max, LTX2_MAX_CONCURRENT_VIDEOS))
+    
+    logger.debug(
+        f"LTX-2 concurrent: {available_vram_gb:.1f}GB available, "
+        f"{vram_per_video:.1f}GB per {duration_seconds}s video, "
+        f"max concurrent = {max_concurrent}"
+    )
+    
+    return max_concurrent
+
+
+def calculate_ltx2_batch_concurrency(
+    durations: list[float],
+    width: int = 1920,
+    height: int = 1080,
+    fps: float = 24.0,
+    available_vram_gb: float | None = None,
+) -> int:
+    """Calculate optimal concurrency for a batch of videos with varying durations.
+    
+    Uses the LONGEST duration in the batch to ensure all videos can complete
+    without OOM. This is conservative but safe.
+    
+    Args:
+        durations: List of video durations in seconds
+        width: Video width in pixels
+        height: Video height in pixels
+        fps: Frames per second
+        available_vram_gb: Override for available VRAM
+        
+    Returns:
+        Maximum concurrent videos for this batch
+    """
+    if not durations:
+        return 1
+    
+    # Use longest duration for conservative estimation
+    max_duration = max(durations)
+    
+    max_concurrent = calculate_ltx2_max_concurrent(
+        duration_seconds=max_duration,
+        width=width,
+        height=height,
+        fps=fps,
+        available_vram_gb=available_vram_gb,
+    )
+    
+    logger.info(
+        f"LTX-2 batch concurrency: {len(durations)} videos, "
+        f"max duration = {max_duration:.1f}s, max concurrent = {max_concurrent}"
+    )
+    
+    return max_concurrent
 

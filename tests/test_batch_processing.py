@@ -1331,5 +1331,313 @@ class TestLTX2BatchSelection:
         asyncio.run(run_test())
 
 
+# =============================================================================
+# LTX-2 Concurrent Video Generation Tests
+# =============================================================================
+
+class TestLTX2ConcurrentVRAMEstimation:
+    """Tests for LTX-2 concurrent video VRAM estimation."""
+    
+    def test_concurrent_vram_constants_exist(self):
+        """Test that concurrent VRAM constants are defined."""
+        from app.services.vram_estimator import (
+            LTX2_CONCURRENT_OVERHEAD_GB,
+            LTX2_MAX_CONCURRENT_VIDEOS,
+            LTX2_CONCURRENT_VRAM_BUDGET_GB,
+            LTX2_CONCURRENT_SAFETY_FACTOR,
+        )
+        
+        assert LTX2_CONCURRENT_OVERHEAD_GB > 0
+        assert LTX2_MAX_CONCURRENT_VIDEOS > 0
+        assert LTX2_CONCURRENT_VRAM_BUDGET_GB > 0
+        assert 0 < LTX2_CONCURRENT_SAFETY_FACTOR <= 1.0
+    
+    def test_estimate_concurrent_vram_short_video(self):
+        """Test VRAM estimation for short videos."""
+        from app.services.vram_estimator import estimate_ltx2_concurrent_vram
+        
+        # 3 second video at 1080p
+        vram = estimate_ltx2_concurrent_vram(
+            duration_seconds=3.0,
+            width=1920,
+            height=1080,
+            fps=24.0,
+        )
+        
+        # Should be reasonable (base + frames + overhead)
+        assert vram > 5.0  # At least base + overhead
+        assert vram < 20.0  # Not excessive for short video
+    
+    def test_estimate_concurrent_vram_long_video(self):
+        """Test VRAM estimation for longer videos."""
+        from app.services.vram_estimator import estimate_ltx2_concurrent_vram
+        
+        # 10 second video at 1080p
+        vram = estimate_ltx2_concurrent_vram(
+            duration_seconds=10.0,
+            width=1920,
+            height=1080,
+            fps=24.0,
+        )
+        
+        # Should scale with duration
+        short_vram = estimate_ltx2_concurrent_vram(3.0)
+        assert vram > short_vram
+    
+    def test_calculate_max_concurrent_short_videos(self):
+        """Test that short videos allow more concurrent generations."""
+        from app.services.vram_estimator import calculate_ltx2_max_concurrent
+        
+        # 2-3 second videos should allow up to 4 concurrent
+        max_concurrent = calculate_ltx2_max_concurrent(
+            duration_seconds=3.0,
+            available_vram_gb=72.0,
+        )
+        
+        assert max_concurrent >= 3  # Should allow several concurrent
+        assert max_concurrent <= 4  # Capped at max
+    
+    def test_calculate_max_concurrent_long_videos(self):
+        """Test that long videos reduce concurrency."""
+        from app.services.vram_estimator import calculate_ltx2_max_concurrent
+        
+        # 10 second videos need more VRAM each
+        max_concurrent = calculate_ltx2_max_concurrent(
+            duration_seconds=10.0,
+            available_vram_gb=72.0,
+        )
+        
+        short_concurrent = calculate_ltx2_max_concurrent(
+            duration_seconds=3.0,
+            available_vram_gb=72.0,
+        )
+        
+        # Longer videos should have same or less concurrency
+        assert max_concurrent <= short_concurrent
+    
+    def test_calculate_max_concurrent_low_vram(self):
+        """Test that low VRAM returns 1."""
+        from app.services.vram_estimator import calculate_ltx2_max_concurrent
+        
+        max_concurrent = calculate_ltx2_max_concurrent(
+            duration_seconds=5.0,
+            available_vram_gb=1.0,  # Very low
+        )
+        
+        assert max_concurrent == 1
+    
+    def test_calculate_batch_concurrency(self):
+        """Test batch concurrency calculation with mixed durations."""
+        from app.services.vram_estimator import calculate_ltx2_batch_concurrency
+        
+        # Mixed batch: uses longest duration
+        max_concurrent = calculate_ltx2_batch_concurrency(
+            durations=[2.0, 3.0, 8.0, 4.0],  # 8s is longest
+            available_vram_gb=72.0,
+        )
+        
+        # Should be based on 8s video (most conservative)
+        single_8s = calculate_ltx2_batch_concurrency([8.0], available_vram_gb=72.0)
+        assert max_concurrent == single_8s
+
+
+class TestLTX2ConcurrencyController:
+    """Tests for LTX2ConcurrencyController."""
+    
+    @pytest.fixture
+    def controller(self):
+        """Create a concurrency controller for testing."""
+        from app.services.ltx2_concurrent import LTX2ConcurrencyController
+        return LTX2ConcurrencyController(max_concurrent=4)
+    
+    def test_controller_initialization(self, controller):
+        """Test controller initializes correctly."""
+        assert controller.max_concurrent == 4
+        assert controller.active_count == 0
+        assert controller.available_count == 4
+    
+    def test_acquire_release_slot(self, controller):
+        """Test basic slot acquisition and release."""
+        async def run_test():
+            # Acquire slot
+            slot = await controller.acquire(job_id="test-1", duration_seconds=3.0)
+            
+            assert slot is not None
+            assert slot.in_use
+            assert controller.active_count == 1
+            assert controller.available_count == 3
+            
+            # Release slot
+            await controller.release(slot)
+            
+            assert not slot.in_use
+            assert controller.active_count == 0
+            assert controller.available_count == 4
+        
+        asyncio.run(run_test())
+    
+    def test_slot_context_manager(self, controller):
+        """Test slot context manager."""
+        async def run_test():
+            async with controller.slot("test-1", 3.0) as slot:
+                assert slot.in_use
+                assert controller.active_count == 1
+            
+            # After context, slot is released
+            assert controller.active_count == 0
+        
+        asyncio.run(run_test())
+    
+    def test_concurrent_limit_respected(self, controller):
+        """Test that concurrent limit is respected."""
+        async def run_test():
+            # Acquire all 4 slots
+            slots = []
+            for i in range(4):
+                slot = await controller.acquire(f"job-{i}", 3.0)
+                slots.append(slot)
+            
+            assert controller.active_count == 4
+            assert controller.available_count == 0
+            
+            # 5th acquisition should block (we test with timeout)
+            import asyncio
+            with pytest.raises(asyncio.TimeoutError):
+                await asyncio.wait_for(
+                    controller.acquire("blocked", 3.0, timeout=0.1),
+                    timeout=0.2
+                )
+            
+            # Release one slot
+            await controller.release(slots[0])
+            assert controller.available_count == 1
+            
+            # Now acquisition should succeed
+            new_slot = await controller.acquire("now-works", 3.0)
+            assert new_slot is not None
+            
+            # Cleanup
+            for slot in slots[1:]:
+                await controller.release(slot)
+            await controller.release(new_slot)
+        
+        asyncio.run(run_test())
+    
+    def test_get_status(self, controller):
+        """Test status reporting."""
+        async def run_test():
+            async with controller.slot("test-1", 5.0):
+                status = controller.get_status()
+                
+                assert status["max_concurrent"] == 4
+                assert status["active_count"] == 1
+                assert status["available_count"] == 3
+                assert len(status["active_slots"]) == 1
+                assert status["active_slots"][0]["job_id"] == "test-1"
+        
+        asyncio.run(run_test())
+
+
+class TestLTX2ConcurrentBatchGeneration:
+    """Tests for LTX2Generator concurrent batch generation."""
+    
+    @pytest.fixture
+    def settings(self):
+        """Create mock settings for dry-run mode."""
+        settings = MagicMock(spec=Settings)
+        settings.ltx2_dry_run = True
+        settings.ltx2_concurrent_enabled = True
+        settings.ltx2_checkpoint_path = "models/ltx-2/checkpoint.safetensors"
+        settings.ltx2_spatial_upsampler_path = "models/ltx-2/upsampler.safetensors"
+        settings.ltx2_gemma_root = "models/ltx-2/gemma"
+        settings.ltx2_distilled_lora_path = "models/ltx-2/lora.safetensors"
+        settings.ltx2_device = "cuda"
+        settings.ltx2_fp8_enabled = True
+        settings.ltx2_num_inference_steps = 8
+        settings.ltx2_cfg_guidance_scale = 1.0
+        return settings
+    
+    @pytest.fixture
+    def generator(self, settings):
+        """Create LTX2Generator in dry-run mode."""
+        from app.services.ltx2_generator import LTX2Generator
+        gen = LTX2Generator(settings)
+        gen.is_loaded = True  # Simulate loaded state
+        return gen
+    
+    def test_concurrent_enabled_property(self, generator):
+        """Test concurrent_enabled property."""
+        assert generator.concurrent_enabled
+    
+    def test_concurrent_batch_empty_returns_empty(self, generator):
+        """Test that empty params list returns empty results."""
+        async def run_test():
+            results = await generator.generate_concurrent_batch([])
+            assert results == []
+        
+        asyncio.run(run_test())
+    
+    def test_concurrent_batch_single_uses_fast_path(self, generator):
+        """Test that single-item batch uses fast path."""
+        from app.models.internal import VideoGenerationParams
+        
+        params = VideoGenerationParams(
+            job_id="test-1",
+            prompt="A test video",
+            negative_prompt="",
+            input_image_data=b"fake_image_data",
+            end_image_data=None,
+            duration_seconds=3.0,
+            frame_rate=24.0,
+            width=1920,
+            height=1080,
+            seed=None,
+        )
+        
+        async def run_test():
+            # Patch generate_video to track if called
+            generator.generate_video = AsyncMock(return_value=MagicMock())
+            
+            await generator.generate_concurrent_batch([params])
+            
+            # Should have called generate_video directly
+            generator.generate_video.assert_called_once_with(params)
+        
+        asyncio.run(run_test())
+    
+    def test_concurrent_batch_respects_disabled(self, generator):
+        """Test that disabled concurrent falls back to sequential."""
+        from app.models.internal import VideoGenerationParams
+        
+        generator._concurrent_enabled = False
+        
+        params_list = [
+            VideoGenerationParams(
+                job_id=f"test-{i}",
+                prompt=f"Video {i}",
+                negative_prompt="",
+                input_image_data=b"fake",
+                end_image_data=None,
+                duration_seconds=3.0,
+                frame_rate=24.0,
+                width=1920,
+                height=1080,
+                seed=None,
+            )
+            for i in range(3)
+        ]
+        
+        async def run_test():
+            # Patch generate_batch (sequential) to track if it's called
+            generator.generate_batch = AsyncMock(return_value=[MagicMock()] * 3)
+            
+            await generator.generate_concurrent_batch(params_list)
+            
+            # Should have called sequential batch
+            generator.generate_batch.assert_called_once_with(params_list)
+        
+        asyncio.run(run_test())
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
