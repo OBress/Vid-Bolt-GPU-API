@@ -82,15 +82,11 @@ async def generate_video(
 ) -> AsyncJobResponse:
     """Generate a video from a start frame image (Async)."""
     
-    # 1. Determine active generator and ensure mode (if not mock)
+    # 1. Determine active generator (if not mock)
     active_generator = generator
 
     if not settings.mock_mode:
-        if not await model_manager.ensure_mode(ModelMode.VIDEO):
-            raise HTTPException(
-                status_code=409,
-                detail="System is currently busy processing Image tasks. Please wait until they are finished."
-            )
+        # Note: Worker will handle mode switching automatically
         active_generator = model_manager.get_video_generator()
 
     # 2. Check if generator supports LTX-2 (Video Generation)
@@ -206,15 +202,11 @@ async def interpolate_keyframes(
 ) -> AsyncJobResponse:
     """Generate a video by interpolating between keyframes (Async)."""
     
-    # 1. Determine active generator and ensure mode (if not mock)
+    # 1. Determine active generator (if not mock)
     active_generator = generator
 
     if not settings.mock_mode:
-        if not await model_manager.ensure_mode(ModelMode.VIDEO):
-            raise HTTPException(
-                status_code=409,
-                detail="System is currently busy processing Image tasks. Please wait until they are finished."
-            )
+        # Note: Worker will handle mode switching automatically
         active_generator = model_manager.get_video_generator()
 
     if not hasattr(active_generator, "generate_keyframe_video"):

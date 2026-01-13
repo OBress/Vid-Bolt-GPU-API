@@ -50,15 +50,11 @@ async def generate_image(
 
     Returns 202 Accepted if job is queued, or 429/503 if busy.
     """
-    # 1. Determine active generator and ensure mode (if not mock)
+    # 1. Determine active generator (if not mock)
     active_generator = generator
     
     if not settings.mock_mode:
-        if not await model_manager.ensure_mode(ModelMode.IMAGE):
-            raise HTTPException(
-                status_code=409,  # Conflict
-                detail="System is currently busy processing Video tasks. Please wait until they are finished."
-            )
+        # Note: Worker will handle mode switching automatically
         active_generator = model_manager.get_image_generator()
 
     # 2. Prepare parameters

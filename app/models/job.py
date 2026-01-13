@@ -2,7 +2,7 @@
 
 from enum import Enum
 from typing import Any, Dict, Optional
-from pydantic import BaseModel
+from pydantic import BaseModel, PrivateAttr
 
 
 class JobStatus(str, Enum):
@@ -37,6 +37,12 @@ class JobInfo(BaseModel):
     # Progress tracking for long-running jobs
     progress_percent: Optional[int] = None  # 0-100
     progress_stage: Optional[str] = None    # "loading", "generating", "upscaling", "uploading"
+    
+    # Internal execution details (not serialized)
+    _task_func: Any = PrivateAttr(default=None)
+    _kwargs: Dict[str, Any] = PrivateAttr(default_factory=dict)
+    _mode: Any = PrivateAttr(default=None)
+
 
 
 class AsyncJobResponse(BaseModel):

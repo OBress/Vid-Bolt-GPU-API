@@ -110,17 +110,17 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     job_manager = JobManager(settings)
     set_job_manager_instance(job_manager)
     
-    # Start periodic cleanup task
-    job_manager.start_cleanup_task()
-    logger.info("JobManager initialized with cleanup task")
+    # Start background tasks (Worker + Cleanup)
+    job_manager.start()
+    logger.info("JobManager started (Queue System Active)")
 
     yield
 
     # Shutdown
     logger.info("Shutting down Vid-Bolt GPU API...")
     
-    # Stop cleanup task
-    job_manager.stop_cleanup_task()
+    # Stop background tasks
+    job_manager.stop()
     logger.info("Shutdown complete")
 
 
