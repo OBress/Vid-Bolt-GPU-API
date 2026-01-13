@@ -356,8 +356,13 @@ class JobManager:
                 width, height,
                 other_models_loaded=other_models_loaded
             )
+        elif job_type == JobType.VIDEO_GENERATION:
+            # LTX-2: sequential batching with warm model
+            # Return all pending jobs - they will be processed sequentially
+            max_batch = len(job_ids)  # Process all pending (sequential anyway)
         else:
-            # Non-batchable jobs (VIDEO_GENERATION): return single job
+            # Unknown job type - return single job as fallback
+            logger.warning(f"Unknown job type {job_type}, processing single job")
             return [job_ids[0]], oldest_bucket_key
         
         # Select up to max_batch jobs
@@ -436,23 +441,33 @@ class JobManager:
                     generator.edit_batch(params_list),
                     timeout=timeout_seconds
                 )
+            elif job_type == JobType.VIDEO_GENERATION:
+                # LTX-2: sequential batch with warm model
+                generator = self._model_manager.get_video_generator()
+                # Scale timeout by number of videos (sequential processing)
+                batch_timeout = timeout_seconds * len(jobs)
+                results = await asyncio.wait_for(
+                    generator.generate_batch(params_list),
+                    timeout=batch_timeout
+                )
             else:
                 raise RuntimeError(f"Unsupported job type for batching: {job_type}")
             
             # 4. Complete jobs with their results
-            # Handle partial success (LightX2V may have empty results for failed jobs)
+            # Handle partial success (generators may return empty data for failed jobs)
             for job, result in zip(jobs, results):
-                # Check if this is a failed result (empty image_data)
-                is_failed = (
-                    hasattr(result, 'image_data') and 
-                    result.image_data is not None and 
-                    len(result.image_data) == 0
-                )
+                # Check if this is a failed result (empty data)
+                is_failed = False
+                if hasattr(result, 'image_data'):
+                    is_failed = result.image_data is not None and len(result.image_data) == 0
+                elif hasattr(result, 'video_data'):
+                    is_failed = result.video_data is not None and len(result.video_data) == 0
                 
                 if is_failed:
+                    error_msg = "Video generation failed" if job_type == JobType.VIDEO_GENERATION else "Image edit failed"
                     self._handle_job_error(
                         job, 
-                        "Image edit failed within batch", 
+                        f"{error_msg} within batch", 
                         "BATCH_ITEM_FAILED"
                     )
                 else:

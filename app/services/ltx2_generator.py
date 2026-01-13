@@ -243,6 +243,77 @@ class LTX2Generator(VideoGenerator):
         return await self.generate_keyframe_video(keyframe_params)
 
     # ========================================================================
+    # Batch Video Generation (Sequential Warm-Model)
+    # ========================================================================
+
+    async def generate_batch(
+        self, 
+        params_list: list[LTX2VideoParams]
+    ) -> list[LTX2VideoResult]:
+        """Generate multiple videos sequentially with warm model.
+        
+        This method processes videos one-at-a-time but keeps the model loaded
+        between generations, eliminating the ~30s model load time per video.
+        This provides significant throughput improvement for batch workloads.
+        
+        Args:
+            params_list: List of video generation parameters
+            
+        Returns:
+            List of VideoGenerationResults in the same order as params_list
+            
+        Raises:
+            RuntimeError: If models are not loaded
+        """
+        if not params_list:
+            return []
+        
+        if not self.is_loaded:
+            raise RuntimeError(
+                "LTX-2 models not loaded. Call load_models() first or set "
+                "LTX2_DRY_RUN=true for testing."
+            )
+        
+        # Single item - use fast path
+        if len(params_list) == 1:
+            return [await self.generate_video(params_list[0])]
+        
+        logger.info(
+            f"Starting sequential batch of {len(params_list)} videos "
+            f"(warm model mode)"
+        )
+        
+        # Sequential processing with warm model
+        results: list[LTX2VideoResult] = []
+        for i, params in enumerate(params_list):
+            logger.info(
+                f"Generating video {i+1}/{len(params_list)} "
+                f"(job_id={params.job_id}, {params.width}x{params.height}, "
+                f"{params.duration_seconds}s)"
+            )
+            try:
+                result = await self.generate_video(params)
+                results.append(result)
+            except Exception as e:
+                logger.error(f"Video {i+1}/{len(params_list)} failed: {e}")
+                # Create empty result to maintain ordering
+                results.append(LTX2VideoResult(
+                    video_data=b"",
+                    width=params.width,
+                    height=params.height,
+                    duration_seconds=params.duration_seconds,
+                    frame_rate=params.frame_rate,
+                    has_audio=False,
+                    seed=params.seed or 0,
+                ))
+        
+        logger.info(
+            f"Batch complete: {sum(1 for r in results if r.video_data)} / "
+            f"{len(results)} videos succeeded"
+        )
+        return results
+
+    # ========================================================================
     # Keyframe Interpolation Generation
     # ========================================================================
 

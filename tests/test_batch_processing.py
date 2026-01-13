@@ -289,8 +289,8 @@ class TestJobManagerBucketing:
         
         asyncio.run(run_test())
     
-    def test_non_image_jobs_not_batched(self, job_manager, mock_model_manager):
-        """Test that non-image jobs are not batched (single job only)."""
+    def test_video_jobs_batched_sequentially(self, job_manager, mock_model_manager):
+        """Test that VIDEO_GENERATION jobs are batched (for sequential processing)."""
         job_manager.set_model_manager(mock_model_manager)
         
         async def run_test():
@@ -309,8 +309,8 @@ class TestJobManagerBucketing:
             
             batch, _ = job_manager._select_batch()
             
-            # Should only get 1 job (video not batchable)
-            assert len(batch) == 1
+            # Should get all jobs (processed sequentially with warm model)
+            assert len(batch) == 5
         
         asyncio.run(run_test())
 
@@ -1140,6 +1140,191 @@ class TestLightX2VBatchingIntegration:
                 job = job_manager._jobs[job_id]
                 assert job.status == JobStatus.COMPLETED
                 assert job.result is not None
+        
+        asyncio.run(run_test())
+
+
+# =============================================================================
+# LTX-2 VRAM Estimator Tests
+# =============================================================================
+
+class TestLTX2VRAMEstimator:
+    """Tests for LTX-2 VRAM estimation utilities."""
+    
+    def test_ltx2_constants_exist(self):
+        """Test that LTX-2 VRAM constants are defined."""
+        from app.services.vram_estimator import (
+            LTX2_BASE_MODEL_FP8_GB,
+            LTX2_BASE_MODEL_FP16_GB,
+            LTX2_BASE_ACTIVATION_GB,
+            LTX2_GB_PER_MEGAPIXEL,
+            LTX2_GB_PER_FRAME,
+            MAX_BATCH_SIZE_LTX2,
+        )
+        
+        # Verify constants are reasonable values
+        assert LTX2_BASE_MODEL_FP8_GB < LTX2_BASE_MODEL_FP16_GB
+        assert LTX2_BASE_ACTIVATION_GB > 0
+        assert LTX2_GB_PER_MEGAPIXEL > 0
+        assert LTX2_GB_PER_FRAME > 0
+        assert MAX_BATCH_SIZE_LTX2 == 1  # Sequential only
+    
+    def test_estimate_ltx2_vram_1080p(self):
+        """Test VRAM estimation for 1080p video."""
+        from app.services.vram_estimator import estimate_ltx2_vram_per_video
+        
+        # 1080p, 4 seconds at 24fps = 97 frames
+        vram = estimate_ltx2_vram_per_video(1920, 1080, 97)
+        
+        # Should be a reasonable value for 1080p
+        assert vram > 0
+        assert vram < 50  # Should be under 50GB for a 4s video
+    
+    def test_estimate_ltx2_vram_scaling(self):
+        """Test that VRAM scales with resolution and frames."""
+        from app.services.vram_estimator import estimate_ltx2_vram_per_video
+        
+        # Compare different resolutions
+        vram_720p = estimate_ltx2_vram_per_video(1280, 720, 97)
+        vram_1080p = estimate_ltx2_vram_per_video(1920, 1080, 97)
+        
+        # Higher resolution should use more VRAM
+        assert vram_1080p > vram_720p
+        
+        # Compare different frame counts
+        vram_short = estimate_ltx2_vram_per_video(1920, 1080, 49)
+        vram_long = estimate_ltx2_vram_per_video(1920, 1080, 193)
+        
+        # More frames should use more VRAM
+        assert vram_long > vram_short
+    
+    def test_calculate_ltx2_max_batch_returns_one(self):
+        """Test that LTX-2 max batch size is always 1 (sequential)."""
+        from app.services.vram_estimator import calculate_ltx2_max_batch_size
+        
+        # Should always return 1 regardless of VRAM or resolution
+        assert calculate_ltx2_max_batch_size(1920, 1080, 97) == 1
+        assert calculate_ltx2_max_batch_size(1280, 720, 49, available_vram_gb=96.0) == 1
+    
+    def test_get_ltx2_base_vram(self):
+        """Test base VRAM calculation."""
+        from app.services.vram_estimator import (
+            get_ltx2_base_vram,
+            LTX2_BASE_MODEL_FP8_GB,
+            LTX2_BASE_MODEL_FP16_GB,
+        )
+        
+        # FP8 should use less VRAM
+        base_fp8 = get_ltx2_base_vram(fp8_enabled=True)
+        base_fp16 = get_ltx2_base_vram(fp8_enabled=False)
+        
+        assert base_fp8 == LTX2_BASE_MODEL_FP8_GB
+        assert base_fp16 == LTX2_BASE_MODEL_FP16_GB
+        assert base_fp8 < base_fp16
+
+
+# =============================================================================
+# LTX-2 JobManager Batch Selection Tests
+# =============================================================================
+
+class TestLTX2BatchSelection:
+    """Tests for JobManager batch selection with VIDEO_GENERATION jobs."""
+    
+    @pytest.fixture
+    def settings(self):
+        """Create mock settings."""
+        settings = MagicMock(spec=Settings)
+        settings.mock_mode = True
+        return settings
+    
+    @pytest.fixture
+    def job_manager(self, settings):
+        """Create JobManager instance."""
+        return JobManager(settings)
+    
+    @pytest.fixture
+    def mock_model_manager(self):
+        """Create mock ModelManager in VIDEO_GENERATION mode."""
+        mm = MagicMock()
+        mm.current_mode = VRAMLoadMode.VIDEO_GENERATION
+        mm.get_video_generator = MagicMock()
+        mm.ensure_mode_for_job = AsyncMock()
+        return mm
+    
+    def test_video_jobs_bucketed(self, job_manager):
+        """Test that VIDEO_GENERATION jobs are bucketed correctly."""
+        params = MagicMock()
+        params.width = 1920
+        params.height = 1080
+        
+        async def run_test():
+            await job_manager.submit_job(
+                job_id="video-1",
+                job_type=JobType.VIDEO_GENERATION,
+                task_func=AsyncMock(),
+                params=params
+            )
+            
+            bucket_key = (1920, 1080, JobType.VIDEO_GENERATION)
+            assert bucket_key in job_manager._pending_buckets
+            assert "video-1" in job_manager._pending_buckets[bucket_key]
+        
+        asyncio.run(run_test())
+    
+    def test_video_batch_selects_all_pending(self, job_manager, mock_model_manager):
+        """Test that VIDEO_GENERATION batch selection returns all pending jobs."""
+        job_manager.set_model_manager(mock_model_manager)
+        
+        params = MagicMock()
+        params.width = 1920
+        params.height = 1080
+        
+        async def run_test():
+            # Submit 5 VIDEO_GENERATION jobs
+            for i in range(5):
+                await job_manager.submit_job(
+                    job_id=f"video-{i}",
+                    job_type=JobType.VIDEO_GENERATION,
+                    task_func=AsyncMock(),
+                    params=params
+                )
+                job_manager._jobs[f"video-{i}"].created_at = i
+            
+            # Select batch - should return ALL pending (sequential processing)
+            selected, bucket_key = job_manager._select_batch()
+            
+            assert len(selected) == 5  # All jobs selected
+            assert bucket_key == (1920, 1080, JobType.VIDEO_GENERATION)
+        
+        asyncio.run(run_test())
+    
+    def test_video_separate_from_image(self, job_manager):
+        """Test that VIDEO_GENERATION and IMAGE_GENERATION are in separate buckets."""
+        params = MagicMock()
+        params.width = 1920
+        params.height = 1080
+        
+        async def run_test():
+            # Submit image job
+            await job_manager.submit_job(
+                job_id="image-1",
+                job_type=JobType.IMAGE_GENERATION,
+                task_func=AsyncMock(),
+                params=params
+            )
+            
+            # Submit video job
+            await job_manager.submit_job(
+                job_id="video-1",
+                job_type=JobType.VIDEO_GENERATION,
+                task_func=AsyncMock(),
+                params=params
+            )
+            
+            # Should be in separate buckets
+            assert (1920, 1080, JobType.IMAGE_GENERATION) in job_manager._pending_buckets
+            assert (1920, 1080, JobType.VIDEO_GENERATION) in job_manager._pending_buckets
+            assert len(job_manager._pending_buckets) == 2
         
         asyncio.run(run_test())
 

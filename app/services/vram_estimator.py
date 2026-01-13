@@ -49,6 +49,29 @@ LIGHTX2V_CONDITIONING_OVERHEAD_GB = 0.5 # Vision-language conditioning per image
 # Batch limit for LightX2V (conservative due to sequential processing)
 MAX_BATCH_SIZE_LIGHTX2V = 16  # Cap even with high VRAM for memory stability
 
+# =============================================================================
+# LTX-2 (Video Generation) VRAM Estimation Constants
+# =============================================================================
+# LTX-2 is a 19B parameter video generation model using FP8 distilled checkpoint.
+# Uses two-stage pipeline: Stage 1 at half resolution, Stage 2 at full resolution.
+
+# Base model costs (in GB) - FP8 distilled model
+LTX2_BASE_MODEL_FP8_GB = 20.0           # FP8 DiT + Gemma text encoder in VRAM
+LTX2_BASE_MODEL_FP16_GB = 40.0          # FP16 model (not used in current config)
+
+# Per-video activation costs (in GB)
+# Video generation requires storing:
+# 1. Latent tensors for all frames (both stages)
+# 2. Conditioning tensors (text + image)
+# 3. Intermediate activations during denoising
+LTX2_BASE_ACTIVATION_GB = 5.0           # Base overhead per video
+LTX2_GB_PER_MEGAPIXEL = 0.015           # Per megapixel scaling (at full res)
+LTX2_GB_PER_FRAME = 0.08                # Per frame scaling (at 1080p baseline)
+
+# Batch limit for LTX-2 (sequential only - no parallel batching)
+# Videos are processed one-at-a-time with warm model to avoid OOM
+MAX_BATCH_SIZE_LTX2 = 1  # Sequential batching only
+
 
 @dataclass
 class VRAMInfo:
@@ -289,3 +312,89 @@ def get_lightx2v_base_vram(cpu_offload: bool = True) -> float:
     if cpu_offload:
         return LIGHTX2V_BASE_MODEL_OFFLOAD_GB
     return LIGHTX2V_BASE_MODEL_FULL_GB
+
+
+# =============================================================================
+# LTX-2 VRAM Estimation Functions
+# =============================================================================
+
+def estimate_ltx2_vram_per_video(
+    width: int, 
+    height: int, 
+    num_frames: int
+) -> float:
+    """Estimate VRAM usage for a single LTX-2 video generation.
+    
+    LTX-2 uses a two-stage pipeline:
+    1. Stage 1: Generate at half resolution
+    2. Stage 2: Upsample 2x with distilled LoRA refinement
+    
+    VRAM scales with resolution (megapixels) and frame count.
+    
+    Args:
+        width: Video width in pixels (final output)
+        height: Video height in pixels (final output)
+        num_frames: Number of frames to generate
+        
+    Returns:
+        Estimated VRAM usage in GB for one video
+    """
+    # Calculate megapixels at full resolution
+    megapixels = (width * height) / 1_000_000
+    
+    # Estimate: base overhead + per-megapixel + per-frame
+    # The per-frame scaling is normalized to 1080p
+    frame_scale = num_frames * (megapixels / 2.07)  # 2.07 MP = 1920x1080
+    
+    estimated_gb = (
+        LTX2_BASE_ACTIVATION_GB +
+        (megapixels * LTX2_GB_PER_MEGAPIXEL * num_frames) +
+        (frame_scale * LTX2_GB_PER_FRAME)
+    )
+    
+    return estimated_gb
+
+
+def calculate_ltx2_max_batch_size(
+    width: int = 1920,
+    height: int = 1080,
+    num_frames: int = 97,
+    available_vram_gb: float | None = None,
+) -> int:
+    """Calculate maximum batch size for LTX-2 video generation.
+    
+    Currently always returns 1 for sequential batching. This function
+    exists for API consistency and future extensibility if parallel
+    batching becomes feasible.
+    
+    Args:
+        width: Video width in pixels
+        height: Video height in pixels
+        num_frames: Number of frames
+        available_vram_gb: Override for available VRAM (None = auto-detect)
+        
+    Returns:
+        Maximum batch size (currently always 1)
+    """
+    # Sequential batching only - parallel video batching is not supported
+    # due to VRAM constraints and architecture limitations
+    logger.debug(
+        f"LTX-2 batch size: sequential only (max={MAX_BATCH_SIZE_LTX2}), "
+        f"resolution={width}x{height}, frames={num_frames}"
+    )
+    return MAX_BATCH_SIZE_LTX2
+
+
+def get_ltx2_base_vram(fp8_enabled: bool = True) -> float:
+    """Get the base VRAM footprint for LTX-2 model.
+    
+    Args:
+        fp8_enabled: Whether FP8 quantization is enabled
+        
+    Returns:
+        Base VRAM usage in GB for model weights
+    """
+    if fp8_enabled:
+        return LTX2_BASE_MODEL_FP8_GB
+    return LTX2_BASE_MODEL_FP16_GB
+
