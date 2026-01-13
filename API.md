@@ -37,9 +37,13 @@ Vid-Bolt GPU API provides AI-powered generation capabilities:
 ┌─────────────────────────────────────────────────────────┐
 │                    Vid-Bolt GPU API                      │
 ├─────────────────────────────────────────────────────────┤
-│  Mode Manager - Controls which models are loaded         │
-│  (Supports Static All-Load or Dynamic Loading)           │
-├──────────────────────┬──────────────────────────────────┤
+│  Queue Manager - Accepts requests (202 Accepted)         │
+│  & Schedules based on VRAM Mode (FIFO or Grouped)        │
+├─────────────┬───────────────────────────────────────────┤
+│   WORKER    │  • Intelligent Job Scheduling             │
+│   THREAD    │  • Automatic Mode Switching (Dynamic)     │
+│             │  • OOM & Timeout Handling                 │
+├─────────────┴───────────────────────────────────────────┤
 │     IMAGE MODE       │          VIDEO MODE              │
 │  ┌────────────────┐  │  ┌────────────────────────────┐  │
 │  │ Z-Image Turbo  │  │  │ LTX-2 19B                  │  │
@@ -92,184 +96,84 @@ X-API-Key: your-secure-api-key
 
 ---
 
-## Mode System
+## Mode System & Scheduling
 
-The API operates in either **Image Mode** or **Video Mode** to efficiently manage GPU VRAM.
+The API manages GPU VRAM by possibly loading only one set of models at a time. A **Queue System** manages requests to ensure fairness and efficiency.
 
-### Current Modes
+### VRAM Loading Modes
 
-| Mode    | Loaded Models                  | Endpoints Available                 |
-| ------- | ------------------------------ | ----------------------------------- |
-| `image` | Z-Image Turbo, Qwen-Image-Edit | `/api/v1/image/*`                   |
-| `video` | LTX-2 19B                      | `/api/v1/video/*`, `/api/v1/ltx2/*` |
+Configurable via `/api/v1/settings/vram-mode`:
 
-### Mode Behavior
+1. **Dynamic Mode (Default)**:
 
-The API supports two VRAM loading strategies, configurable via `/api/v1/settings/vram-mode`:
+   - **Behavior**: Loads only Image OR Video models to save VRAM.
+   - **Scheduling**: **Grouped**. The queue worker prioritizes jobs matching the _current_ mode to minimize expensive switching.
+   - **Switching**: Takes ~30-60s. Occurs automatically when the queue for the current mode is empty.
+   - **Best For**: GPUs with < 40GB VRAM.
 
-1. **Static Mode (Default)**:
-
-   - All models (Image + Video) are loaded at startup.
-   - **Switching is INSTANT**.
-   - Requires high VRAM (approx 24GB+).
-
-2. **Dynamic Mode**:
-   - Only models for the current mode are loaded.
-   - **Switching takes ~30-60 seconds** (unloading/reloading).
-   - Saves VRAM, allowing operation on smaller GPUs.
+2. **Static Mode**:
+   - **Behavior**: Loads ALL models (Image + Video) simultaneously.
+   - **Scheduling**: **Strict FIFO**. Jobs are processed exactly in order of arrival.
+   - **Switching**: Instant.
+   - **Best For**: High-VRAM GPUs (A100/H100, >40GB).
 
 ### Concurrency Limits
 
-| Mode  | Max Concurrent Generations         |
-| ----- | ---------------------------------- |
-| Image | 2 (combined across Z-Image + Qwen) |
-| Video | 1 (LTX-2 + upscaling pipeline)     |
+The Queue accepts jobs even if the GPU is busy.
+
+| Resource | Limit                 | Behavior                            |
+| -------- | --------------------- | ----------------------------------- |
+| Queue    | Unbounded (in-memory) | Returns `202 Accepted` immediately. |
+| Worker   | 1 Active Job          | Processes one job at a time.        |
 
 ---
 
 ## Endpoints
 
-### Health & System
+### Job Management
 
-#### `GET /health`
+All generation endpoints are **asynchronous**. They return a `job_id` which you use to poll for status.
 
-Basic health check (no authentication required).
+#### `GET /api/v1/jobs/{job_id}`
 
-**Response:**
+Check the status of a specific job.
+
+**Response (Pending):**
 
 ```json
 {
-  "status": "healthy",
-  "version": "0.1.0",
-  "mock_mode": false
+  "job_id": "550e8400-e29b...",
+  "status": "pending",
+  "created_at": 1715420000.0,
+  "queue_position": 2
 }
 ```
 
----
-
-#### `GET /api/v1/system/status`
-
-Detailed system and GPU status.
-
-**Response:**
+**Response (Processing):**
 
 ```json
 {
-  "system": {
-    "os": "Linux",
-    "os_version": "5.15.0",
-    "python_version": "3.11.0",
-    "cpu_count": 16,
-    "hostname": "gpu-server"
-  },
-  "gpu": {
-    "name": "NVIDIA RTX PRO 6000",
-    "memory_total_gb": 96.0,
-    "memory_used_gb": 24.5,
-    "memory_free_gb": 71.5,
-    "memory_usage_percent": 25.5,
-    "temperature_celsius": 42,
-    "gpu_utilization_percent": 0,
-    "cuda_version": "12.4",
-    "driver_version": "550.54.14"
-  },
-  "mode": {
-    "mode": "image",
-    "is_busy": false,
-    "active_job_id": null,
-    "loaded_models": ["z-image-turbo", "qwen-image-edit-2511"]
-  },
-  "concurrency_limits": {
-    "max_concurrent_image_generations": 2,
-    "max_concurrent_video_generations": 1
-  },
-  "mock_mode": false
+  "job_id": "550e8400-e29b...",
+  "status": "processing",
+  "created_at": 1715420000.0,
+  "started_at": 1715420005.0,
+  "progress_percent": 45,
+  "progress_stage": "generating"
 }
 ```
 
----
-
-### Mode Management
-
-#### `GET /api/v1/mode`
-
-Get current mode status.
-
-**Response:**
+**Response (Completed):**
 
 ```json
 {
-  "mode": "image",
-  "is_busy": false,
-  "active_job_id": null,
-  "loaded_models": ["z-image-turbo", "qwen-image-edit-2511"]
-}
-```
-
----
-
-#### `POST /api/v1/mode/switch`
-
-Switch between Image Mode and Video Mode.
-
-**Request:**
-
-```json
-{
-  "target_mode": "video"
-}
-```
-
-**Response:**
-
-```json
-{
-  "status": "success",
-  "previous_mode": "image",
-  "current_mode": "video",
-  "message": "Successfully switched from image to video mode"
-}
-```
-
-**Errors:**
-
-- `503` - Mode switch already in progress or system busy
-
----
-
-### System Settings
-
-#### `GET /api/v1/settings/vram-mode`
-
-Get current VRAM loading strategy.
-
-**Response:**
-
-```json
-{
-  "mode": "static",
-  "description": "Static loading - instant switching, higher VRAM usage"
-}
-```
-
-#### `POST /api/v1/settings/vram-mode`
-
-Set VRAM loading strategy.
-
-**Request:**
-
-```json
-{
-  "mode": "dynamic"
-}
-```
-
-**Response:**
-
-```json
-{
-  "mode": "dynamic",
-  "description": "Dynamic loading - saves VRAM"
+  "job_id": "550e8400-e29b...",
+  "status": "completed",
+  "created_at": 1715420000.0,
+  "completed_at": 1715420015.0,
+  "result": {
+    "save_url": "https://storage.example.com/result.png",
+    "generation_time": 10.0
+  }
 }
 ```
 
@@ -279,9 +183,7 @@ Set VRAM loading strategy.
 
 #### `POST /api/v1/image/generate`
 
-Generate an image from a text prompt.
-
-**Requires:** Image Mode
+**Returns HTTP 202 Accepted**. The system will automatically switch to Image Mode if needed.
 
 **Request:**
 | Field | Type | Required | Description | Default |
@@ -289,30 +191,16 @@ Generate an image from a text prompt.
 | `job_id` | string | ✅ | Unique job identifier | - |
 | `prompt` | string | ✅ | Text description (max 2000 chars) | - |
 | `aspect_ratio` | string | ❌ | `16:9`, `9:16`, `1:1`, `4:3`, `3:4` | `16:9` |
-| `width` | integer | ❌ | Custom width (256-2048) | `null` |
-| `height` | integer | ❌ | Custom height (256-2048) | `null` |
-| `seed` | integer | ❌ | Random seed for reproducibility | random |
-| `num_inference_steps` | integer | ❌ | Diffusion steps (1-50) | `20` |
 | `save_url` | string | ✅ | Presigned PUT URL for output | - |
 
-**Example:**
+**Response (Immediate):**
 
 ```json
 {
-  "job_id": "550e8400-e29b-41d4-a716-446655440000",
-  "prompt": "A futuristic city skyline at sunset, cyberpunk style",
-  "aspect_ratio": "16:9",
-  "save_url": "https://storage.example.com/image.png?sig=..."
-}
-```
-
-**Response:**
-
-```json
-{
-  "status": "completed",
-  "generation_time": 2.5,
-  "save_url": "https://storage.example.com/image.png"
+  "job_id": "550e8400-e29b...",
+  "status": "pending",
+  "status_url": "/api/v1/jobs/550e8400-e29b...",
+  "message": "Job accepted for processing"
 }
 ```
 
@@ -322,103 +210,34 @@ Generate an image from a text prompt.
 
 #### `POST /api/v1/image/edit`
 
-Edit an existing image with AI-powered transformations.
-
-**Requires:** Image Mode
+**Returns HTTP 202 Accepted**.
 
 **Request:**
 | Field | Type | Required | Description | Default |
 |-------|------|----------|-------------|---------|
 | `job_id` | string | ✅ | Unique job identifier | - |
 | `input_image_url` | string | ✅ | URL of image to edit | - |
-| `prompt` | string | ✅ | Edit instruction (max 2000 chars) | - |
-| `aspect_ratio` | string | ❌ | Output aspect ratio | `16:9` |
-| `mask_image_url` | string | ❌ | Mask for inpainting | `null` |
-| `seed` | integer | ❌ | Random seed | random |
+| `prompt` | string | ✅ | Edit instruction | - |
 | `save_url` | string | ✅ | Presigned PUT URL for output | - |
 
-**Example:**
+**Response (Immediate):**
 
 ```json
 {
-  "job_id": "550e8400-e29b-41d4-a716-446655440001",
-  "input_image_url": "https://example.com/original.png",
-  "prompt": "Make it look like a Van Gogh painting",
-  "save_url": "https://storage.example.com/edited.png?sig=..."
-}
-```
-
-**Response:**
-
-```json
-{
-  "status": "completed",
-  "generation_time": 3.2,
-  "save_url": "https://storage.example.com/edited.png"
+  "job_id": "550e8400-e29b...",
+  "status": "pending",
+  "status_url": "/api/v1/jobs/550e8400-e29b...",
+  "message": "Job accepted for processing"
 }
 ```
 
 ---
 
-### Video Generation
-
-#### `POST /api/v1/video/generate`
-
-Generate a video from an input image.
-
-**Requires:** Video Mode
-
-**Request:**
-| Field | Type | Required | Description | Default |
-|-------|------|----------|-------------|---------|
-| `job_id` | string | ✅ | Unique job identifier | - |
-| `input_image_url` | string | ✅ | URL of starting frame | - |
-| `prompt` | string | ✅ | Motion/action description | - |
-| `duration_seconds` | float | ❌ | Video length (1.0-8.0) | `4.0` |
-| `fps` | integer | ❌ | 8, 12, 16, 24, or 30 | `24` |
-| `aspect_ratio` | string | ❌ | Output aspect ratio | `16:9` |
-| `width` | integer | ❌ | Target width (512-1920), e.g. 1920 for 1080p | `null` |
-| `height` | integer | ❌ | Target height (512-1920), e.g. 1080 for 1080p | `null` |
-| `end_image_url` | string | ❌ | Optional final frame | `null` |
-| `seed` | integer | ❌ | Random seed | random |
-| `save_url` | string | ✅ | Presigned PUT URL for output | - |
-
-> **Note:** For 1080p video, set `width: 1920` and `height: 1080`. Without explicit dimensions, 16:9 defaults to 720p.
-
-**Example:**
-
-```json
-{
-  "job_id": "550e8400-e29b-41d4-a716-446655440002",
-  "input_image_url": "https://example.com/start.png",
-  "prompt": "Camera slowly pans right, clouds moving in background",
-  "duration_seconds": 4.0,
-  "fps": 24,
-  "save_url": "https://storage.example.com/video.mp4?sig=..."
-}
-```
-
-**Response:**
-
-```json
-{
-  "status": "completed",
-  "generation_time": 45.2,
-  "save_url": "https://storage.example.com/video.mp4"
-}
-```
-
----
-
-### LTX-2 Video Generation
-
-Advanced video generation with LTX-2 19B model.
+### Video Generation (LTX-2)
 
 #### `POST /api/v1/ltx2/generate`
 
-Image-to-video generation with optional end frame.
-
-**Requires:** Video Mode
+**Returns HTTP 202 Accepted**. The system will automatically switch to Video Mode if needed.
 
 **Request:**
 | Field | Type | Required | Description | Default |
@@ -426,157 +245,58 @@ Image-to-video generation with optional end frame.
 | `job_id` | string | ✅ | Unique job identifier | - |
 | `input_image_url` | string | ✅ | URL of starting frame | - |
 | `prompt` | string | ✅ | Motion description | - |
-| `negative_prompt` | string | ❌ | What to avoid | `null` |
 | `duration_seconds` | float | ❌ | Video length (1.0-8.0) | `4.0` |
-| `frame_rate` | float | ❌ | Frames per second | `24.0` |
-| `aspect_ratio` | string | ❌ | Output aspect ratio | `16:9` |
-| `width` | integer | ❌ | Target width (512-1920), e.g. 1920 for 1080p | `null` |
-| `height` | integer | ❌ | Target height (512-1920), e.g. 1080 for 1080p | `null` |
-| `end_image_url` | string | ❌ | Final frame for interpolation | `null` |
-| `seed` | integer | ❌ | Random seed | random |
-| `enhance_prompt` | boolean | ❌ | AI prompt enhancement | `false` |
 | `save_url` | string | ✅ | Presigned PUT URL | - |
 
-> **Note:** For 1080p video, set `width: 1920` and `height: 1080`. Without explicit dimensions, 16:9 defaults to 720p.
-
-**Response:**
+**Response (Immediate):**
 
 ```json
 {
-  "status": "completed",
-  "generation_time": 52.3,
-  "save_url": "https://storage.example.com/video.mp4",
-  "duration_seconds": 4.0,
-  "has_audio": false
+  "job_id": "550e8400-e29b...",
+  "status": "pending",
+  "status_url": "/api/v1/jobs/550e8400-e29b...",
+  "message": "Job accepted for processing"
 }
 ```
-
----
-
-#### `POST /api/v1/ltx2/interpolate`
-
-Keyframe interpolation between multiple images.
-
-**Requires:** Video Mode
-
-**Request:**
-
-```json
-{
-  "job_id": "550e8400-e29b-41d4-a716-446655440003",
-  "prompt": "Smooth transition between scenes",
-  "keyframes": [
-    {
-      "image_url": "https://example.com/frame1.png",
-      "frame_index": 0,
-      "strength": 1.0
-    },
-    {
-      "image_url": "https://example.com/frame2.png",
-      "frame_index": 48,
-      "strength": 0.8
-    },
-    {
-      "image_url": "https://example.com/frame3.png",
-      "frame_index": 96,
-      "strength": 1.0
-    }
-  ],
-  "duration_seconds": 4.0,
-  "frame_rate": 24.0,
-  "width": 1920,
-  "height": 1080,
-  "save_url": "https://storage.example.com/interpolated.mp4?sig=..."
-}
-```
-
-> **Note:** For 1080p, include `width` and `height`. Keyframe images should match target resolution.
 
 ---
 
 ## Error Handling
 
-All errors return a consistent JSON structure:
-
-```json
-{
-  "status": "failed",
-  "error_code": "ERROR_CODE",
-  "error_message": "Human-readable description"
-}
-```
-
 ### HTTP Status Codes
 
-| Code  | Meaning                                  |
-| ----- | ---------------------------------------- |
-| `400` | Bad Request - Invalid parameters         |
-| `401` | Unauthorized - Missing/invalid API key   |
-| `503` | Service Unavailable - Wrong mode or busy |
-| `500` | Internal Server Error                    |
+| Code  | Meaning                                |
+| ----- | -------------------------------------- |
+| `202` | Accepted - Job queued successfully     |
+| `400` | Bad Request - Invalid parameters       |
+| `401` | Unauthorized - Missing/invalid API key |
+| `429` | Too Many Requests (Queue Full)         |
+| `500` | Internal Server Error                  |
 
-### Error Codes
+### Job Error Codes (in `GET /jobs/{id}`)
 
-| Code                   | Description                     |
-| ---------------------- | ------------------------------- |
-| `VALIDATION_ERROR`     | Invalid request parameters      |
-| `AUTHENTICATION_ERROR` | Missing or invalid API key      |
-| `MODE_ERROR`           | Request requires different mode |
-| `BUSY_ERROR`           | System busy with another job    |
-| `INTERNAL_ERROR`       | Unexpected server error         |
-
----
-
-## Configuration
-
-### Environment Variables
-
-| Variable               | Required | Default          | Description                |
-| ---------------------- | -------- | ---------------- | -------------------------- |
-| `MOCK_MODE`            | ❌       | `true`           | Enable mock mode (no GPU)  |
-| `API_KEY`              | ✅       | -                | API authentication key     |
-| `LOG_LEVEL`            | ❌       | `INFO`           | Logging verbosity          |
-| `CORS_ALLOWED_ORIGINS` | ❌       | `localhost:3000` | Comma-separated origins    |
-| `DEFAULT_MODEL_MODE`   | ❌       | `image`          | Startup mode (image/video) |
-
-### Model Configuration
-
-Model paths and inference parameters are hardcoded in `app/config.py` for security and simplicity:
-
-```python
-# app/config.py
-class InferenceConfig:
-    MAX_CONCURRENT_IMAGE_GENERATIONS = 2
-    MAX_CONCURRENT_VIDEO_GENERATIONS = 1
-    # ... other settings
-```
-
----
-
-## Rate Limits
-
-The API enforces concurrency limits, not rate limits:
-
-- **Image Mode:** Max 2 concurrent generations
-- **Video Mode:** Max 1 concurrent generation
-
-Exceeded requests receive `503 Service Unavailable`.
+| Code                | Description                           |
+| ------------------- | ------------------------------------- |
+| `GPU_OUT_OF_MEMORY` | VRAM exhausted. Retry with lower res. |
+| `JOB_TIMEOUT`       | Processing took too long.             |
+| `GENERATION_FAILED` | Internal model error.                 |
 
 ---
 
 ## Changelog
 
+### v0.3.0
+
+- **Queue System**: Replaced fail-fast concurrency with a robust Job Queue.
+- **Async API**: All generation endpoints now return `202 Accepted` and require polling.
+- **Smart Scheduling**: Dynamic Mode prioritizes grouping jobs to minimize switching.
+- **VRAM Modes**: Added Static vs Dynamic VRAM settings.
+
 ### v0.2.0
 
-- Removed Stream-DiffVSR upscaler (using LTX-2 native 2x upsampling)
-- Added `width` and `height` parameters for explicit 1080p support
-- Fixed video resolution handling
+- Removed Stream-DiffVSR upscaler
+- Native 1080p support in LTX-2
 
 ### v0.1.0
 
 - Initial release
-- Image generation (Z-Image Turbo)
-- Image editing (Qwen-Image-Edit)
-- Video generation (LTX-2)
-- Dynamic mode switching
-- GPU monitoring endpoint
