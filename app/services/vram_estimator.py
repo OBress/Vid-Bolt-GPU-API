@@ -314,6 +314,48 @@ def get_lightx2v_base_vram(cpu_offload: bool = True) -> float:
     return LIGHTX2V_BASE_MODEL_FULL_GB
 
 
+def calculate_lightx2v_optimal_pool_size(
+    available_vram_gb: float | None = None,
+    max_instances: int = 8,
+    cpu_offload: bool = True
+) -> int:
+    """Calculate optimal number of LightX2V pipeline instances.
+    
+    Determines how many concurrent LightX2V instances can fit in VRAM
+    for parallel image editing.
+    
+    Args:
+        available_vram_gb: Override for available VRAM (None = auto-detect)
+        max_instances: Absolute cap on instance count
+        cpu_offload: Whether CPU offload is enabled
+        
+    Returns:
+        Optimal number of instances (minimum 1)
+    """
+    # Get available VRAM
+    if available_vram_gb is None:
+        vram_info = get_vram_info()
+        available_vram_gb = vram_info.available_for_inference_gb
+    
+    # Calculate VRAM per instance
+    base_model_gb = get_lightx2v_base_vram(cpu_offload)
+    activation_overhead_gb = 4.0  # Per-image activation memory
+    vram_per_instance = base_model_gb + activation_overhead_gb
+    
+    # Calculate optimal count
+    optimal = int(available_vram_gb / vram_per_instance)
+    
+    # Apply bounds
+    optimal = max(1, min(optimal, max_instances))
+    
+    logger.debug(
+        f"LightX2V pool sizing: {available_vram_gb:.1f}GB available, "
+        f"{vram_per_instance:.1f}GB per instance, optimal = {optimal}"
+    )
+    
+    return optimal
+
+
 # =============================================================================
 # LTX-2 VRAM Estimation Functions
 # =============================================================================

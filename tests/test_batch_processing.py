@@ -894,6 +894,7 @@ class TestLightX2VGeneratorBatch:
         settings.lightx2v_guidance_scale = 7.5
         settings.lightx2v_cpu_offload = True
         settings.lightx2v_text_encoder_offload = True
+        settings.lightx2v_max_instances = 4
         return settings
     
     @pytest.fixture
@@ -1068,6 +1069,7 @@ class TestLightX2VBatchingIntegration:
         settings.lightx2v_guidance_scale = 7.5
         settings.lightx2v_cpu_offload = True
         settings.lightx2v_text_encoder_offload = True
+        settings.lightx2v_max_instances = 4
         return settings
     
     @pytest.fixture

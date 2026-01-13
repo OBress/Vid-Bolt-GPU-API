@@ -68,6 +68,7 @@ class InferenceConfig:
     LIGHTX2V_RESIZE_MODE = "adaptive"
     LIGHTX2V_CPU_OFFLOAD = False
     LIGHTX2V_TEXT_ENCODER_OFFLOAD = True
+    LIGHTX2V_MAX_INSTANCES = 4  # Max concurrent pipeline instances for batching
     
     # LTX-2 settings (Optimized for Distilled Model)
     # Distilled model uses 8 predefined sigmas (Stage 1: 8 steps, Stage 2: 4 steps)
@@ -241,6 +242,11 @@ class Settings(BaseSettings):
         if self.lightx2v_dry_run_override is not None:
             return self.lightx2v_dry_run_override
         return self.mock_mode
+    
+    @property
+    def lightx2v_max_instances(self) -> int:
+        """Max concurrent LightX2V pipeline instances for batching."""
+        return InferenceConfig.LIGHTX2V_MAX_INSTANCES
     
     # --- LTX-2 ---
     @property
