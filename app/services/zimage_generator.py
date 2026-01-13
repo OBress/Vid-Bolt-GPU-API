@@ -179,6 +179,263 @@ class ZImageGenerator(ImageGenerator):
             seed=seed,
         )
 
+    async def generate_batch(
+        self, params_list: List[ImageGenerationParams]
+    ) -> List[ImageGenerationResult]:
+        """Generate multiple images in a single batch (true vectorized processing).
+        
+        This method processes multiple images in a single forward pass through the
+        transformer, maximizing GPU utilization. All images must have the same
+        dimensions (enforced by JobManager bucketing).
+        
+        Args:
+            params_list: List of generation parameters (must have same dimensions)
+            
+        Returns:
+            List of generation results in same order as inputs
+        """
+        if not params_list:
+            return []
+        
+        if len(params_list) == 1:
+            # Fast path: single image uses original method
+            return [await self.generate_image(params_list[0])]
+        
+        if not self.is_loaded:
+            raise RuntimeError(
+                "Z-Image models not loaded. Call load_models() first or set "
+                "ZIMAGE_DRY_RUN=false with models downloaded."
+            )
+        
+        # Validate all images have same dimensions
+        first_width = params_list[0].width
+        first_height = params_list[0].height
+        for params in params_list:
+            if params.width != first_width or params.height != first_height:
+                raise ValueError(
+                    f"Batch requires same dimensions. Got {params.width}x{params.height} "
+                    f"but expected {first_width}x{first_height}"
+                )
+        
+        batch_size = len(params_list)
+        logger.info(f"Starting batch generation of {batch_size} images at {first_width}x{first_height}")
+        
+        # Generate seeds for each image
+        seeds = []
+        for params in params_list:
+            seed = params.seed if params.seed is not None else random.randint(0, 2**32 - 1)
+            seeds.append(seed)
+        
+        # Handle LoRA - use first job's LoRA setting (batch should have consistent LoRA)
+        first_lora = params_list[0].lora_name
+        if first_lora != self._current_lora:
+            if first_lora is None:
+                await self.unload_lora()
+            else:
+                if self._current_lora is not None:
+                    await self.unload_lora()
+                await self.load_lora(first_lora)
+        
+        if self.dry_run:
+            # Generate placeholder images for each in batch
+            results = []
+            for params, seed in zip(params_list, seeds):
+                result = await self._generate_dry_run(params, seed)
+                results.append(result)
+            return results
+        
+        # Run the synchronous batch generation in a thread pool
+        loop = asyncio.get_event_loop()
+        image_data_list = await loop.run_in_executor(
+            None,
+            lambda: self._generate_batch_sync(params_list, seeds),
+        )
+        
+        # Build results
+        results = []
+        for params, seed, image_data in zip(params_list, seeds, image_data_list):
+            results.append(ImageGenerationResult(
+                image_data=image_data,
+                width=params.width,
+                height=params.height,
+                seed=seed,
+            ))
+        
+        logger.info(f"Batch generation completed: {batch_size} images")
+        return results
+
+    def _generate_batch_sync(
+        self, 
+        params_list: List[ImageGenerationParams], 
+        seeds: List[int]
+    ) -> List[bytes]:
+        """Synchronous batch image generation (runs in thread pool).
+        
+        This is the core vectorized implementation that generates multiple
+        images in a single forward pass.
+        
+        Args:
+            params_list: List of generation parameters
+            seeds: List of seeds corresponding to each params
+            
+        Returns:
+            List of PNG image bytes
+        """
+        import torch
+        
+        batch_size = len(params_list)
+        
+        # All images have same dimensions (validated upstream)
+        target_width = params_list[0].width
+        target_height = params_list[0].height
+        gen_width = ((target_width + 31) // 32) * 32
+        gen_height = ((target_height + 31) // 32) * 32
+        
+        device = self.settings.zimage_device
+        dtype = torch.bfloat16 if self.settings.zimage_dtype == "bfloat16" else torch.float16
+        
+        # Pipeline components
+        transformer = self.pipeline.transformer
+        vae = self.pipeline.vae
+        text_encoder = self.pipeline.text_encoder
+        tokenizer = self.pipeline.tokenizer
+        scheduler = self.pipeline.scheduler
+        
+        # Constants from Z-Image config
+        BASE_IMAGE_SEQ_LEN = 256
+        MAX_IMAGE_SEQ_LEN = 4096
+        BASE_SHIFT = 0.5
+        MAX_SHIFT = 1.15
+        
+        # --- 1. Prepare Text Embeddings (Batched) ---
+        prompts = [p.prompt for p in params_list]
+        formatted_prompts = []
+        for prompt in prompts:
+            messages = [{"role": "user", "content": prompt}]
+            formatted = tokenizer.apply_chat_template(
+                messages,
+                tokenize=False,
+                add_generation_prompt=True,
+            )
+            formatted_prompts.append(formatted)
+        
+        # Tokenize all prompts at once
+        text_inputs = tokenizer(
+            formatted_prompts,
+            padding="max_length",
+            max_length=256,
+            truncation=True,
+            return_tensors="pt",
+        )
+        
+        text_input_ids = text_inputs.input_ids.to(device)
+        prompt_masks = text_inputs.attention_mask.to(device).bool()
+        
+        # Encode all prompts at once
+        prompt_embeds = text_encoder(
+            input_ids=text_input_ids,
+            attention_mask=prompt_masks,
+            output_hidden_states=True,
+        ).hidden_states[-2]  # Penultimate layer
+        
+        # Select embeddings matching mask for each sample
+        prompt_embeds_list = []
+        for i in range(batch_size):
+            prompt_embeds_list.append(prompt_embeds[i][prompt_masks[i]])
+        
+        # --- 2. Prepare Latents (Batched) ---
+        if hasattr(vae, "config") and hasattr(vae.config, "block_out_channels"):
+            vae_scale_factor = 2 ** (len(vae.config.block_out_channels) - 1)
+        else:
+            vae_scale_factor = 8
+        vae_scale = vae_scale_factor * 2
+        
+        height_latent = 2 * (int(gen_height) // vae_scale)
+        width_latent = 2 * (int(gen_width) // vae_scale)
+        
+        # Create batched latents with different seeds
+        latent_shape = (transformer.in_channels, height_latent, width_latent)
+        latents_list = []
+        for seed in seeds:
+            gen = torch.Generator(device).manual_seed(seed)
+            latent = torch.randn(latent_shape, generator=gen, device=device, dtype=torch.float32)
+            latents_list.append(latent)
+        latents = torch.stack(latents_list, dim=0)  # (B, C, H, W)
+        
+        # --- 3. Prepare Scheduler ---
+        num_inference_steps = params_list[0].num_inference_steps or 8
+        image_seq_len = (height_latent // 2) * (width_latent // 2)
+        
+        m = (MAX_SHIFT - BASE_SHIFT) / (MAX_IMAGE_SEQ_LEN - BASE_IMAGE_SEQ_LEN)
+        b = BASE_SHIFT - m * BASE_IMAGE_SEQ_LEN
+        mu = image_seq_len * m + b
+        
+        scheduler.sigma_min = 0.0
+        scheduler.set_timesteps(num_inference_steps, device=device, mu=mu)
+        timesteps = scheduler.timesteps
+        
+        logger.info(f"Batch generation: {batch_size} images, {num_inference_steps} steps, mu={mu:.4f}")
+        
+        # --- 4. Denoising Loop (Batched) ---
+        for i, t in enumerate(timesteps):
+            # Skip last step if t == 0 (Critical fix)
+            if t == 0 and i == len(timesteps) - 1:
+                continue
+            
+            timestep = t.expand(batch_size)
+            timestep = (1000 - timestep) / 1000
+            
+            # Prepare model input
+            latent_model_input = latents.to(dtype)
+            latent_model_input = latent_model_input.unsqueeze(2)  # Add time dim
+            latent_model_input_list = list(latent_model_input.unbind(dim=0))
+            
+            # Forward pass with batched inputs
+            model_out_list = transformer(
+                latent_model_input_list,
+                timestep,
+                prompt_embeds_list,
+            )[0]
+            
+            noise_pred = torch.stack([out.float() for out in model_out_list], dim=0)
+            noise_pred = -noise_pred.squeeze(2)
+            
+            # Scheduler step
+            latents = scheduler.step(noise_pred.to(torch.float32), t, latents, return_dict=False)[0]
+        
+        # --- 5. Decode Latents (Batched) ---
+        shift_factor = getattr(vae.config, "shift_factor", 0.0) or 0.0
+        latents = (latents.to(vae.dtype) / vae.config.scaling_factor) + shift_factor
+        
+        # VAE decode (may need to chunk for very large batches)
+        images = vae.decode(latents, return_dict=False)[0]
+        
+        # Process to PIL and encode
+        images = (images / 2 + 0.5).clamp(0, 1)
+        images = images.cpu().permute(0, 2, 3, 1).float().numpy()
+        images = (images * 255).round().astype("uint8")
+        
+        from PIL import Image as PILImage
+        
+        result_bytes = []
+        for idx in range(batch_size):
+            image = PILImage.fromarray(images[idx])
+            
+            # Crop to target dimensions if needed
+            if gen_width != target_width or gen_height != target_height:
+                left = (gen_width - target_width) // 2
+                top = (gen_height - target_height) // 2
+                right = left + target_width
+                bottom = top + target_height
+                image = image.crop((left, top, right, bottom))
+            
+            buffer = io.BytesIO()
+            image.save(buffer, format="PNG")
+            buffer.seek(0)
+            result_bytes.append(buffer.getvalue())
+        
+        return result_bytes
+
     def _generate_sync(self, params: ImageGenerationParams, seed: int) -> tuple[bytes, int, int]:
         """Synchronous image generation (runs in thread pool).
         

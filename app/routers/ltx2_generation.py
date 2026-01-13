@@ -26,7 +26,7 @@ from app.models.internal import (
     VideoGenerationParams as LTX2VideoParams, 
     KeyframeInterpolationParams,
 )
-from app.services.model_manager import ModelMode
+from app.services.model_manager import JobType
 
 logger = logging.getLogger(__name__)
 
@@ -129,7 +129,7 @@ async def generate_video(
     # 4. Submit Job
     submitted = await job_manager.try_submit_job(
         job_id=body.job_id,
-        mode=ModelMode.VIDEO,
+        job_type=JobType.VIDEO_GENERATION,
         task_func=_run_ltx2_generation,
         generator=active_generator,
         storage=storage,
@@ -244,7 +244,7 @@ async def interpolate_keyframes(
     # 3. Submit
     submitted = await job_manager.try_submit_job(
         job_id=body.job_id,
-        mode=ModelMode.VIDEO,
+        job_type=JobType.VIDEO_GENERATION,
         task_func=_run_ltx2_interpolation,
         generator=active_generator,
         storage=storage,

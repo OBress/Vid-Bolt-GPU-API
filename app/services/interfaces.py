@@ -5,7 +5,7 @@ This ensures a consistent API for the ModelManager and facilitates easy addition
 """
 
 from abc import ABC, abstractmethod
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 
 from app.config import Settings
 from app.models.internal import (
@@ -59,6 +59,26 @@ class ImageGenerator(BaseModelGenerator):
     async def generate_image(self, params: ImageGenerationParams) -> ImageGenerationResult:
         """Generate an image from a text prompt."""
         pass
+    
+    async def generate_batch(
+        self, params_list: List[ImageGenerationParams]
+    ) -> List[ImageGenerationResult]:
+        """Generate multiple images in a single batch.
+        
+        Default implementation runs serially. Subclasses can override for
+        true batching (single forward pass).
+        
+        Args:
+            params_list: List of generation parameters (must have same dimensions)
+            
+        Returns:
+            List of generation results in same order as inputs
+        """
+        results = []
+        for params in params_list:
+            result = await self.generate_image(params)
+            results.append(result)
+        return results
     
     @abstractmethod
     async def load_lora(self, lora_name: str, weight: float = 1.0) -> None:

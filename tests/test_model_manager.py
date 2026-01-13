@@ -11,26 +11,27 @@ class TestModelManagerBasicFunctionality:
     def test_model_manager_initialization(self):
         """Test ModelManager initializes with correct default state."""
         from app.config import get_settings
-        from app.services.model_manager import ModelManager, ModelMode
+        from app.services.model_manager import ModelManager, VRAMLoadMode
         
         settings = get_settings()
         manager = ModelManager(settings)
         
-        assert manager.current_mode == ModelMode.NONE
+        # Default mode is IMAGE_GENERATION
+        assert manager.current_mode == VRAMLoadMode.IMAGE_GENERATION
         assert manager.is_busy is False
         assert manager.active_job_id is None
 
     def test_model_manager_get_status(self):
         """Test ModelManager status reporting."""
         from app.config import get_settings
-        from app.services.model_manager import ModelManager, ModelMode
+        from app.services.model_manager import ModelManager, VRAMLoadMode
         
         settings = get_settings()
         manager = ModelManager(settings)
         
         status = manager.get_status()
         
-        assert status.mode == ModelMode.NONE
+        assert status.mode == VRAMLoadMode.IMAGE_GENERATION
         assert status.is_busy is False
         assert status.active_job_id is None
         assert status.loaded_models == []
@@ -143,18 +144,19 @@ class TestModelManagerJobLock:
 class TestModelManagerModeGuards:
     """Tests for mode-specific generator access guards."""
 
-    def test_get_image_generator_fails_when_not_in_image_mode(self):
-        """Test that getting image generator fails in wrong mode."""
+    def test_get_image_generator_fails_when_not_loaded(self):
+        """Test that getting image generator fails when not loaded."""
         from app.config import get_settings
         from app.services.model_manager import ModelManager
         
         settings = get_settings()
         manager = ModelManager(settings)
         
-        with pytest.raises(RuntimeError, match="Not in Image Mode"):
+        # Mode is IMAGE_GENERATION by default, but generator not loaded
+        with pytest.raises(RuntimeError, match="Z-Image generator not loaded"):
             manager.get_image_generator()
 
-    def test_get_video_generator_fails_when_not_in_video_mode(self):
+    def test_get_video_generator_fails_when_wrong_mode(self):
         """Test that getting video generator fails in wrong mode."""
         from app.config import get_settings
         from app.services.model_manager import ModelManager
@@ -162,10 +164,11 @@ class TestModelManagerModeGuards:
         settings = get_settings()
         manager = ModelManager(settings)
         
-        with pytest.raises(RuntimeError, match="Not in Video Mode"):
+        # Default mode is IMAGE_GENERATION, not VIDEO_GENERATION
+        with pytest.raises(RuntimeError, match="Not in valid mode for video generation"):
             manager.get_video_generator()
 
-    def test_get_image_editor_fails_when_not_in_image_mode(self):
+    def test_get_image_editor_fails_when_wrong_mode(self):
         """Test that getting image editor fails in wrong mode."""
         from app.config import get_settings
         from app.services.model_manager import ModelManager
@@ -173,37 +176,38 @@ class TestModelManagerModeGuards:
         settings = get_settings()
         manager = ModelManager(settings)
         
-        with pytest.raises(RuntimeError, match="Not in Image Mode"):
+        # Default mode is IMAGE_GENERATION, not IMAGE_EDITING
+        with pytest.raises(RuntimeError, match="Not in valid mode for image editing"):
             manager.get_image_editor()
 
 
-class TestModeEnum:
-    """Tests for ModelMode enum values."""
+class TestVRAMLoadModeEnum:
+    """Tests for VRAMLoadMode enum values."""
 
-    def test_mode_enum_values(self):
-        """Test ModelMode enum has expected values."""
-        from app.services.model_manager import ModelMode
+    def test_vram_mode_enum_values(self):
+        """Test VRAMLoadMode enum has expected values."""
+        from app.services.model_manager import VRAMLoadMode
         
-        assert ModelMode.NONE.value == "none"
-        assert ModelMode.IMAGE.value == "image"
-        assert ModelMode.VIDEO.value == "video"
-        assert ModelMode.SWITCHING.value == "switching"
+        assert VRAMLoadMode.IMAGE_GENERATION.value == "image_generation"
+        assert VRAMLoadMode.IMAGE_EDITING.value == "image_editing"
+        assert VRAMLoadMode.VIDEO_GENERATION.value == "video_generation"
+        assert VRAMLoadMode.ALL.value == "all"
 
-    def test_mode_enum_string_inheritance(self):
-        """Test ModelMode inherits from str."""
-        from app.services.model_manager import ModelMode
+    def test_job_type_enum_values(self):
+        """Test JobType enum has expected values."""
+        from app.services.model_manager import JobType
         
-        # Should be usable as string
-        assert isinstance(ModelMode.IMAGE.value, str)
-        assert str(ModelMode.IMAGE) == "ModelMode.IMAGE"
+        assert JobType.IMAGE_GENERATION.value == "image_generation"
+        assert JobType.IMAGE_EDITING.value == "image_editing"
+        assert JobType.VIDEO_GENERATION.value == "video_generation"
 
 
 class TestVRAMMode:
     """Tests for VRAM loading mode functionality."""
 
     @pytest.mark.asyncio
-    async def test_set_vram_mode_static_loads_all_models(self):
-        """Test valid VRAM mode transition to static."""
+    async def test_set_vram_mode_all_loads_all_models(self):
+        """Test valid VRAM mode transition to ALL."""
         from app.config import get_settings
         from app.services.model_manager import ModelManager, VRAMLoadMode
         
@@ -211,64 +215,72 @@ class TestVRAMMode:
         manager = ModelManager(settings)
         
         # Mock loading methods
-        manager._load_image_models = AsyncMock()
-        manager._load_video_models = AsyncMock()
+        manager._load_zimage = AsyncMock()
+        manager._load_lightx2v = AsyncMock()
+        manager._load_ltx2 = AsyncMock()
         
-        await manager.set_vram_mode(VRAMLoadMode.STATIC)
+        await manager.set_vram_mode(VRAMLoadMode.ALL)
         
-        assert manager.vram_mode == VRAMLoadMode.STATIC
-        manager._load_image_models.assert_called_once()
-        manager._load_video_models.assert_called_once()
+        assert manager.vram_mode == VRAMLoadMode.ALL
+        manager._load_zimage.assert_called_once()
+        manager._load_lightx2v.assert_called_once()
+        manager._load_ltx2.assert_called_once()
 
     @pytest.mark.asyncio
-    async def test_set_vram_mode_dynamic_unloads_unused(self):
-        """Test valid VRAM mode transition to dynamic unloads unused."""
+    async def test_set_vram_mode_image_generation(self):
+        """Test switching to image_generation mode."""
         from app.config import get_settings
-        from app.services.model_manager import ModelManager, VRAMLoadMode, ModelMode
+        from app.services.model_manager import ModelManager, VRAMLoadMode
         
         settings = get_settings()
         manager = ModelManager(settings)
-        manager._mode = ModelMode.IMAGE
-        manager._vram_mode = VRAMLoadMode.STATIC # Start in static
-        
-        # Mock unloading methods
-        manager._unload_video_models = AsyncMock()
-        manager._unload_image_models = AsyncMock()
-        
-        # Switch to dynamic while in Image mode -> should unload video
-        await manager.set_vram_mode(VRAMLoadMode.DYNAMIC)
-        
-        assert manager.vram_mode == VRAMLoadMode.DYNAMIC
-        manager._unload_video_models.assert_called_once()
-        manager._unload_image_models.assert_not_called()
-
-    @pytest.mark.asyncio
-    async def test_ensure_mode_static_prevents_unloading(self):
-        """Test that switching modes in static VRAM mode prevents unloading."""
-        from app.config import get_settings
-        from app.services.model_manager import ModelManager, VRAMLoadMode, ModelMode
-        
-        settings = get_settings()
-        manager = ModelManager(settings)
-        manager._vram_mode = VRAMLoadMode.STATIC
-        manager._mode = ModelMode.IMAGE
+        manager._mode = VRAMLoadMode.VIDEO_GENERATION  # Start in different mode
         
         # Mock methods
-        manager._unload_video_models = AsyncMock()
-        manager._load_video_models = AsyncMock()
-        manager._unload_image_models = AsyncMock()
-        manager._load_image_models = AsyncMock()
+        manager._load_zimage = AsyncMock()
+        manager._unload_lightx2v = AsyncMock()
+        manager._unload_ltx2 = AsyncMock()
         
-        # Switch to video mode
-        # Since we are static, verify we DO NOT unload image models
-        # We still "load" video models (idempotent, effectively checks they are loaded)
+        await manager.set_vram_mode(VRAMLoadMode.IMAGE_GENERATION)
         
-        # NOTE: logic in switch_to_video_mode does:
-        # if static: skips unload
-        # calls load_video_models
+        assert manager.vram_mode == VRAMLoadMode.IMAGE_GENERATION
+        manager._load_zimage.assert_called_once()
+        manager._unload_lightx2v.assert_called_once()
+        manager._unload_ltx2.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_set_vram_mode_video_generation(self):
+        """Test switching to video_generation mode."""
+        from app.config import get_settings
+        from app.services.model_manager import ModelManager, VRAMLoadMode
         
-        await manager.switch_to_video_mode()
+        settings = get_settings()
+        manager = ModelManager(settings)
         
-        manager._unload_image_models.assert_not_called()
-        manager._load_video_models.assert_called_once()
-        assert manager.current_mode == ModelMode.VIDEO
+        # Mock methods
+        manager._load_ltx2 = AsyncMock()
+        manager._unload_zimage = AsyncMock()
+        manager._unload_lightx2v = AsyncMock()
+        
+        await manager.set_vram_mode(VRAMLoadMode.VIDEO_GENERATION)
+        
+        assert manager.vram_mode == VRAMLoadMode.VIDEO_GENERATION
+        manager._load_ltx2.assert_called_once()
+        manager._unload_zimage.assert_called_once()
+        manager._unload_lightx2v.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_ensure_mode_for_job_in_all_mode(self):
+        """Test that ALL mode can handle any job type."""
+        from app.config import get_settings
+        from app.services.model_manager import ModelManager, VRAMLoadMode, JobType
+        
+        settings = get_settings()
+        manager = ModelManager(settings)
+        manager._mode = VRAMLoadMode.ALL
+        manager._loaded = True
+        
+        # ALL mode should accept any job type without switching
+        result = await manager.ensure_mode_for_job(JobType.VIDEO_GENERATION)
+        assert result is True
+        assert manager._mode == VRAMLoadMode.ALL  # Mode unchanged

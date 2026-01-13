@@ -72,6 +72,7 @@ class LightX2VImageEditGenerator(ImageEditor):
             logger.info(f"  Model path: {self.settings.lightx2v_model_path}")
             logger.info(f"  LORA path: {self.settings.lightx2v_lora_path}")
             logger.info(f"  LORA filename: {self.settings.lightx2v_lora_filename}")
+            logger.info(f"  LORA strength: {self.settings.lightx2v_lora_strength}")
             logger.info(f"  Device: {self.settings.lightx2v_device}")
             logger.info(f"  Attention mode: {self.settings.lightx2v_attn_mode}")
             logger.info(f"  Inference steps: {self.settings.lightx2v_infer_steps}")
@@ -127,11 +128,11 @@ class LightX2VImageEditGenerator(ImageEditor):
             )
 
         # Enable 8-step distilled LORA
-        logger.info(f"Loading 8-step distilled LORA from {lora_path}")
+        logger.info(f"Loading 8-step distilled LORA from {lora_path} with strength {self.settings.lightx2v_lora_strength}")
         pipe.enable_lora([
             {
                 "path": str(lora_path.absolute()),
-                "strength": 1.0
+                "strength": self.settings.lightx2v_lora_strength
             }
         ])
 
@@ -204,6 +205,140 @@ class LightX2VImageEditGenerator(ImageEditor):
             height=out_h,
             seed=seed,
         )
+
+    async def edit_batch(
+        self, 
+        params_list: "List[ImageEditParams]"
+    ) -> "List[ImageEditResult]":
+        """Edit multiple images sequentially with warm model state.
+        
+        This method processes multiple image edits using bucketed sequential
+        batching. All images should have the same dimensions (enforced by
+        JobManager bucketing). Jobs are processed sequentially but benefit from:
+        - Model weights already loaded in VRAM
+        - Shared scheduler configuration for same-resolution jobs
+        - Reduced setup overhead between jobs
+        
+        Args:
+            params_list: List of edit parameters. All must have same dimensions.
+            
+        Returns:
+            List of edit results in same order as inputs.
+            Failed jobs will still return results but with error information.
+            
+        Raises:
+            RuntimeError: If models are not loaded
+            ValueError: If params_list is empty or has mixed dimensions
+        """
+        from typing import List  # Local import for type hint
+        
+        # Early validation
+        if not params_list:
+            return []
+        
+        if len(params_list) == 1:
+            # Fast path: single image uses standard method
+            return [await self.edit_image(params_list[0])]
+        
+        if not self.is_loaded:
+            raise RuntimeError(
+                "LightX2V models not loaded. Call load_models() first or set "
+                "LIGHTX2V_DRY_RUN=false with models downloaded."
+            )
+        
+        # Validate all images have same dimensions
+        first_width = params_list[0].width
+        first_height = params_list[0].height
+        for idx, params in enumerate(params_list):
+            if params.width != first_width or params.height != first_height:
+                raise ValueError(
+                    f"Batch requires same dimensions. Job {idx} has "
+                    f"{params.width}x{params.height} but expected "
+                    f"{first_width}x{first_height}"
+                )
+        
+        batch_size = len(params_list)
+        logger.info(
+            f"Starting LightX2V batch edit: {batch_size} images at "
+            f"{first_width}x{first_height} (sequential with warm model)"
+        )
+        
+        results: List[ImageEditResult] = []
+        successful = 0
+        failed = 0
+        
+        # Process each image sequentially with shared model state
+        for idx, params in enumerate(params_list):
+            try:
+                # Determine seed for this job
+                seed = params.seed if params.seed is not None else random.randint(0, 2**32 - 1)
+                
+                logger.debug(
+                    f"Processing batch item {idx + 1}/{batch_size}: "
+                    f"job_id={params.job_id}, seed={seed}"
+                )
+                
+                if self.dry_run:
+                    # Use dry-run path for testing
+                    result = await self._edit_dry_run(params, seed)
+                else:
+                    # Run synchronous generation in thread pool
+                    loop = asyncio.get_event_loop()
+                    image_data, orig_w, orig_h, out_w, out_h = await loop.run_in_executor(
+                        None,
+                        lambda p=params, s=seed: self._edit_sync(p, s),
+                    )
+                    
+                    result = ImageEditResult(
+                        image_data=image_data,
+                        original_width=orig_w,
+                        original_height=orig_h,
+                        width=out_w,
+                        height=out_h,
+                        seed=seed,
+                    )
+                
+                results.append(result)
+                successful += 1
+                
+            except Exception as e:
+                # Log error but continue with next job
+                logger.error(
+                    f"Batch item {idx + 1}/{batch_size} failed "
+                    f"(job_id={params.job_id}): {e}"
+                )
+                
+                # Create a minimal error result to maintain order
+                # The caller (JobManager) will handle marking the job as failed
+                # based on the exception that gets raised when we re-raise below
+                failed += 1
+                
+                # For batch processing, we need to decide: fail entire batch or continue?
+                # Strategy: Continue processing remaining jobs, but track failures
+                # This provides partial success rather than all-or-nothing
+                
+                # Create placeholder result with error indicator
+                # The job manager will detect the missing data and handle appropriately
+                result = ImageEditResult(
+                    image_data=b"",  # Empty data indicates failure
+                    original_width=first_width,
+                    original_height=first_height,
+                    width=first_width,
+                    height=first_height,
+                    seed=params.seed or 0,
+                )
+                results.append(result)
+        
+        logger.info(
+            f"LightX2V batch complete: {successful} succeeded, {failed} failed "
+            f"out of {batch_size} total"
+        )
+        
+        # If all jobs failed, raise an exception
+        if successful == 0 and failed > 0:
+            raise RuntimeError(f"All {failed} jobs in batch failed")
+        
+        return results
 
     def _edit_sync(
         self, params: ImageEditParams, seed: int

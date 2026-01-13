@@ -12,7 +12,7 @@ from app.models.common import ErrorResponse, get_dimensions
 from app.models.image_generation import ImageGenerateRequest
 from app.models.job import AsyncJobResponse, JobResult
 from app.models.internal import ImageGenerationParams
-from app.services.model_manager import ModelMode
+from app.services.model_manager import JobType
 
 logger = logging.getLogger(__name__)
 
@@ -76,7 +76,7 @@ async def generate_image(
     # 3. Try to submit job
     submitted = await job_manager.try_submit_job(
         job_id=body.job_id,
-        mode=ModelMode.IMAGE,
+        job_type=JobType.IMAGE_GENERATION,
         task_func=_run_image_generation,
         # Args for task_func:
         generator=active_generator,

@@ -1,10 +1,11 @@
 """Job Management Service.
 
 This module provides the JobManager service for handling asynchronous generation jobs.
-It implements the "Fail-Fast" architecture using Semaphores to enforce concurrency limits.
+It implements intelligent batch processing with dynamic VRAM-based sizing.
 
 Features:
-- Semaphore-based concurrency control
+- Resolution-based job bucketing for efficient batching
+- Dynamic batch sizing based on available VRAM
 - OOM (Out of Memory) error handling with GPU cleanup
 - Job timeout enforcement
 - Periodic stale job cleanup
@@ -15,17 +16,18 @@ import asyncio
 import gc
 import logging
 import time
-from typing import Any, Callable, Dict, Optional, Coroutine
+from collections import defaultdict
+from typing import Any, Callable, Dict, List, Optional, Coroutine, Tuple
 
 from app.config import Settings, InferenceConfig
 from app.models.job import JobInfo, JobResult, JobStatus
-from app.services.model_manager import ModelMode
+from app.services.model_manager import VRAMLoadMode, JobType, ModelMode
 
 logger = logging.getLogger(__name__)
 
 
 class JobManager:
-    """Manages asynchronous generation jobs with dynamic queue scheduling."""
+    """Manages asynchronous generation jobs with intelligent batch scheduling."""
 
     # Job retention settings (hours)
     COMPLETED_JOB_RETENTION_HOURS = 24
@@ -44,10 +46,10 @@ class JobManager:
         self.settings = settings
         self._model_manager = model_manager
         
-        # Job Queue
-        # We use a simple list + condition variable instead of asyncio.Queue
-        # so we can peek and select jobs based on scheduling logic (Grouping vs FIFO)
-        self._pending_jobs: list[str] = []
+        # Job Queue - Resolution-based buckets for batch processing
+        # Key: (width, height, job_type), Value: list of job_ids
+        self._pending_buckets: Dict[Tuple[int, int, JobType], List[str]] = defaultdict(list)
+        self._pending_jobs_set: set[str] = set()  # For O(1) membership check
         self._condition = asyncio.Condition()
         
         # In-memory job store (job_id -> JobInfo)
@@ -82,11 +84,24 @@ class JobManager:
         Returns:
             Position (1, 2, 3...) if in queue, None otherwise.
         """
-        try:
-            # simple lookup, O(N) but N is small (queue size)
-            return self._pending_jobs.index(job_id) + 1
-        except ValueError:
+        if job_id not in self._pending_jobs_set:
             return None
+        
+        # Count jobs ahead of this one (by bucket order)
+        position = 0
+        job = self._jobs.get(job_id)
+        if not job:
+            return None
+            
+        job_created_at = job.created_at
+        
+        for bucket_jobs in self._pending_buckets.values():
+            for other_id in bucket_jobs:
+                other_job = self._jobs.get(other_id)
+                if other_job and other_job.created_at < job_created_at:
+                    position += 1
+                    
+        return position + 1
 
     def update_job_progress(
         self, 
@@ -183,7 +198,7 @@ class JobManager:
     async def submit_job(
         self,
         job_id: str,
-        mode: ModelMode,
+        job_type: JobType,
         task_func: Callable[..., Coroutine[Any, Any, Any]],
         **kwargs
     ) -> bool:
@@ -191,14 +206,13 @@ class JobManager:
         
         Args:
             job_id: Unique job ID
-            mode: Target mode (IMAGE or VIDEO)
+            job_type: Job type (IMAGE_GENERATION, IMAGE_EDITING, VIDEO_GENERATION)
             task_func: Async function to execute
-            **kwargs: Arguments for task_func
+            **kwargs: Arguments for task_func (must include 'params' with width/height)
             
         Returns:
             True (always accepted now that we have a queue)
         """
-        # Initialize job record
         # Initialize job record
         job = JobInfo(
             job_id=job_id,
@@ -208,17 +222,28 @@ class JobManager:
         # Store execution details (PrivateAttrs must be set after init)
         job._task_func = task_func
         job._kwargs = kwargs
-        job._mode = mode
+        job._job_type = job_type
+        
+        # Extract dimensions for bucketing (default to standard size)
+        params = kwargs.get("params")
+        width = getattr(params, "width", 1024) if params else 1024
+        height = getattr(params, "height", 1024) if params else 1024
+        job._bucket_key = (width, height, job_type)
         
         self._jobs[job_id] = job
         self._cleanup_old_jobs()
         
-        # Add to queue and notify worker
+        # Add to appropriate bucket and notify worker
         async with self._condition:
-            self._pending_jobs.append(job_id)
+            bucket_key = (width, height, job_type)
+            self._pending_buckets[bucket_key].append(job_id)
+            self._pending_jobs_set.add(job_id)
             self._condition.notify()
             
-        logger.info(f"Job {job_id} queued for {mode.value} mode. Queue length: {len(self._pending_jobs)}")
+        logger.info(
+            f"Job {job_id} queued for {job_type.value} ({width}x{height}). "
+            f"Total pending: {len(self._pending_jobs_set)}"
+        )
         return True
 
     # Compatibility alias for existing code
@@ -226,92 +251,251 @@ class JobManager:
         return await self.submit_job(*args, **kwargs)
 
     async def _worker_loop(self) -> None:
-        """Main worker loop handling job execution and scheduling."""
+        """Main worker loop handling job execution and batch scheduling."""
         from app.services.model_manager import VRAMLoadMode, ModelMode
+        from app.services import vram_estimator
 
         while self._running:
             try:
-                job_id = None
+                batch_job_ids: List[str] = []
+                bucket_key: Optional[Tuple[int, int, JobType]] = None
                 
-                # 1. Wait for jobs
+                # 1. Wait for jobs and select a batch
                 async with self._condition:
-                    await self._condition.wait_for(lambda: len(self._pending_jobs) > 0 or not self._running)
+                    await self._condition.wait_for(
+                        lambda: len(self._pending_jobs_set) > 0 or not self._running
+                    )
                     
                     if not self._running:
                         break
-                        
-                    # 2. Select next job based on scheduling logic
-                    job_id = self._select_next_job()
                     
-                    if job_id:
-                        self._pending_jobs.remove(job_id)
+                    # 2. Select batch using smart scheduling
+                    batch_job_ids, bucket_key = self._select_batch()
+                    
+                    # Remove selected jobs from pending
+                    for job_id in batch_job_ids:
+                        self._pending_jobs_set.discard(job_id)
+                    if bucket_key and bucket_key in self._pending_buckets:
+                        # Remove processed jobs from bucket
+                        remaining = [
+                            jid for jid in self._pending_buckets[bucket_key]
+                            if jid not in batch_job_ids
+                        ]
+                        if remaining:
+                            self._pending_buckets[bucket_key] = remaining
+                        else:
+                            del self._pending_buckets[bucket_key]
                 
-                if not job_id:
+                if not batch_job_ids:
                     continue
-                    
-                # 3. Process the job
-                await self._process_job(job_id)
+                
+                # 3. Process the batch
+                if len(batch_job_ids) == 1:
+                    # Single job - use legacy single-job processing
+                    await self._process_job(batch_job_ids[0])
+                else:
+                    # Batch processing
+                    await self._process_batch(batch_job_ids, bucket_key)
                 
             except asyncio.CancelledError:
                 break
             except Exception as e:
                 logger.error(f"Worker loop error: {e}")
+                import traceback
+                traceback.print_exc()
                 await asyncio.sleep(1)  # Prevent tight loops on error
 
-    def _select_next_job(self) -> Optional[str]:
-        """Select the next job to run based on current mode and configuration."""
-        from app.services.model_manager import VRAMLoadMode, ModelMode
-
-        if not self._pending_jobs:
-            return None
-            
-        # Get current state
-        if not self._model_manager:
-            # Fallback if manager not linked yet
-            return self._pending_jobs[0]
-
-        vram_mode = self._model_manager.vram_mode
-        current_mode = self._model_manager.current_mode
+    def _select_batch(self) -> Tuple[List[str], Optional[Tuple[int, int, JobType]]]:
+        """Select a batch of jobs to process together.
         
-        # Strategy 1: STATIC Mode (Strict FIFO)
-        if vram_mode == VRAMLoadMode.STATIC:
-            return self._pending_jobs[0]
-            
-        # Strategy 2: DYNAMIC Mode (Grouping)
-        # Prioritize jobs matching the current mode
+        Uses smart bucketing:
+        1. Find the bucket with the OLDEST job (prevents starvation)
+        2. Calculate max batch size based on available VRAM
+        3. Return up to max_batch jobs from that bucket
         
-        # If we are in NO mode (startup), just pick the first one
-        if current_mode == ModelMode.NONE or current_mode == ModelMode.SWITCHING:
-            return self._pending_jobs[0]
+        Returns:
+            Tuple of (list of job_ids, bucket_key)
+        """
+        from app.services import vram_estimator
+        
+        if not self._pending_buckets:
+            return [], None
+        
+        # Find bucket with oldest job
+        oldest_time = float('inf')
+        oldest_bucket_key: Optional[Tuple[int, int, JobType]] = None
+        
+        for bucket_key, job_ids in self._pending_buckets.items():
+            if not job_ids:
+                continue
+            # Get creation time of first job in bucket
+            first_job = self._jobs.get(job_ids[0])
+            if first_job and first_job.created_at < oldest_time:
+                oldest_time = first_job.created_at
+                oldest_bucket_key = bucket_key
+        
+        if not oldest_bucket_key:
+            return [], None
+        
+        width, height, job_type = oldest_bucket_key
+        job_ids = self._pending_buckets[oldest_bucket_key]
+        
+        # Calculate max batch size based on job type and VRAM
+        if job_type == JobType.IMAGE_GENERATION:
+            # Z-Image: true vectorized batching
+            max_batch = vram_estimator.calculate_max_batch_size(width, height)
+        elif job_type == JobType.IMAGE_EDITING:
+            # LightX2V: sequential batching with shared model state
+            # Check if other models are loaded (ALL mode)
+            other_models_loaded = False
+            if self._model_manager:
+                from app.services.model_manager import VRAMLoadMode
+                other_models_loaded = self._model_manager.current_mode == VRAMLoadMode.ALL
             
-        # Try to find a job matching current mode
-        for job_id in self._pending_jobs:
-            job_info = self._jobs.get(job_id)
-            if job_info and job_info._mode == current_mode:
-                return job_id
+            max_batch = vram_estimator.calculate_lightx2v_max_batch_size(
+                width, height,
+                other_models_loaded=other_models_loaded
+            )
+        else:
+            # Non-batchable jobs (VIDEO_GENERATION): return single job
+            return [job_ids[0]], oldest_bucket_key
+        
+        # Select up to max_batch jobs
+        batch_size = min(len(job_ids), max_batch)
+        selected_jobs = job_ids[:batch_size]
+        
+        logger.info(
+            f"Selected batch of {len(selected_jobs)} {job_type.value} jobs for "
+            f"{width}x{height} (max allowed: {max_batch}, pending: {len(job_ids)})"
+        )
+        
+        return selected_jobs, oldest_bucket_key
+
+    async def _process_batch(
+        self, 
+        job_ids: List[str],
+        bucket_key: Optional[Tuple[int, int, JobType]]
+    ):
+        """Execute a batch of jobs together.
+        
+        Supports both:
+        - IMAGE_GENERATION (Z-Image): True vectorized batch processing
+        - IMAGE_EDITING (LightX2V): Sequential batch processing with warm model
+        """
+        from app.config import InferenceConfig
+        
+        jobs = [self._jobs.get(jid) for jid in job_ids]
+        jobs = [j for j in jobs if j is not None]
+        
+        if not jobs:
+            return
+        
+        job_type = jobs[0]._job_type if hasattr(jobs[0], '_job_type') else None
+        timeout_seconds = InferenceConfig.IMAGE_JOB_TIMEOUT
+        
+        try:
+            # 1. Ensure correct model mode
+            if self._model_manager and job_type:
+                await self._model_manager.ensure_mode_for_job(job_type)
+            
+            # 2. Update all jobs to PROCESSING
+            for job in jobs:
+                job.status = JobStatus.PROCESSING
+                job.started_at = time.time()
+                job.progress_percent = 0
+                job.progress_stage = "batching"
+            
+            logger.info(
+                f"Starting {job_type.value if job_type else 'unknown'} batch of "
+                f"{len(jobs)} jobs with {timeout_seconds}s timeout"
+            )
+            
+            # 3. Get appropriate generator and execute batch
+            if not self._model_manager:
+                raise RuntimeError("ModelManager not available")
+            
+            # Collect params from all jobs
+            params_list = [job._kwargs.get("params") for job in jobs]
+            params_list = [p for p in params_list if p is not None]
+            
+            if len(params_list) != len(jobs):
+                raise RuntimeError("Mismatch between jobs and params")
+            
+            # Route to appropriate generator based on job type
+            if job_type == JobType.IMAGE_GENERATION:
+                # Z-Image: true vectorized batch
+                generator = self._model_manager.get_image_generator()
+                results = await asyncio.wait_for(
+                    generator.generate_batch(params_list),
+                    timeout=timeout_seconds
+                )
+            elif job_type == JobType.IMAGE_EDITING:
+                # LightX2V: sequential batch with warm model
+                generator = self._model_manager.get_image_editor()
+                results = await asyncio.wait_for(
+                    generator.edit_batch(params_list),
+                    timeout=timeout_seconds
+                )
+            else:
+                raise RuntimeError(f"Unsupported job type for batching: {job_type}")
+            
+            # 4. Complete jobs with their results
+            # Handle partial success (LightX2V may have empty results for failed jobs)
+            for job, result in zip(jobs, results):
+                # Check if this is a failed result (empty image_data)
+                is_failed = (
+                    hasattr(result, 'image_data') and 
+                    result.image_data is not None and 
+                    len(result.image_data) == 0
+                )
                 
-        # If no jobs match current mode, switch mode (pick first available)
-        return self._pending_jobs[0]
+                if is_failed:
+                    self._handle_job_error(
+                        job, 
+                        "Image edit failed within batch", 
+                        "BATCH_ITEM_FAILED"
+                    )
+                else:
+                    job.status = JobStatus.COMPLETED
+                    job.completed_at = time.time()
+                    job.result = result
+                    job.progress_percent = 100
+                    job.progress_stage = "completed"
+            
+            # Count successes
+            completed = sum(1 for j in jobs if j.status == JobStatus.COMPLETED)
+            logger.info(
+                f"Batch complete: {completed}/{len(jobs)} jobs succeeded"
+            )
+            
+        except asyncio.TimeoutError:
+            for job in jobs:
+                self._handle_job_error(job, f"Batch timed out after {timeout_seconds}s", "JOB_TIMEOUT")
+        except Exception as e:
+            for job in jobs:
+                self._handle_job_error(job, str(e), "GENERATION_FAILED")
+        finally:
+            self._cleanup_gpu_memory()
 
     async def _process_job(self, job_id: str):
-        """Execute a single job."""
+        """Execute a single job (legacy path for non-batchable jobs)."""
         from app.config import InferenceConfig
-        from app.services.model_manager import ModelMode
         
         job = self._jobs.get(job_id)
         if not job:
             return
 
         try:
-            # 1. Ensure correct model mode
-            if self._model_manager:
-                await self._model_manager.ensure_mode(job._mode)
+            # 1. Ensure correct model mode for this job type
+            if self._model_manager and hasattr(job, '_job_type'):
+                await self._model_manager.ensure_mode_for_job(job._job_type)
             
-            # 2. Determine timeout
-            timeout_seconds = (
-                InferenceConfig.IMAGE_JOB_TIMEOUT if job._mode == ModelMode.IMAGE
-                else InferenceConfig.VIDEO_JOB_TIMEOUT
-            )
+            # 2. Determine timeout based on job type
+            job_type = getattr(job, '_job_type', None)
+            if job_type == JobType.VIDEO_GENERATION:
+                timeout_seconds = InferenceConfig.VIDEO_JOB_TIMEOUT
+            else:
+                timeout_seconds = InferenceConfig.IMAGE_JOB_TIMEOUT
             
             # 3. Update Status
             job.status = JobStatus.PROCESSING
@@ -320,7 +504,7 @@ class JobManager:
             job.progress_stage = "starting"
             
             # 4. Execute
-            logger.info(f"Starting job {job_id} [{job._mode}] with {timeout_seconds}s timeout")
+            logger.info(f"Starting job {job_id} with {timeout_seconds}s timeout")
             
             result = await asyncio.wait_for(
                 job._task_func(**job._kwargs),
@@ -381,4 +565,3 @@ class JobManager:
             gc.collect()
         except Exception as e:
             logger.warning(f"Failed to clean up GPU memory: {e}")
-

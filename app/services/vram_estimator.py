@@ -1,0 +1,291 @@
+"""VRAM Estimation Utilities.
+
+This module provides functions to estimate VRAM usage for various generation
+tasks and query available GPU memory. Used by JobManager for dynamic batch sizing.
+"""
+
+import logging
+from dataclasses import dataclass
+from typing import Tuple
+
+logger = logging.getLogger(__name__)
+
+# VRAM estimation constants (in GB)
+# These are conservative estimates calibrated for RTX PRO 6000
+
+# Base costs (model weights already loaded)
+ZIMAGE_BASE_ACTIVATION_GB = 0.5  # Base activation memory overhead
+
+# Per-pixel scaling factors (GB per megapixel)
+# 1 Megapixel = 1,000,000 pixels
+ZIMAGE_GB_PER_MEGAPIXEL = 1.2  # ~1.2 GB per megapixel for Z-Image Turbo
+
+# Safety margins
+VRAM_SAFETY_MARGIN_GB = 4.0  # Reserve for OS, display, fragmentation
+MIN_FREE_VRAM_GB = 2.0  # Minimum free VRAM to attempt any generation
+
+# Batch limits (absolute caps regardless of VRAM)
+MAX_BATCH_SIZE_ZIMAGE = 64  # Never exceed this even with infinite VRAM
+
+# =============================================================================
+# LightX2V (Qwen-Image-Edit-2511) VRAM Estimation Constants
+# =============================================================================
+# LightX2V is an image-to-image editing model with Qwen25-VL text encoder.
+# Higher per-image cost than Z-Image due to vision-language conditioning.
+
+# Base model costs (in GB)
+LIGHTX2V_BASE_MODEL_FULL_GB = 28.0      # DiT + Qwen25-VL + VAE without offload
+LIGHTX2V_BASE_MODEL_OFFLOAD_GB = 12.0   # With CPU offload enabled (default config)
+
+# Per-image activation costs (in GB)
+# Higher than Z-Image because each edit requires:
+# 1. Vision encoding of input image via Qwen25-VL
+# 2. VAE encoding/decoding of input/output
+# 3. Conditioning latent storage
+LIGHTX2V_BASE_ACTIVATION_GB = 1.0       # Base overhead per image
+LIGHTX2V_GB_PER_MEGAPIXEL = 2.5         # ~2.5 GB per megapixel (input + output)
+LIGHTX2V_CONDITIONING_OVERHEAD_GB = 0.5 # Vision-language conditioning per image
+
+# Batch limit for LightX2V (conservative due to sequential processing)
+MAX_BATCH_SIZE_LIGHTX2V = 16  # Cap even with high VRAM for memory stability
+
+
+@dataclass
+class VRAMInfo:
+    """Container for VRAM status."""
+    
+    free_gb: float
+    total_gb: float
+    used_gb: float
+    
+    @property
+    def available_for_inference_gb(self) -> float:
+        """Available VRAM after applying safety margin."""
+        return max(0.0, self.free_gb - VRAM_SAFETY_MARGIN_GB)
+
+
+def get_vram_info() -> VRAMInfo:
+    """Get current VRAM usage information.
+    
+    Returns:
+        VRAMInfo with current GPU memory statistics
+    """
+    try:
+        import torch
+        
+        if not torch.cuda.is_available():
+            logger.warning("CUDA not available, returning zero VRAM info")
+            return VRAMInfo(free_gb=0.0, total_gb=0.0, used_gb=0.0)
+        
+        # Get memory info in bytes
+        free_bytes, total_bytes = torch.cuda.mem_get_info()
+        
+        # Convert to GB
+        free_gb = free_bytes / (1024 ** 3)
+        total_gb = total_bytes / (1024 ** 3)
+        used_gb = total_gb - free_gb
+        
+        return VRAMInfo(free_gb=free_gb, total_gb=total_gb, used_gb=used_gb)
+        
+    except ImportError:
+        logger.warning("PyTorch not available, returning zero VRAM info")
+        return VRAMInfo(free_gb=0.0, total_gb=0.0, used_gb=0.0)
+    except Exception as e:
+        logger.error(f"Failed to get VRAM info: {e}")
+        return VRAMInfo(free_gb=0.0, total_gb=0.0, used_gb=0.0)
+
+
+def estimate_zimage_vram_per_image(width: int, height: int) -> float:
+    """Estimate VRAM usage for a single Z-Image generation.
+    
+    Args:
+        width: Image width in pixels
+        height: Image height in pixels
+        
+    Returns:
+        Estimated VRAM usage in GB
+    """
+    # Calculate megapixels
+    megapixels = (width * height) / 1_000_000
+    
+    # Estimate: base overhead + scaled by resolution
+    estimated_gb = ZIMAGE_BASE_ACTIVATION_GB + (megapixels * ZIMAGE_GB_PER_MEGAPIXEL)
+    
+    return estimated_gb
+
+
+def calculate_max_batch_size(
+    width: int, 
+    height: int, 
+    available_vram_gb: float | None = None
+) -> int:
+    """Calculate maximum batch size for Z-Image generation.
+    
+    Args:
+        width: Image width in pixels
+        height: Image height in pixels
+        available_vram_gb: Override for available VRAM (None = auto-detect)
+        
+    Returns:
+        Maximum safe batch size (minimum 1)
+    """
+    # Get available VRAM
+    if available_vram_gb is None:
+        vram_info = get_vram_info()
+        available_vram_gb = vram_info.available_for_inference_gb
+    
+    # Check minimum threshold
+    if available_vram_gb < MIN_FREE_VRAM_GB:
+        logger.warning(f"Low VRAM ({available_vram_gb:.1f}GB), limiting to batch size 1")
+        return 1
+    
+    # Estimate per-image cost
+    vram_per_image = estimate_zimage_vram_per_image(width, height)
+    
+    if vram_per_image <= 0:
+        return 1
+    
+    # Calculate max batch
+    max_batch = int(available_vram_gb / vram_per_image)
+    
+    # Apply absolute cap
+    max_batch = min(max_batch, MAX_BATCH_SIZE_ZIMAGE)
+    
+    # Ensure at least 1
+    max_batch = max(1, max_batch)
+    
+    logger.debug(
+        f"Batch size calculation: {available_vram_gb:.1f}GB available, "
+        f"{vram_per_image:.2f}GB per image ({width}x{height}), "
+        f"max batch = {max_batch}"
+    )
+    
+    return max_batch
+
+
+def log_vram_status() -> None:
+    """Log current VRAM status for debugging."""
+    vram_info = get_vram_info()
+    logger.info(
+        f"VRAM Status: {vram_info.used_gb:.1f}GB / {vram_info.total_gb:.1f}GB used, "
+        f"{vram_info.free_gb:.1f}GB free, "
+        f"{vram_info.available_for_inference_gb:.1f}GB available for inference"
+    )
+
+
+# =============================================================================
+# LightX2V VRAM Estimation Functions
+# =============================================================================
+
+def estimate_lightx2v_vram_per_image(width: int, height: int) -> float:
+    """Estimate VRAM usage for a single LightX2V image edit.
+    
+    LightX2V requires more VRAM per image than Z-Image because:
+    1. Vision-language encoder (Qwen25-VL) processes the input image
+    2. VAE encodes input and decodes output
+    3. Conditioning latents must be stored throughout generation
+    
+    Args:
+        width: Image width in pixels
+        height: Image height in pixels
+        
+    Returns:
+        Estimated VRAM usage in GB for one image edit
+    """
+    # Calculate megapixels
+    megapixels = (width * height) / 1_000_000
+    
+    # Estimate: base overhead + per-megapixel scaling + conditioning
+    estimated_gb = (
+        LIGHTX2V_BASE_ACTIVATION_GB +
+        (megapixels * LIGHTX2V_GB_PER_MEGAPIXEL) +
+        LIGHTX2V_CONDITIONING_OVERHEAD_GB
+    )
+    
+    return estimated_gb
+
+
+def calculate_lightx2v_max_batch_size(
+    width: int,
+    height: int,
+    available_vram_gb: float | None = None,
+    cpu_offload: bool = True,
+    other_models_loaded: bool = False
+) -> int:
+    """Calculate maximum batch size for LightX2V image editing.
+    
+    This function is VRAM-mode aware:
+    - In IMAGE_EDITING mode (LightX2V only): More VRAM available for batching
+    - In ALL mode (multiple models): Less VRAM available, smaller batches
+    
+    Args:
+        width: Image width in pixels
+        height: Image height in pixels
+        available_vram_gb: Override for available VRAM (None = auto-detect)
+        cpu_offload: Whether CPU offload is enabled (affects base model cost)
+        other_models_loaded: Whether Z-Image/LTX-2 are also loaded (ALL mode)
+        
+    Returns:
+        Maximum safe batch size (minimum 1)
+    """
+    # Get available VRAM
+    if available_vram_gb is None:
+        vram_info = get_vram_info()
+        available_vram_gb = vram_info.available_for_inference_gb
+    
+    # Account for base model VRAM if calculating from scratch
+    # (If LightX2V is already loaded, this is already in used_gb,
+    # so available_for_inference_gb already accounts for it)
+    
+    # Reduce available VRAM if other models are loaded (ALL mode)
+    # This is an approximation - in practice, model_manager handles mode switching
+    if other_models_loaded:
+        # Reserve VRAM for Z-Image (~4GB) and LTX-2 (~8GB) model weights
+        # that may still be partially in VRAM
+        available_vram_gb = max(0.0, available_vram_gb - 8.0)
+        logger.debug(f"ALL mode detected, reduced available VRAM to {available_vram_gb:.1f}GB")
+    
+    # Check minimum threshold
+    if available_vram_gb < MIN_FREE_VRAM_GB:
+        logger.warning(
+            f"Low VRAM ({available_vram_gb:.1f}GB), limiting LightX2V to batch size 1"
+        )
+        return 1
+    
+    # Estimate per-image cost
+    vram_per_image = estimate_lightx2v_vram_per_image(width, height)
+    
+    if vram_per_image <= 0:
+        logger.warning("Invalid VRAM estimation, defaulting to batch size 1")
+        return 1
+    
+    # Calculate max batch
+    max_batch = int(available_vram_gb / vram_per_image)
+    
+    # Apply absolute cap (more conservative than Z-Image due to sequential nature)
+    max_batch = min(max_batch, MAX_BATCH_SIZE_LIGHTX2V)
+    
+    # Ensure at least 1
+    max_batch = max(1, max_batch)
+    
+    logger.debug(
+        f"LightX2V batch size: {available_vram_gb:.1f}GB available, "
+        f"{vram_per_image:.2f}GB per image ({width}x{height}), "
+        f"max batch = {max_batch}"
+    )
+    
+    return max_batch
+
+
+def get_lightx2v_base_vram(cpu_offload: bool = True) -> float:
+    """Get the base VRAM footprint for LightX2V model.
+    
+    Args:
+        cpu_offload: Whether CPU offload is enabled
+        
+    Returns:
+        Base VRAM usage in GB for model weights
+    """
+    if cpu_offload:
+        return LIGHTX2V_BASE_MODEL_OFFLOAD_GB
+    return LIGHTX2V_BASE_MODEL_FULL_GB

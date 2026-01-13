@@ -98,24 +98,43 @@ X-API-Key: your-secure-api-key
 
 ## Mode System & Scheduling
 
-The API manages GPU VRAM by possibly loading only one set of models at a time. A **Queue System** manages requests to ensure fairness and efficiency.
+The API manages GPU VRAM by loading only the required models for each use case. A **Queue System** manages requests to ensure fairness and efficiency.
 
 ### VRAM Loading Modes
 
 Configurable via `/api/v1/settings/vram-mode`:
 
-1. **Dynamic Mode (Default)**:
+| Mode               | Models Loaded      | VRAM Usage | Best For                   |
+| ------------------ | ------------------ | ---------- | -------------------------- |
+| `image_generation` | Z-Image Turbo only | ~8GB       | Text-to-image workloads    |
+| `image_editing`    | LightX2V only      | ~12GB      | Image editing/inpainting   |
+| `video_generation` | LTX-2 only         | ~20GB      | Video generation           |
+| `all`              | All models         | ~40GB+     | High-VRAM GPUs (A100/H100) |
 
-   - **Behavior**: Loads only Image OR Video models to save VRAM.
-   - **Scheduling**: **Grouped**. The queue worker prioritizes jobs matching the _current_ mode to minimize expensive switching.
-   - **Switching**: Takes ~30-60s. Occurs automatically when the queue for the current mode is empty.
-   - **Best For**: GPUs with < 40GB VRAM.
+#### Mode Behavior
 
-2. **Static Mode**:
-   - **Behavior**: Loads ALL models (Image + Video) simultaneously.
-   - **Scheduling**: **Strict FIFO**. Jobs are processed exactly in order of arrival.
-   - **Switching**: Instant.
-   - **Best For**: High-VRAM GPUs (A100/H100, >40GB).
+1. **image_generation** (Default):
+
+   - Loads **Z-Image Turbo** for text-to-image generation
+   - Scheduling: Grouped by job type to minimize switching
+   - Switching time: ~15-30s
+
+2. **image_editing**:
+
+   - Loads **LightX2V (Qwen-Image-Edit)** for image editing
+   - Scheduling: Grouped by job type to minimize switching
+   - Switching time: ~15-30s
+
+3. **video_generation**:
+
+   - Loads **LTX-2 19B** for video generation
+   - Scheduling: Grouped by job type to minimize switching
+   - Switching time: ~30-60s
+
+4. **all**:
+   - Loads **all models simultaneously**
+   - Scheduling: Strict FIFO (no switching needed)
+   - Switching time: Instant
 
 ### Concurrency Limits
 

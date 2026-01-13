@@ -11,7 +11,7 @@ from app.models.common import ErrorResponse, get_dimensions
 from app.models.video_generation import VideoGenerateRequest
 from app.models.job import AsyncJobResponse, JobResult
 from app.models.internal import VideoGenerationParams
-from app.services.model_manager import ModelMode
+from app.services.model_manager import JobType
 
 logger = logging.getLogger(__name__)
 
@@ -67,15 +67,11 @@ async def generate_video(
     active_generator = generator
 
     if not settings.mock_mode:
-        if not await model_manager.ensure_mode(ModelMode.VIDEO):
-            # This legacy endpoint might expect to manually switch or error?
-            # Original code check `current_mode`.
-            # Let's keep consistent with others and try to auto-switch if possible
-            if not await model_manager.ensure_mode(ModelMode.VIDEO):
-                raise HTTPException(
-                     status_code=409,
-                     detail="System is busy."
-                )
+        if not await model_manager.ensure_mode_for_job(JobType.VIDEO_GENERATION):
+            raise HTTPException(
+                 status_code=409,
+                 detail="System is busy."
+            )
         active_generator = model_manager.get_video_generator()
 
     # 2. Validation
@@ -119,7 +115,7 @@ async def generate_video(
     # 4. Submit Job
     submitted = await job_manager.try_submit_job(
         job_id=body.job_id,
-        mode=ModelMode.VIDEO,
+        job_type=JobType.VIDEO_GENERATION,
         task_func=_run_video_generation,
         generator=active_generator,
         storage=storage,

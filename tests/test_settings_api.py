@@ -8,7 +8,7 @@ from app.main import app
 from unittest.mock import MagicMock, AsyncMock
 
 from app.dependencies import get_model_manager
-from app.services.model_manager import ModelManager, VRAMLoadMode, ModelMode
+from app.services.model_manager import ModelManager, VRAMLoadMode
 
 client = TestClient(app)
 
@@ -19,7 +19,7 @@ class TestSettingsAPI:
     def setup_method(self):
         """Setup mock dependency."""
         self.mock_manager = MagicMock(spec=ModelManager)
-        self.mock_manager.vram_mode = VRAMLoadMode.DYNAMIC
+        self.mock_manager.vram_mode = VRAMLoadMode.IMAGE_GENERATION
         self.mock_manager.set_vram_mode = AsyncMock()
         
         # Override the dependency
@@ -36,13 +36,13 @@ class TestSettingsAPI:
         
         assert response.status_code == 200
         data = response.json()
-        assert data["mode"] == "dynamic"
+        assert data["mode"] == "image_generation"
         assert "description" in data
 
-    def test_set_vram_mode_dynamic(self):
-        """Test setting VRAM mode to dynamic."""
+    def test_set_vram_mode_image_generation(self):
+        """Test setting VRAM mode to image_generation."""
         headers = {"X-API-Key": "test-api-key-12345"}
-        payload = {"mode": "dynamic"}
+        payload = {"mode": "image_generation"}
         
         # Update mock implementation to change property
         async def side_effect(mode):
@@ -54,13 +54,13 @@ class TestSettingsAPI:
         
         assert response.status_code == 200
         data = response.json()
-        assert data["mode"] == "dynamic"
-        self.mock_manager.set_vram_mode.assert_called_with(VRAMLoadMode.DYNAMIC)
+        assert data["mode"] == "image_generation"
+        self.mock_manager.set_vram_mode.assert_called_with(VRAMLoadMode.IMAGE_GENERATION)
 
-    def test_set_vram_mode_static(self):
-        """Test setting VRAM mode to static."""
+    def test_set_vram_mode_video_generation(self):
+        """Test setting VRAM mode to video_generation."""
         headers = {"X-API-Key": "test-api-key-12345"}
-        payload = {"mode": "static"}
+        payload = {"mode": "video_generation"}
         
         # Update mock implementation to change property
         async def side_effect(mode):
@@ -72,8 +72,26 @@ class TestSettingsAPI:
         
         assert response.status_code == 200
         data = response.json()
-        assert data["mode"] == "static"
-        self.mock_manager.set_vram_mode.assert_called_with(VRAMLoadMode.STATIC)
+        assert data["mode"] == "video_generation"
+        self.mock_manager.set_vram_mode.assert_called_with(VRAMLoadMode.VIDEO_GENERATION)
+
+    def test_set_vram_mode_all(self):
+        """Test setting VRAM mode to all."""
+        headers = {"X-API-Key": "test-api-key-12345"}
+        payload = {"mode": "all"}
+        
+        # Update mock implementation to change property
+        async def side_effect(mode):
+            self.mock_manager.vram_mode = mode
+            
+        self.mock_manager.set_vram_mode.side_effect = side_effect
+        
+        response = client.post("/api/v1/settings/vram-mode", json=payload, headers=headers)
+        
+        assert response.status_code == 200
+        data = response.json()
+        assert data["mode"] == "all"
+        self.mock_manager.set_vram_mode.assert_called_with(VRAMLoadMode.ALL)
 
     def test_set_vram_mode_invalid(self):
         """Test setting invalid VRAM mode."""

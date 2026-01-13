@@ -1,15 +1,14 @@
-"""Model Manager - Dynamic Image/Video Mode Switching.
+"""Model Manager - 4-Mode VRAM Loading System.
 
 This module provides the ModelManager service for dynamically switching between
-Image Mode and Video Mode, efficiently managing GPU VRAM by loading/unloading
-model groups as needed.
+4 VRAM loading modes, efficiently managing GPU VRAM by loading only the required
+models for each use case.
 
-Image Mode loads:
-- ZImageGenerator (text-to-image)
-- LightX2VImageEditGenerator (image editing)
-
-Video Mode loads:
-- LTX2Generator (video generation with native 2x upsampling)
+Modes:
+- IMAGE_GENERATION: ZImageGenerator only (text-to-image)
+- IMAGE_EDITING: LightX2VImageEditGenerator only (image editing)
+- VIDEO_GENERATION: LTX2Generator only (video generation)
+- ALL: All models loaded simultaneously
 """
 
 import asyncio
@@ -31,24 +30,26 @@ from app.config import Settings
 logger = logging.getLogger(__name__)
 
 
-class ModelMode(str, Enum):
-    """Current model mode."""
-    NONE = "none"
-    IMAGE = "image"
-    VIDEO = "video"
-    SWITCHING = "switching"
-
-
 class VRAMLoadMode(str, Enum):
-    """VRAM loading strategy."""
-    DYNAMIC = "dynamic"  # Load/unload models as needed (saves VRAM)
-    STATIC = "static"    # Keep all models in VRAM (instant switching)
+    """VRAM loading mode - defines which models are loaded."""
+    IMAGE_GENERATION = "image_generation"  # Z-Image Turbo only
+    IMAGE_EDITING = "image_editing"        # LightX2V only
+    VIDEO_GENERATION = "video_generation"  # LTX-2 only
+    ALL = "all"                            # All models loaded
+
+
+# For backwards compatibility and job scheduling
+class JobType(str, Enum):
+    """Job type for scheduling purposes."""
+    IMAGE_GENERATION = "image_generation"
+    IMAGE_EDITING = "image_editing"
+    VIDEO_GENERATION = "video_generation"
 
 
 @dataclass
 class ModeStatus:
     """Status information about the current mode."""
-    mode: ModelMode
+    mode: VRAMLoadMode
     is_busy: bool = False
     active_job_id: Optional[str] = None
     loaded_models: list[str] = field(default_factory=list)
@@ -64,13 +65,13 @@ class ModeStatus:
 
 
 class ModelManager:
-    """Manages dynamic loading/unloading of model groups.
+    """Manages dynamic loading/unloading of AI models.
     
-    This service orchestrates switching between Image Mode and Video Mode,
-    ensuring only one group of models is loaded at a time to manage VRAM.
+    This service orchestrates switching between 4 VRAM loading modes,
+    ensuring only the required models are loaded to manage VRAM efficiently.
     
     Attributes:
-        current_mode: The currently active mode
+        current_mode: The currently active VRAM loading mode
         is_busy: Whether a generation job is in progress
         active_job_id: ID of the current job (if any)
     """
@@ -82,8 +83,8 @@ class ModelManager:
             settings: Application settings
         """
         self._settings = settings
-        self._mode = ModelMode.NONE
-        self._vram_mode = VRAMLoadMode.DYNAMIC
+        self._mode = VRAMLoadMode.IMAGE_GENERATION  # Default mode
+        self._is_switching = False
         self._is_busy = False
         self._active_job_id: Optional[str] = None
         self._lock = asyncio.Lock()
@@ -93,11 +94,19 @@ class ModelManager:
         self._lightx2v_generator: Optional["ImageEditor"] = None
         self._ltx2_generator: Optional["VideoGenerator"] = None
         
+        # Track loaded state
+        self._loaded = False
+        
         logger.info("ModelManager initialized")
 
     @property
-    def current_mode(self) -> ModelMode:
-        """Get the current mode."""
+    def current_mode(self) -> VRAMLoadMode:
+        """Get the current VRAM loading mode."""
+        return self._mode
+
+    @property
+    def vram_mode(self) -> VRAMLoadMode:
+        """Alias for current_mode (backwards compatibility)."""
         return self._mode
 
     @property
@@ -128,16 +137,11 @@ class ModelManager:
             loaded_models=loaded_models,
         )
 
-    @property
-    def vram_mode(self) -> VRAMLoadMode:
-        """Get the current VRAM loading mode."""
-        return self._vram_mode
-
     async def set_vram_mode(self, mode: VRAMLoadMode) -> None:
         """Set the VRAM loading mode.
         
         Args:
-            mode: Target VRAM mode (DYNAMIC or STATIC)
+            mode: Target VRAM mode
             
         Raises:
             RuntimeError: If currently busy with a job
@@ -145,41 +149,226 @@ class ModelManager:
         if self._is_busy:
             raise RuntimeError("Cannot change VRAM mode while a job is in progress")
         
-        if mode == self._vram_mode:
-            logger.info(f"Already in {mode.value} VRAM mode")
+        if mode == self._mode and self._loaded:
+            logger.info(f"Already in {mode.value} mode with models loaded")
             return
         
-        logger.info(f"Switching VRAM mode from {self._vram_mode.value} to {mode.value}")
+        logger.info(f"Switching VRAM mode from {self._mode.value} to {mode.value}")
         
-        if mode == VRAMLoadMode.STATIC:
-            # Load all models for instant switching
-            await self.load_all_models()
-        else:
-            # Switch to dynamic: unload models not needed for current mode
-            if self._mode == ModelMode.IMAGE:
-                await self._unload_video_models()
-            elif self._mode == ModelMode.VIDEO:
-                await self._unload_image_models()
+        if mode == VRAMLoadMode.IMAGE_GENERATION:
+            await self._switch_to_image_generation_mode()
+        elif mode == VRAMLoadMode.IMAGE_EDITING:
+            await self._switch_to_image_editing_mode()
+        elif mode == VRAMLoadMode.VIDEO_GENERATION:
+            await self._switch_to_video_generation_mode()
+        elif mode == VRAMLoadMode.ALL:
+            await self._load_all_models()
         
-        self._vram_mode = mode
+        self._mode = mode
+        self._loaded = True
         logger.info(f"VRAM mode set to {mode.value}")
 
-    async def load_all_models(self) -> None:
-        """Load all models (Image + Video) into VRAM.
+    async def ensure_mode_for_job(self, job_type: JobType) -> bool:
+        """Ensure the system can handle the given job type.
         
-        This enables static mode where all models are kept loaded for instant
-        switching, at the cost of higher VRAM usage.
+        This handles automatic mode switching logic:
+        - If in ALL mode: Always ready
+        - If in matching mode: Ready
+        - If in different mode and busy: Return False
+        - If in different mode and idle: Switch and return True
+        
+        Args:
+            job_type: The job type that needs to run
+            
+        Returns:
+            True if ready to proceed, False if cannot switch
         """
-        logger.info("Loading ALL models into VRAM (Static Mode)...")
+        # Map job type to required mode
+        required_mode = VRAMLoadMode(job_type.value)
         
-        # Load everything
-        await self._load_image_models()
-        await self._load_video_models()
+        # ALL mode can handle any job
+        if self._mode == VRAMLoadMode.ALL:
+            return True
         
-        # Set VRAM mode to static and default to Image mode
-        self._vram_mode = VRAMLoadMode.STATIC
-        self._mode = ModelMode.IMAGE
-        logger.info("All models loaded successfully")
+        # Already in the right mode
+        if self._mode == required_mode:
+            return True
+        
+        # Need to switch - check if busy
+        if self._is_busy:
+            logger.warning(
+                f"Cannot auto-switch to {required_mode.value} because system is busy in {self._mode.value} mode."
+            )
+            return False
+        
+        # Switch mode
+        logger.info(f"Auto-switching from {self._mode.value} to {required_mode.value}...")
+        try:
+            await self.set_vram_mode(required_mode)
+            return True
+        except Exception as e:
+            logger.error(f"Auto-switch failed: {e}")
+            return False
+
+    # Legacy compatibility
+    async def ensure_mode(self, target_mode) -> bool:
+        """Legacy compatibility wrapper for ensure_mode_for_job."""
+        # Map old ModelMode to new JobType
+        mode_str = target_mode.value if hasattr(target_mode, 'value') else str(target_mode)
+        if mode_str == "image":
+            # Default image mode to image_generation
+            return await self.ensure_mode_for_job(JobType.IMAGE_GENERATION)
+        elif mode_str == "video":
+            return await self.ensure_mode_for_job(JobType.VIDEO_GENERATION)
+        return False
+
+    async def _switch_to_image_generation_mode(self) -> None:
+        """Switch to Image Generation mode (Z-Image Turbo only)."""
+        if self._is_busy:
+            raise RuntimeError("Cannot switch modes while a job is in progress")
+        
+        logger.info("Switching to Image Generation Mode (Z-Image only)...")
+        self._is_switching = True
+        
+        try:
+            # Unload other models
+            await self._unload_lightx2v()
+            await self._unload_ltx2()
+            
+            # Load Z-Image
+            await self._load_zimage()
+            
+            logger.info("Successfully switched to Image Generation Mode")
+        finally:
+            self._is_switching = False
+
+    async def _switch_to_image_editing_mode(self) -> None:
+        """Switch to Image Editing mode (LightX2V only)."""
+        if self._is_busy:
+            raise RuntimeError("Cannot switch modes while a job is in progress")
+        
+        logger.info("Switching to Image Editing Mode (LightX2V only)...")
+        self._is_switching = True
+        
+        try:
+            # Unload other models
+            await self._unload_zimage()
+            await self._unload_ltx2()
+            
+            # Load LightX2V
+            await self._load_lightx2v()
+            
+            logger.info("Successfully switched to Image Editing Mode")
+        finally:
+            self._is_switching = False
+
+    async def _switch_to_video_generation_mode(self) -> None:
+        """Switch to Video Generation mode (LTX-2 only)."""
+        if self._is_busy:
+            raise RuntimeError("Cannot switch modes while a job is in progress")
+        
+        logger.info("Switching to Video Generation Mode (LTX-2 only)...")
+        self._is_switching = True
+        
+        try:
+            # Unload other models
+            await self._unload_zimage()
+            await self._unload_lightx2v()
+            
+            # Load LTX-2
+            await self._load_ltx2()
+            
+            logger.info("Successfully switched to Video Generation Mode")
+        finally:
+            self._is_switching = False
+
+    async def _load_all_models(self) -> None:
+        """Load all models into VRAM (ALL mode)."""
+        logger.info("Loading ALL models into VRAM...")
+        self._is_switching = True
+        
+        try:
+            await self._load_zimage()
+            await self._load_lightx2v()
+            await self._load_ltx2()
+            
+            logger.info("All models loaded successfully")
+        finally:
+            self._is_switching = False
+
+    # Legacy compatibility
+    async def load_all_models(self) -> None:
+        """Public wrapper for loading all models."""
+        await self.set_vram_mode(VRAMLoadMode.ALL)
+
+    # --- Individual Model Load/Unload ---
+
+    async def _load_zimage(self) -> None:
+        """Load Z-Image Turbo model."""
+        from app.services.zimage_generator import ZImageGenerator
+        
+        if self._zimage_generator is None:
+            self._zimage_generator = ZImageGenerator(self._settings)
+        
+        if not self._zimage_generator._loaded:
+            logger.info("Loading Z-Image Turbo models...")
+            await asyncio.to_thread(self._zimage_generator.load_models)
+
+    async def _unload_zimage(self) -> None:
+        """Unload Z-Image Turbo model."""
+        if self._zimage_generator and self._zimage_generator._loaded:
+            logger.info("Unloading Z-Image Turbo models...")
+            await asyncio.to_thread(self._zimage_generator.unload_models)
+        self._force_gc()
+
+    async def _load_lightx2v(self) -> None:
+        """Load LightX2V (Qwen-Image-Edit) model."""
+        from app.services.lightx2v_generator import LightX2VImageEditGenerator
+        
+        if self._lightx2v_generator is None:
+            self._lightx2v_generator = LightX2VImageEditGenerator(self._settings)
+        
+        if not self._lightx2v_generator._loaded:
+            logger.info("Loading LightX2V (Qwen-Image-Edit) models...")
+            await asyncio.to_thread(self._lightx2v_generator.load_models)
+
+    async def _unload_lightx2v(self) -> None:
+        """Unload LightX2V model."""
+        if self._lightx2v_generator and self._lightx2v_generator._loaded:
+            logger.info("Unloading LightX2V models...")
+            await asyncio.to_thread(self._lightx2v_generator.unload_models)
+        self._force_gc()
+
+    async def _load_ltx2(self) -> None:
+        """Load LTX-2 video model."""
+        from app.services.ltx2_generator import LTX2Generator
+        
+        if self._ltx2_generator is None:
+            self._ltx2_generator = LTX2Generator(self._settings)
+        
+        if not self._ltx2_generator._loaded:
+            logger.info("Loading LTX-2 19B models...")
+            await asyncio.to_thread(self._ltx2_generator.load_models)
+
+    async def _unload_ltx2(self) -> None:
+        """Unload LTX-2 model."""
+        if self._ltx2_generator and self._ltx2_generator._loaded:
+            logger.info("Unloading LTX-2 models...")
+            await asyncio.to_thread(self._ltx2_generator.unload_models)
+        self._force_gc()
+
+    def _force_gc(self) -> None:
+        """Force garbage collection and clear CUDA cache."""
+        gc.collect()
+        try:
+            import torch
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+                torch.cuda.synchronize()
+        except ImportError:
+            pass
+
+    # --- Job Lock Management ---
 
     async def acquire_job_lock(self, job_id: str) -> bool:
         """Try to acquire the job lock for generation.
@@ -212,187 +401,7 @@ class ModelManager:
             else:
                 logger.warning(f"Job {job_id} tried to release lock held by {self._active_job_id}")
 
-    async def ensure_mode(self, target_mode: ModelMode) -> bool:
-        """Ensure the system is in the target mode, switching if necessary.
-
-        This handles the automatic logic:
-        - If already in target mode: Return True (Ready)
-        - If in different mode (e.g. Image vs Video):
-            - If BUSY with jobs: Return False (Reject request)
-            - If IDLE: Switch mode and Return True (Ready)
-
-        Args:
-            target_mode: The required mode (ModelMode.IMAGE or ModelMode.VIDEO)
-
-        Returns:
-            True if mode is set and ready to proceed.
-            False if system is busy in another mode and cannot switch.
-        """
-        if self._mode == target_mode:
-            return True
-
-        # Check if we can switch
-        # Note: We check is_busy without acquiring lock yet.
-        # The lock will be acquired by the job submission later.
-        # There is a tiny race condition window here but acceptable for this architecture.
-        if self._is_busy:
-            logger.warning(
-                f"Cannot auto-switch to {target_mode} because system is busy in {self._mode} mode."
-            )
-            return False
-
-        # Attempt switch
-        logger.info(f"Auto-switching from {self._mode} to {target_mode}...")
-        try:
-            if target_mode == ModelMode.IMAGE:
-                await self.switch_to_image_mode()
-            elif target_mode == ModelMode.VIDEO:
-                await self.switch_to_video_mode()
-            else:
-                return False
-            return True
-        except Exception as e:
-            logger.error(f"Auto-switch failed: {e}")
-            return False
-
-    async def switch_to_image_mode(self) -> None:
-        """Switch to Image Mode.
-        
-        Unloads video models and loads image models (Z-Image + LightX2V).
-        
-        Raises:
-            RuntimeError: If currently busy with a job
-        """
-        if self._is_busy:
-            raise RuntimeError("Cannot switch modes while a job is in progress")
-        
-        if self._mode == ModelMode.IMAGE:
-            logger.info("Already in Image Mode")
-            return
-            
-        logger.info("Switching to Image Mode...")
-        self._mode = ModelMode.SWITCHING
-        
-        try:
-            # Unload video models (if not in static mode)
-            if self._vram_mode != VRAMLoadMode.STATIC:
-                await self._unload_video_models()
-            
-            # Load image models (if not already loaded)
-            await self._load_image_models()
-            
-            self._mode = ModelMode.IMAGE
-            logger.info("Successfully switched to Image Mode")
-            
-        except Exception as e:
-            logger.error(f"Failed to switch to Image Mode: {e}")
-            self._mode = ModelMode.NONE
-            raise
-
-    async def switch_to_video_mode(self) -> None:
-        """Switch to Video Mode.
-        
-        Unloads image models and loads video models (LTX-2).
-        
-        Raises:
-            RuntimeError: If currently busy with a job
-        """
-        if self._is_busy:
-            raise RuntimeError("Cannot switch modes while a job is in progress")
-        
-        if self._mode == ModelMode.VIDEO:
-            logger.info("Already in Video Mode")
-            return
-            
-        logger.info("Switching to Video Mode...")
-        self._mode = ModelMode.SWITCHING
-        
-        try:
-            # Unload image models (if not in static mode)
-            if self._vram_mode != VRAMLoadMode.STATIC:
-                await self._unload_image_models()
-            
-            # Load video models (if not already loaded)
-            await self._load_video_models()
-            
-            self._mode = ModelMode.VIDEO
-            logger.info("Successfully switched to Video Mode")
-            
-        except Exception as e:
-            logger.error(f"Failed to switch to Video Mode: {e}")
-            self._mode = ModelMode.NONE
-            raise
-
-    async def _load_image_models(self) -> None:
-        """Load image generation models."""
-        from app.services.zimage_generator import ZImageGenerator
-        from app.services.lightx2v_generator import LightX2VImageEditGenerator
-        
-        # Load Z-Image for text-to-image
-        if self._zimage_generator is None:
-            self._zimage_generator = ZImageGenerator(self._settings)
-        
-        if not self._zimage_generator._loaded:
-            logger.info("Loading Z-Image Turbo models...")
-            await asyncio.to_thread(self._zimage_generator.load_models)
-        
-        # Load LightX2V for image editing
-        if self._lightx2v_generator is None:
-            self._lightx2v_generator = LightX2VImageEditGenerator(self._settings)
-        
-        if not self._lightx2v_generator._loaded:
-            logger.info("Loading LightX2V (Qwen-Image-Edit) models...")
-            await asyncio.to_thread(self._lightx2v_generator.load_models)
-
-    async def _unload_image_models(self) -> None:
-        """Unload image generation models and free VRAM."""
-        if self._zimage_generator and self._zimage_generator._loaded:
-            logger.info("Unloading Z-Image Turbo models...")
-            await asyncio.to_thread(self._zimage_generator.unload_models)
-        
-        if self._lightx2v_generator and self._lightx2v_generator._loaded:
-            logger.info("Unloading LightX2V models...")
-            await asyncio.to_thread(self._lightx2v_generator.unload_models)
-        
-        # Force garbage collection
-        gc.collect()
-        try:
-            import torch
-            if torch.cuda.is_available():
-                torch.cuda.empty_cache()
-                torch.cuda.synchronize()
-        except ImportError:
-            pass
-
-    async def _load_video_models(self) -> None:
-        """Load video generation models."""
-        from app.services.ltx2_generator import LTX2Generator
-        
-        # Load LTX-2 for video generation (includes native 2x upsampling)
-        if self._ltx2_generator is None:
-            self._ltx2_generator = LTX2Generator(self._settings)
-        
-        if not self._ltx2_generator._loaded:
-            logger.info("Loading LTX-2 19B models...")
-            await asyncio.to_thread(self._ltx2_generator.load_models)
-        
-        logger.info("Successfully switched to Video Mode")
-
-    async def _unload_video_models(self) -> None:
-        """Unload video generation models and free VRAM."""
-        if self._ltx2_generator and self._ltx2_generator._loaded:
-            logger.info("Unloading LTX-2 models...")
-            await asyncio.to_thread(self._ltx2_generator.unload_models)
-        
-        # Force garbage collection
-        gc.collect()
-        try:
-            import torch
-            if torch.cuda.is_available():
-                torch.cuda.empty_cache()
-                torch.cuda.synchronize()
-        except ImportError:
-            pass
+    # --- Generator Getters ---
 
     def get_image_generator(self) -> "ImageGenerator":
         """Get the ImageGenerator for text-to-image.
@@ -401,10 +410,11 @@ class ModelManager:
             ImageGenerator instance
             
         Raises:
-            RuntimeError: If not in Image Mode or generator not loaded
+            RuntimeError: If not in a valid mode or generator not loaded
         """
-        if self._mode != ModelMode.IMAGE:
-            raise RuntimeError(f"Not in Image Mode (current: {self._mode.value})")
+        valid_modes = [VRAMLoadMode.IMAGE_GENERATION, VRAMLoadMode.ALL]
+        if self._mode not in valid_modes:
+            raise RuntimeError(f"Not in valid mode for image generation (current: {self._mode.value})")
         
         if self._zimage_generator is None or not self._zimage_generator._loaded:
             raise RuntimeError("Z-Image generator not loaded")
@@ -418,10 +428,11 @@ class ModelManager:
             ImageEditor instance
             
         Raises:
-            RuntimeError: If not in Image Mode or generator not loaded
+            RuntimeError: If not in a valid mode or generator not loaded
         """
-        if self._mode != ModelMode.IMAGE:
-            raise RuntimeError(f"Not in Image Mode (current: {self._mode.value})")
+        valid_modes = [VRAMLoadMode.IMAGE_EDITING, VRAMLoadMode.ALL]
+        if self._mode not in valid_modes:
+            raise RuntimeError(f"Not in valid mode for image editing (current: {self._mode.value})")
         
         if self._lightx2v_generator is None or not self._lightx2v_generator._loaded:
             raise RuntimeError("LightX2V generator not loaded")
@@ -435,12 +446,32 @@ class ModelManager:
             VideoGenerator instance
             
         Raises:
-            RuntimeError: If not in Video Mode or generator not loaded
+            RuntimeError: If not in a valid mode or generator not loaded
         """
-        if self._mode != ModelMode.VIDEO:
-            raise RuntimeError(f"Not in Video Mode (current: {self._mode.value})")
+        valid_modes = [VRAMLoadMode.VIDEO_GENERATION, VRAMLoadMode.ALL]
+        if self._mode not in valid_modes:
+            raise RuntimeError(f"Not in valid mode for video generation (current: {self._mode.value})")
         
         if self._ltx2_generator is None or not self._ltx2_generator._loaded:
             raise RuntimeError("LTX-2 generator not loaded")
         
         return self._ltx2_generator
+
+    # --- Legacy compatibility for switch methods ---
+
+    async def switch_to_image_mode(self) -> None:
+        """Legacy: Switch to image mode (defaults to image_generation)."""
+        await self.set_vram_mode(VRAMLoadMode.IMAGE_GENERATION)
+
+    async def switch_to_video_mode(self) -> None:
+        """Legacy: Switch to video mode."""
+        await self.set_vram_mode(VRAMLoadMode.VIDEO_GENERATION)
+
+
+# Legacy compatibility - keep ModelMode for job_manager
+class ModelMode(str, Enum):
+    """Legacy model mode enum for backwards compatibility."""
+    NONE = "none"
+    IMAGE = "image"
+    VIDEO = "video"
+    SWITCHING = "switching"

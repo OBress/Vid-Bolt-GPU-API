@@ -42,7 +42,7 @@ class JobInfo(BaseModel):
     # Internal execution details (not serialized)
     _task_func: Any = PrivateAttr(default=None)
     _kwargs: Dict[str, Any] = PrivateAttr(default_factory=dict)
-    _mode: Any = PrivateAttr(default=None)
+    _job_type: Any = PrivateAttr(default=None)  # JobType enum value
 
 
 

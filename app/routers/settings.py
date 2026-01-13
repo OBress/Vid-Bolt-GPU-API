@@ -19,7 +19,16 @@ class VRAMModeResponse(BaseModel):
 
 class VRAMModeRequest(BaseModel):
     """Request model for setting VRAM mode."""
-    mode: Literal["dynamic", "static"]
+    mode: Literal["image_generation", "image_editing", "video_generation", "all"]
+
+
+# Mode descriptions
+MODE_DESCRIPTIONS = {
+    VRAMLoadMode.IMAGE_GENERATION: "Image Generation - Z-Image Turbo only (~8GB VRAM)",
+    VRAMLoadMode.IMAGE_EDITING: "Image Editing - LightX2V only (~12GB VRAM)",
+    VRAMLoadMode.VIDEO_GENERATION: "Video Generation - LTX-2 only (~20GB VRAM)",
+    VRAMLoadMode.ALL: "All Models - All generators loaded (~40GB+ VRAM)",
+}
 
 
 @router.get("/vram-mode", response_model=VRAMModeResponse)
@@ -29,15 +38,14 @@ async def get_vram_mode(
 ) -> VRAMModeResponse:
     """Get the current VRAM loading mode.
     
-    - **dynamic**: Loads/unloads models as needed to save VRAM (default)
-    - **static**: Keeps all models loaded in VRAM for instant switching
+    Available modes:
+    - **image_generation**: Z-Image Turbo only
+    - **image_editing**: LightX2V (Qwen-Image-Edit) only
+    - **video_generation**: LTX-2 only
+    - **all**: All models loaded simultaneously
     """
     mode = model_manager.vram_mode
-    description = (
-        "Dynamic loading - saves VRAM" 
-        if mode == VRAMLoadMode.DYNAMIC 
-        else "Static loading - instant switching, higher VRAM usage"
-    )
+    description = MODE_DESCRIPTIONS.get(mode, f"Unknown mode: {mode.value}")
     
     return VRAMModeResponse(
         mode=mode.value,
@@ -53,8 +61,11 @@ async def set_vram_mode(
 ) -> VRAMModeResponse:
     """Set the VRAM loading mode.
     
-    Switching to 'static' triggers loading of all models immediately.
-    Switching to 'dynamic' unloads models not currently needed.
+    Each mode loads only specific models:
+    - **image_generation**: Unloads all, loads Z-Image Turbo
+    - **image_editing**: Unloads all, loads LightX2V
+    - **video_generation**: Unloads all, loads LTX-2
+    - **all**: Loads all models (requires 40GB+ VRAM)
     
     Raises:
         503 Service Unavailable: If system is currently busy with a job
@@ -64,11 +75,7 @@ async def set_vram_mode(
         await model_manager.set_vram_mode(target_mode)
         
         mode = model_manager.vram_mode
-        description = (
-            "Dynamic loading - saves VRAM" 
-            if mode == VRAMLoadMode.DYNAMIC 
-            else "Static loading - instant switching, higher VRAM usage"
-        )
+        description = MODE_DESCRIPTIONS.get(mode, f"Mode set to: {mode.value}")
         
         return VRAMModeResponse(
             mode=mode.value,

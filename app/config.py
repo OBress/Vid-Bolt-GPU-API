@@ -220,6 +220,10 @@ class Settings(BaseSettings):
         return InferenceConfig.LIGHTX2V_GUIDANCE_SCALE
     
     @property
+    def lightx2v_lora_strength(self) -> float:
+        return InferenceConfig.LIGHTX2V_LORA_STRENGTH
+    
+    @property
     def lightx2v_resize_mode(self) -> str:
         return InferenceConfig.LIGHTX2V_RESIZE_MODE
     

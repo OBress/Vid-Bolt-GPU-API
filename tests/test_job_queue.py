@@ -4,7 +4,7 @@ import pytest
 import asyncio
 from unittest.mock import MagicMock, AsyncMock
 from app.services.job_manager import JobManager
-from app.services.model_manager import ModelMode, VRAMLoadMode
+from app.services.model_manager import VRAMLoadMode, JobType
 from app.models.job import JobStatus
 from app.config import get_settings
 
@@ -17,9 +17,9 @@ def mock_settings():
 @pytest.fixture
 def mock_model_manager():
     mm = MagicMock()
-    mm.ensure_mode = AsyncMock(return_value=True)
-    mm.vram_mode = VRAMLoadMode.DYNAMIC
-    mm.current_mode = ModelMode.IMAGE
+    mm.ensure_mode_for_job = AsyncMock(return_value=True)
+    mm.vram_mode = VRAMLoadMode.IMAGE_GENERATION
+    mm.current_mode = VRAMLoadMode.IMAGE_GENERATION
     return mm
 
 @pytest.fixture
@@ -34,19 +34,16 @@ def job_manager(mock_settings, mock_model_manager):
 # -----------------------------------------------------------------------------
 
 @pytest.mark.asyncio
-async def test_static_scheduling_fifo(job_manager, mock_model_manager):
-    """Test that Static mode follows strict FIFO."""
-    mock_model_manager.vram_mode = VRAMLoadMode.STATIC
-    mock_model_manager.current_mode = ModelMode.IMAGE # Doesn't matter in static
-    
-    # Task 1: Video (at t=0)
-    # Task 2: Image (at t=1)
+async def test_all_mode_scheduling_fifo(job_manager, mock_model_manager):
+    """Test that ALL mode follows strict FIFO."""
+    mock_model_manager.vram_mode = VRAMLoadMode.ALL
+    mock_model_manager.current_mode = VRAMLoadMode.ALL
     
     async def dummy_task(): pass
     
     # Submit jobs
-    await job_manager.submit_job("job-video-1", ModelMode.VIDEO, dummy_task)
-    await job_manager.submit_job("job-image-2", ModelMode.IMAGE, dummy_task)
+    await job_manager.submit_job("job-video-1", JobType.VIDEO_GENERATION, dummy_task)
+    await job_manager.submit_job("job-image-2", JobType.IMAGE_GENERATION, dummy_task)
     
     # Check queue
     assert job_manager._pending_jobs == ["job-video-1", "job-image-2"]
@@ -64,22 +61,22 @@ async def test_static_scheduling_fifo(job_manager, mock_model_manager):
 
 
 @pytest.mark.asyncio
-async def test_dynamic_scheduling_grouping(job_manager, mock_model_manager):
-    """Test that Dynamic mode prioritizes current mode."""
-    mock_model_manager.vram_mode = VRAMLoadMode.DYNAMIC
-    mock_model_manager.current_mode = ModelMode.IMAGE
+async def test_per_type_scheduling_grouping(job_manager, mock_model_manager):
+    """Test that per-type mode prioritizes current mode."""
+    mock_model_manager.vram_mode = VRAMLoadMode.IMAGE_GENERATION
+    mock_model_manager.current_mode = VRAMLoadMode.IMAGE_GENERATION
     
     async def dummy_task(): pass
     
     # Submit: Video -> Image -> Video
-    await job_manager.submit_job("job-video-1", ModelMode.VIDEO, dummy_task)
-    await job_manager.submit_job("job-image-2", ModelMode.IMAGE, dummy_task)
-    await job_manager.submit_job("job-video-3", ModelMode.VIDEO, dummy_task)
+    await job_manager.submit_job("job-video-1", JobType.VIDEO_GENERATION, dummy_task)
+    await job_manager.submit_job("job-image-2", JobType.IMAGE_GENERATION, dummy_task)
+    await job_manager.submit_job("job-video-3", JobType.VIDEO_GENERATION, dummy_task)
     
     # Queue is FIFO by arrival time: [Video-1, Image-2, Video-3]
     assert job_manager._pending_jobs == ["job-video-1", "job-image-2", "job-video-3"]
     
-    # 1. Should pick Image-2 because we are int IMAGE mode (skipping Video-1)
+    # 1. Should pick Image-2 because we are in IMAGE_GENERATION mode (skipping Video-1)
     next_job = job_manager._select_next_job()
     assert next_job == "job-image-2"
     
@@ -93,18 +90,18 @@ async def test_dynamic_scheduling_grouping(job_manager, mock_model_manager):
 
 
 @pytest.mark.asyncio
-async def test_dynamic_scheduling_switch_mode(job_manager, mock_model_manager):
+async def test_per_type_scheduling_switch_mode(job_manager, mock_model_manager):
     """Test switching from one mode to another when queue empties."""
-    mock_model_manager.vram_mode = VRAMLoadMode.DYNAMIC
-    mock_model_manager.current_mode = ModelMode.VIDEO
+    mock_model_manager.vram_mode = VRAMLoadMode.VIDEO_GENERATION
+    mock_model_manager.current_mode = VRAMLoadMode.VIDEO_GENERATION
     
     async def dummy_task(): pass
     
     # Submit: Image -> Image
-    await job_manager.submit_job("job-image-1", ModelMode.IMAGE, dummy_task)
-    await job_manager.submit_job("job-image-2", ModelMode.IMAGE, dummy_task)
+    await job_manager.submit_job("job-image-1", JobType.IMAGE_GENERATION, dummy_task)
+    await job_manager.submit_job("job-image-2", JobType.IMAGE_GENERATION, dummy_task)
     
-    # Current mode is VIDEO, but no Video jobs.
+    # Current mode is VIDEO_GENERATION, but no Video jobs.
     # Should fall back to picking the first available job (Image-1) and switch
     
     next_job = job_manager._select_next_job()
@@ -122,7 +119,7 @@ async def test_job_execution(job_manager, mock_model_manager):
     # Mock task
     mock_task = AsyncMock(return_value="result_url")
     
-    await job_manager.submit_job("job-exec-1", ModelMode.IMAGE, mock_task, arg1="test")
+    await job_manager.submit_job("job-exec-1", JobType.IMAGE_GENERATION, mock_task, arg1="test")
     
     # Manually run process_job (bypassing the loop to test logic)
     await job_manager._process_job("job-exec-1")
@@ -135,7 +132,7 @@ async def test_job_execution(job_manager, mock_model_manager):
     # functional check
     mock_task.assert_awaited_once_with(arg1="test")
     # ensure_mode check
-    mock_model_manager.ensure_mode.assert_awaited_with(ModelMode.IMAGE)
+    mock_model_manager.ensure_mode_for_job.assert_awaited_with(JobType.IMAGE_GENERATION)
 
 
 # -----------------------------------------------------------------------------
@@ -154,8 +151,8 @@ async def test_select_next_job_no_manager(job_manager):
     job_manager._model_manager = None
     
     async def dummy_task(): pass
-    job_manager._jobs["j1"] = MagicMock(_mode=ModelMode.IMAGE)
-    job_manager._jobs["j2"] = MagicMock(_mode=ModelMode.VIDEO)
+    job_manager._jobs["j1"] = MagicMock(_job_type=JobType.IMAGE_GENERATION)
+    job_manager._jobs["j2"] = MagicMock(_job_type=JobType.VIDEO_GENERATION)
     job_manager._pending_jobs = ["j1", "j2"]
     
     # Should pick first regardless of mode
@@ -165,21 +162,21 @@ async def test_select_next_job_no_manager(job_manager):
 @pytest.mark.asyncio
 async def test_select_next_job_stale_reference(job_manager, mock_model_manager):
     """Test handling of job IDs in queue that are missing from jobs map."""
-    mock_model_manager.vram_mode = VRAMLoadMode.DYNAMIC
-    mock_model_manager.current_mode = ModelMode.IMAGE
+    mock_model_manager.vram_mode = VRAMLoadMode.IMAGE_GENERATION
+    mock_model_manager.current_mode = VRAMLoadMode.IMAGE_GENERATION
     
     # "stale-job" is in pending queue but NOT in self._jobs
     job_manager._pending_jobs = ["stale-job", "valid-job"]
     
     # valid-job setup
     mock_job = MagicMock()
-    mock_job._mode = ModelMode.VIDEO  # Different mode
+    mock_job._job_type = JobType.VIDEO_GENERATION  # Different mode
     job_manager._jobs["valid-job"] = mock_job
     
     # Logic:
-    # 1. Look for IMAGE job.
+    # 1. Look for IMAGE_GENERATION job.
     #    - "stale-job": self._jobs.get("stale-job") -> None. Skip.
-    #    - "valid-job": mode is VIDEO. Skip.
+    #    - "valid-job": mode is VIDEO_GENERATION. Skip.
     # 2. Fallback to first in list: "stale-job".
     
     # The worker loop handles the stale job by checking get_job() and returning if None.
@@ -207,10 +204,10 @@ async def test_oom_error_detection(job_manager):
 async def test_worker_handles_switching_failure(job_manager, mock_model_manager):
     """Test that worker handles mode switching failures gracefully."""
     # Simulate switch failure
-    mock_model_manager.ensure_mode.side_effect = Exception("Model load failed")
+    mock_model_manager.ensure_mode_for_job.side_effect = Exception("Model load failed")
     
     mock_task = AsyncMock()
-    await job_manager.submit_job("fail-job", ModelMode.IMAGE, mock_task)
+    await job_manager.submit_job("fail-job", JobType.IMAGE_GENERATION, mock_task)
     
     # Process
     await job_manager._process_job("fail-job")
@@ -222,5 +219,3 @@ async def test_worker_handles_switching_failure(job_manager, mock_model_manager)
     
     # Verify task was NOT executed
     mock_task.assert_not_called()
-
-

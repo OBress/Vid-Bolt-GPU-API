@@ -10,7 +10,7 @@ from app.models.common import ErrorResponse
 from app.models.image_editing import ImageEditRequest
 from app.models.job import AsyncJobResponse, JobResult
 from app.models.internal import ImageEditParams
-from app.services.model_manager import ModelMode
+from app.services.model_manager import JobType
 
 logger = logging.getLogger(__name__)
 
@@ -66,10 +66,10 @@ async def edit_image(
     active_generator = generator
 
     if not settings.mock_mode:
-        if not await model_manager.ensure_mode(ModelMode.IMAGE):
+        if not await model_manager.ensure_mode_for_job(JobType.IMAGE_EDITING):
             raise HTTPException(
                 status_code=409,
-                detail="System is currently busy processing Video tasks. Please wait until they are finished."
+                detail="System is currently busy processing other tasks. Please wait until they are finished."
             )
         active_generator = model_manager.get_image_editor()
 
@@ -113,7 +113,7 @@ async def edit_image(
     # 3. Submit Job
     submitted = await job_manager.try_submit_job(
         job_id=body.job_id,
-        mode=ModelMode.IMAGE,
+        job_type=JobType.IMAGE_EDITING,
         task_func=_run_image_edit,
         # Args
 
