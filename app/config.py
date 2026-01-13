@@ -69,7 +69,7 @@ class InferenceConfig:
     LIGHTX2V_RESIZE_MODE = "adaptive"
     LIGHTX2V_CPU_OFFLOAD = False
     LIGHTX2V_TEXT_ENCODER_OFFLOAD = True
-    LIGHTX2V_MAX_INSTANCES = 6  # Max concurrent pipeline instances for batching
+    LIGHTX2V_MAX_INSTANCES = 2  # Max concurrent pipeline instances (reduced for ALL mode VRAM)
     
     # LTX-2 settings (Optimized for Distilled Model)
     # Distilled model uses 8 predefined sigmas (Stage 1: 8 steps, Stage 2: 4 steps)
