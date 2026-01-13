@@ -37,6 +37,7 @@ class JobInfo(BaseModel):
     # Progress tracking for long-running jobs
     progress_percent: Optional[int] = None  # 0-100
     progress_stage: Optional[str] = None    # "loading", "generating", "upscaling", "uploading"
+    queue_position: Optional[int] = None    # Current position in queue (1-based), only if status is PENDING
     
     # Internal execution details (not serialized)
     _task_func: Any = PrivateAttr(default=None)

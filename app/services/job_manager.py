@@ -76,6 +76,18 @@ class JobManager:
             if job.status in (JobStatus.PENDING, JobStatus.PROCESSING)
         ]
 
+    def get_queue_position(self, job_id: str) -> Optional[int]:
+        """Get the current queue position for a pending job (1-based).
+        
+        Returns:
+            Position (1, 2, 3...) if in queue, None otherwise.
+        """
+        try:
+            # simple lookup, O(N) but N is small (queue size)
+            return self._pending_jobs.index(job_id) + 1
+        except ValueError:
+            return None
+
     def update_job_progress(
         self, 
         job_id: str, 

@@ -140,6 +140,8 @@ Check the status of a specific job.
 
 **Response (Pending):**
 
+> **Note:** `queue_position` is 1-based and indicates the number of jobs ahead + 1. It is only present when `status` is `pending`.
+
 ```json
 {
   "job_id": "550e8400-e29b...",

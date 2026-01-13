@@ -40,5 +40,14 @@ async def get_job_status(
             status_code=404, 
             detail=f"Job {job_id} not found. It may have expired or never existed."
         )
-        
-    return job
+
+    # Return a copy to avoid mutating the cached object in JobManager
+    # (though Pydantic models are mutable, we want to be safe with this calculated field)
+    response_job = job.model_copy()
+    
+    if response_job.status == "pending":
+         position = job_manager.get_queue_position(job_id)
+         if position is not None:
+             response_job.queue_position = position
+
+    return response_job
