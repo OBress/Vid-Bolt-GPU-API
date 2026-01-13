@@ -110,6 +110,10 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     job_manager = JobManager(settings)
     set_job_manager_instance(job_manager)
     
+    # Link JobManager to ModelManager for batch processing
+    # This is required for _process_batch() to access generators
+    job_manager.set_model_manager(model_manager)
+    
     # Start background tasks (Worker + Cleanup)
     job_manager.start()
     logger.info("JobManager started (Queue System Active)")
