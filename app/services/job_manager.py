@@ -208,6 +208,17 @@ class JobManager:
         if semaphore.locked():
             logger.warning(f"Rejecting job {job_id}: {mode} semaphore full")
             return False
+            
+        # Try to acquire semaphore immediately (non-blocking / very short timeout)
+        # This prevents race conditions where multiple requests pass the .locked() check
+        # before the background task starts and acquires the semaphore.
+        try:
+            # We use a tiny timeout to ensure we don't block the event loop for long
+            # but allow a moment to acquire if available.
+            await asyncio.wait_for(semaphore.acquire(), timeout=0.01)
+        except (asyncio.TimeoutError, asyncio.CancelledError):
+             logger.warning(f"Rejecting job {job_id}: {mode} semaphore full (acquisition failed)")
+             return False
         
         # Determine timeout based on mode
         timeout_seconds = (
@@ -231,6 +242,7 @@ class JobManager:
                 semaphore, 
                 task_func, 
                 timeout_seconds=timeout_seconds,
+                already_acquired=True,
                 **kwargs
             )
         )
@@ -243,6 +255,7 @@ class JobManager:
         semaphore: asyncio.Semaphore,
         task_func: Callable[..., Coroutine[Any, Any, Any]],
         timeout_seconds: float = 600,
+        already_acquired: bool = False,
         **kwargs
     ):
         """Wrapper to run the task within the semaphore context.
@@ -253,69 +266,87 @@ class JobManager:
         - OOM error detection and GPU cleanup
         - Generic exception handling
         """
-        async with semaphore:
-            job = self._jobs.get(job_id)
-            if not job:
-                return
-
-            job.status = JobStatus.PROCESSING
-            job.started_at = time.time()
-            job.progress_percent = 0
-            job.progress_stage = "starting"
+        try:
+            if not already_acquired:
+                await semaphore.acquire()
             
-            try:
-                logger.info(f"Starting job {job_id} with {timeout_seconds}s timeout")
-                
-                # Execute with timeout
-                result = await asyncio.wait_for(
-                    task_func(**kwargs),
-                    timeout=timeout_seconds
-                )
-                
-                job.status = JobStatus.COMPLETED
-                job.completed_at = time.time()
-                job.result = result
-                job.progress_percent = 100
-                job.progress_stage = "completed"
-                
-                logger.info(f"Job {job_id} completed successfully")
-                
-                # Clean up GPU memory after every job to prevent VRAM accumulation
-                self._cleanup_gpu_memory()
-                
-            except asyncio.TimeoutError:
-                logger.error(f"Job {job_id} timed out after {timeout_seconds}s")
-                job.status = JobStatus.FAILED
-                job.completed_at = time.time()
-                job.error_message = f"Job timed out after {timeout_seconds} seconds"
-                job.error_code = "JOB_TIMEOUT"
-                job.progress_stage = "timeout"
-                
-                # Clean up GPU memory after timeout
-                self._cleanup_gpu_memory()
-                
-            except Exception as e:
-                error_message = str(e)
-                error_code = "GENERATION_FAILED"
-                
-                # Check for OOM errors
-                is_oom = self._check_oom_error(e, error_message)
-                
-                if is_oom:
-                    error_message = "GPU out of memory. Try reducing resolution or duration."
-                    error_code = "GPU_OUT_OF_MEMORY"
-                    logger.error(f"Job {job_id} failed with OOM: {e}")
-                else:
-                    logger.exception(f"Job {job_id} failed: {e}")
-                
-                job.status = JobStatus.FAILED
-                job.completed_at = time.time()
-                job.error_message = error_message
-                job.error_code = error_code
-                job.progress_stage = "failed"
-                
-                # Clean up GPU memory for ALL exceptions
-                self._cleanup_gpu_memory()
+            # The actual work logic
+            await self._run_job_internal(job_id, task_func, timeout_seconds, **kwargs)
+            
+        finally:
+            # Always release the semaphore
+            semaphore.release()
+
+    async def _run_job_internal(
+        self,
+        job_id: str,
+        task_func: Callable[..., Coroutine[Any, Any, Any]],
+        timeout_seconds: float = 600,
+        **kwargs
+    ):
+        """Internal job execution logic."""
+        job = self._jobs.get(job_id)
+        if not job:
+            return
+
+        job.status = JobStatus.PROCESSING
+        job.started_at = time.time()
+        job.progress_percent = 0
+        job.progress_stage = "starting"
+        
+        try:
+            logger.info(f"Starting job {job_id} with {timeout_seconds}s timeout")
+            
+            # Execute with timeout
+            result = await asyncio.wait_for(
+                task_func(**kwargs),
+                timeout=timeout_seconds
+            )
+            
+            job.status = JobStatus.COMPLETED
+            job.completed_at = time.time()
+            job.result = result
+            job.progress_percent = 100
+            job.progress_stage = "completed"
+            
+            logger.info(f"Job {job_id} completed successfully")
+            
+            # Clean up GPU memory after every job to prevent VRAM accumulation
+            self._cleanup_gpu_memory()
+            
+        except asyncio.TimeoutError:
+            logger.error(f"Job {job_id} timed out after {timeout_seconds}s")
+            job.status = JobStatus.FAILED
+            job.completed_at = time.time()
+            job.error_message = f"Job timed out after {timeout_seconds} seconds"
+            job.error_code = "JOB_TIMEOUT"
+            job.progress_stage = "timeout"
+            
+            # Clean up GPU memory after timeout
+            self._cleanup_gpu_memory()
+            
+        except Exception as e:
+            error_message = str(e)
+            error_code = "GENERATION_FAILED"
+            
+            # Check for OOM errors
+            is_oom = self._check_oom_error(e, error_message)
+            
+            if is_oom:
+                error_message = "GPU out of memory. Try reducing resolution or duration."
+                error_code = "GPU_OUT_OF_MEMORY"
+                logger.error(f"Job {job_id} failed with OOM: {e}")
+            else:
+                logger.exception(f"Job {job_id} failed: {e}")
+            
+            job.status = JobStatus.FAILED
+            job.completed_at = time.time()
+            job.error_message = error_message
+            job.error_code = error_code
+            job.progress_stage = "failed"
+            
+            # Clean up GPU memory for ALL exceptions
+            self._cleanup_gpu_memory()
 
     def _check_oom_error(self, exception: Exception, error_message: str) -> bool:
         """Check if an exception is an OOM error.
