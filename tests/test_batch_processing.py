@@ -894,14 +894,13 @@ class TestLightX2VGeneratorBatch:
         settings.lightx2v_guidance_scale = 7.5
         settings.lightx2v_cpu_offload = True
         settings.lightx2v_text_encoder_offload = True
-        settings.lightx2v_max_instances = 4
         return settings
     
     @pytest.fixture
     def generator(self, mock_settings):
         """Create LightX2V generator in dry-run mode."""
         from app.services.lightx2v_generator import LightX2VImageEditGenerator
-        gen = LightX2VImageEditGenerator(mock_settings)
+        gen = LightX2VImageEditGenerator(mock_settings, max_instances=4)
         gen.load_models()  # Load in dry-run mode
         return gen
     
@@ -1069,7 +1068,6 @@ class TestLightX2VBatchingIntegration:
         settings.lightx2v_guidance_scale = 7.5
         settings.lightx2v_cpu_offload = True
         settings.lightx2v_text_encoder_offload = True
-        settings.lightx2v_max_instances = 4
         return settings
     
     @pytest.fixture
@@ -1081,7 +1079,7 @@ class TestLightX2VBatchingIntegration:
         mm.current_mode = VRAMLoadMode.IMAGE_EDITING
         
         # Create real generator in dry-run mode
-        gen = LightX2VImageEditGenerator(mock_settings)
+        gen = LightX2VImageEditGenerator(mock_settings, max_instances=4)
         gen.load_models()
         
         mm.get_image_editor = MagicMock(return_value=gen)

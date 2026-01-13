@@ -322,11 +322,42 @@ class ModelManager:
         self._force_gc()
 
     async def _load_lightx2v(self) -> None:
-        """Load LightX2V (Qwen-Image-Edit) model."""
+        """Load LightX2V (Qwen-Image-Edit) model.
+        
+        Instance count is determined by the current mode:
+        - IMAGE_EDITING: More instances (5) since we have full VRAM
+        - ALL mode: Fewer instances (2) since sharing with other models
+        """
         from app.services.lightx2v_generator import LightX2VImageEditGenerator
         
-        if self._lightx2v_generator is None:
-            self._lightx2v_generator = LightX2VImageEditGenerator(self._settings)
+        # Determine instance count based on target mode
+        if self._mode == VRAMLoadMode.IMAGE_EDITING:
+            max_instances = self._settings.lightx2v_max_instances_dedicated
+            logger.info(f"Loading LightX2V in dedicated mode with {max_instances} instances")
+        else:
+            # ALL mode or any other - use conservative count
+            max_instances = self._settings.lightx2v_max_instances_all
+            logger.info(f"Loading LightX2V in shared mode with {max_instances} instances")
+        
+        # Always recreate generator to get correct instance count for the mode
+        if self._lightx2v_generator is not None and self._lightx2v_generator._loaded:
+            # Already loaded - check if we need to reload with different instance count
+            current_pool_size = (
+                self._lightx2v_generator._pool.size 
+                if self._lightx2v_generator._pool else 0
+            )
+            if current_pool_size == max_instances:
+                logger.info(f"LightX2V already loaded with {max_instances} instances, skipping")
+                return
+            else:
+                logger.info(f"Reloading LightX2V: {current_pool_size} -> {max_instances} instances")
+                await asyncio.to_thread(self._lightx2v_generator.unload_models)
+        
+        # Create new generator with the appropriate instance count
+        self._lightx2v_generator = LightX2VImageEditGenerator(
+            self._settings,
+            max_instances=max_instances
+        )
         
         if not self._lightx2v_generator._loaded:
             logger.info("Loading LightX2V (Qwen-Image-Edit) models...")

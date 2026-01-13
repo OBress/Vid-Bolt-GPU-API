@@ -69,7 +69,9 @@ class InferenceConfig:
     LIGHTX2V_RESIZE_MODE = "adaptive"
     LIGHTX2V_CPU_OFFLOAD = False
     LIGHTX2V_TEXT_ENCODER_OFFLOAD = True
-    LIGHTX2V_MAX_INSTANCES = 2  # Max concurrent pipeline instances (reduced for ALL mode VRAM)
+    # LightX2V instance counts per mode (each instance ~16GB VRAM)
+    LIGHTX2V_MAX_INSTANCES_ALL = 1       # Conservative when sharing VRAM with Z-Image + LTX-2
+    LIGHTX2V_MAX_INSTANCES_DEDICATED = 5  # Full utilization when LightX2V-only mode
     
     # LTX-2 settings (Optimized for Distilled Model)
     # Distilled model uses 8 predefined sigmas (Stage 1: 8 steps, Stage 2: 4 steps)
@@ -251,9 +253,14 @@ class Settings(BaseSettings):
         return self.mock_mode
     
     @property
-    def lightx2v_max_instances(self) -> int:
-        """Max concurrent LightX2V pipeline instances for batching."""
-        return InferenceConfig.LIGHTX2V_MAX_INSTANCES
+    def lightx2v_max_instances_all(self) -> int:
+        """Max LightX2V instances when in ALL mode (sharing VRAM)."""
+        return InferenceConfig.LIGHTX2V_MAX_INSTANCES_ALL
+    
+    @property
+    def lightx2v_max_instances_dedicated(self) -> int:
+        """Max LightX2V instances when in dedicated IMAGE_EDITING mode."""
+        return InferenceConfig.LIGHTX2V_MAX_INSTANCES_DEDICATED
     
     # --- LTX-2 ---
     @property

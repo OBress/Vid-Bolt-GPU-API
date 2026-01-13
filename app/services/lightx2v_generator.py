@@ -49,13 +49,15 @@ class LightX2VImageEditGenerator(ImageEditor):
         dry_run: Whether running in dry-run mode (workflow testing without models)
     """
 
-    def __init__(self, settings: Settings):
+    def __init__(self, settings: Settings, max_instances: int = 2):
         """Initialize the LightX2V generator.
 
         Args:
             settings: Application settings containing model paths and configuration
+            max_instances: Maximum concurrent instances in the pool (mode-dependent)
         """
         self.settings = settings
+        self._max_instances = max_instances
         self._pool: Optional[LightX2VInstancePool] = None
         # Keep legacy components for single-image fast path
         self.components: Optional[LightX2VComponents] = None
@@ -73,13 +75,13 @@ class LightX2VImageEditGenerator(ImageEditor):
             logger.info("LightX2V dry-run mode enabled - skipping model loading")
             logger.info(f"  Model path: {self.settings.lightx2v_model_path}")
             logger.info(f"  LORA path: {self.settings.lightx2v_lora_path}")
-            logger.info(f"  Max instances: {self.settings.lightx2v_max_instances}")
+            logger.info(f"  Max instances: {self._max_instances}")
             logger.info(f"  Inference steps: {self.settings.lightx2v_infer_steps}")
             
             # Create dry-run pool
             self._pool = LightX2VInstancePool(
                 settings=self.settings,
-                max_instances=self.settings.lightx2v_max_instances,
+                max_instances=self._max_instances,
                 dry_run=True
             )
             self._pool.load_all()
@@ -106,15 +108,14 @@ class LightX2VImageEditGenerator(ImageEditor):
             )
 
         # Create and load instance pool for concurrent processing
-        max_instances = self.settings.lightx2v_max_instances
         logger.info(
-            f"Loading LightX2V with {max_instances} concurrent instances "
+            f"Loading LightX2V with {self._max_instances} concurrent instances "
             f"from {model_path}"
         )
         
         self._pool = LightX2VInstancePool(
             settings=self.settings,
-            max_instances=max_instances,
+            max_instances=self._max_instances,
             dry_run=False
         )
         self._pool.load_all()
