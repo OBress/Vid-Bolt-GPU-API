@@ -145,7 +145,42 @@ The Queue accepts jobs even if the GPU is busy.
 | Queue    | Unbounded (in-memory) | Returns `202 Accepted` immediately. |
 | Worker   | 1 Active Job          | Processes one job at a time.        |
 
----
+### Throughput & Capacity
+
+The API dynamically calculates batch sizes and concurrent processing based on **available VRAM** and **task parameters**. Jobs are automatically grouped by resolution for optimal GPU utilization.
+
+#### Concurrent Capacity by Mode (96GB GPU)
+
+| Mode               | Image Gen (Z-Image)                      | Image Edit (LightX2V)             | Video Gen (LTX-2)                 |
+| ------------------ | ---------------------------------------- | --------------------------------- | --------------------------------- |
+| `image_generation` | **~29** @ 1920×1080, **~48** @ 1024×1024 | ❌ Not loaded                     | ❌ Not loaded                     |
+| `image_editing`    | ❌ Not loaded                            | **6 concurrent** (any resolution) | ❌ Not loaded                     |
+| `video_generation` | ❌ Not loaded                            | ❌ Not loaded                     | **4 concurrent** @ 3s, **3** @ 5s |
+| `all`              | **~10-15** @ 1024×1024                   | **2-3 concurrent**                | **1-2 concurrent**                |
+
+#### Resolution Scaling (Image Generation)
+
+| Resolution | VRAM per Image | Batch Size |
+| ---------- | -------------- | ---------- |
+| 512×512    | ~0.8 GB        | 64 (cap)   |
+| 1024×1024  | ~1.8 GB        | ~48        |
+| 1920×1080  | ~3.0 GB        | ~29        |
+| 2048×2048  | ~5.5 GB        | ~16        |
+
+#### Video Duration Scaling (LTX-2)
+
+| Duration   | VRAM per Video | Concurrent Videos |
+| ---------- | -------------- | ----------------- |
+| 3 seconds  | ~12 GB         | 4                 |
+| 5 seconds  | ~16 GB         | 3-4               |
+| 10 seconds | ~25 GB         | 2-3               |
+
+#### Optimization Tips
+
+1. **Batch same-resolution jobs**: Jobs with identical dimensions are grouped for vectorized processing
+2. **Use dedicated modes**: Single-model modes (`image_generation`, `video_generation`) offer 2-3x higher throughput than `all` mode
+3. **Shorter videos first**: Submit shorter-duration videos when possible for higher parallelism
+4. **Check queue position**: Poll `/api/v1/jobs/{job_id}` to see `queue_position` for pending jobs
 
 ## Endpoints
 
