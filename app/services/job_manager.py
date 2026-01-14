@@ -650,13 +650,18 @@ class JobManager:
         return any(indicator.lower() in error_message.lower() for indicator in oom_indicators)
 
     def _cleanup_gpu_memory(self) -> None:
-        """Clean up GPU memory."""
+        """Clean up GPU memory aggressively after job completion."""
         try:
             import torch
-            gc.collect()
+            gc.collect()  # Force Python GC first to release tensor references
             if torch.cuda.is_available():
-                torch.cuda.empty_cache()
-                torch.cuda.synchronize()
+                torch.cuda.empty_cache()  # Release cached memory to CUDA
+                torch.cuda.ipc_collect()  # Clean up IPC handles from multiprocessing
+                torch.cuda.synchronize()  # Wait for all GPU operations
+                # Log VRAM state for debugging
+                allocated = torch.cuda.memory_allocated() / (1024**3)
+                reserved = torch.cuda.memory_reserved() / (1024**3)
+                logger.debug(f"GPU cleanup complete: {allocated:.2f}GB allocated, {reserved:.2f}GB reserved")
         except ImportError:
             gc.collect()
         except Exception as e:

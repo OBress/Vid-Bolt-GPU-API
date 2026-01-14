@@ -444,6 +444,19 @@ class ZImageGenerator(ImageGenerator):
         with ThreadPoolExecutor(max_workers=min(batch_size, 8)) as executor:
             result_bytes = list(executor.map(_process_single_image, enumerate(images)))
         
+        # CRITICAL: Explicitly delete GPU tensors to free VRAM before next batch
+        # Python's GC is too slow and tensors stay alive until next GC cycle
+        del latents, latent_model_input, latent_model_input_list
+        del prompt_embeds, prompt_embeds_list, text_input_ids, prompt_masks
+        del noise_pred, model_out_list
+        del images  # CPU numpy array is fine but let's be thorough
+        
+        # Force GPU cache flush
+        import gc
+        gc.collect()
+        torch.cuda.empty_cache()
+        torch.cuda.synchronize()  # Wait for all GPU ops to complete
+        
         return result_bytes
 
     def _generate_sync(self, params: ImageGenerationParams, seed: int) -> tuple[bytes, int, int]:
@@ -707,12 +720,17 @@ class ZImageGenerator(ImageGenerator):
         image = image.cpu().permute(0, 2, 3, 1).float().numpy()
         image = (image * 255).round().astype("uint8")
         
+        # CRITICAL: Cleanup GPU tensors before returning
+        del latents, latent_model_input, latent_model_input_list
+        del prompt_embeds, prompt_embeds_list, text_input_ids, prompt_masks
+        del noise_pred, model_out_list
+        
+        import gc
+        gc.collect()
+        torch.cuda.empty_cache()
+        
         from PIL import Image as PILImage
         return PILImage.fromarray(image[0])
-
-        generator = torch.Generator(self.settings.zimage_device).manual_seed(seed)
-
-        return buffer.getvalue(), params.width, params.height
 
     def _manual_generation_loop(
         self, 
@@ -929,6 +947,15 @@ class ZImageGenerator(ImageGenerator):
         image = (image / 2 + 0.5).clamp(0, 1)
         image = image.cpu().permute(0, 2, 3, 1).float().numpy()
         image = (image * 255).round().astype("uint8")
+        
+        # CRITICAL: Cleanup GPU tensors before returning
+        del latents, latent_model_input, latent_model_input_list
+        del prompt_embeds, prompt_embeds_list, text_input_ids, prompt_masks
+        del noise_pred, model_out_list
+        
+        import gc
+        gc.collect()
+        torch.cuda.empty_cache()
         
         from PIL import Image as PILImage
         return PILImage.fromarray(image[0])
