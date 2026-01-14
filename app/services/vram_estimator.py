@@ -18,14 +18,14 @@ ZIMAGE_BASE_ACTIVATION_GB = 0.5  # Base activation memory overhead
 
 # Per-pixel scaling factors (GB per megapixel)
 # 1 Megapixel = 1,000,000 pixels
-ZIMAGE_GB_PER_MEGAPIXEL = 1.2  # ~1.2 GB activation per megapixel (vectorized batching - weights shared)
+ZIMAGE_GB_PER_MEGAPIXEL = 1.0  # ~1.0 GB activation per megapixel (vectorized - actual measured on RTX PRO 6000)
 
 # Safety margins
 VRAM_SAFETY_MARGIN_GB = 4.0  # Reserve for OS, display, fragmentation
 MIN_FREE_VRAM_GB = 2.0  # Minimum free VRAM to attempt any generation
 
 # Batch limits (absolute caps regardless of VRAM)
-MAX_BATCH_SIZE_ZIMAGE = 12  # Vectorized batching allows larger batches (shared weights)
+MAX_BATCH_SIZE_ZIMAGE = 20  # Conservative limit for 95GB+ GPUs with vectorized batching
 
 # =============================================================================
 # LightX2V (Qwen-Image-Edit-2511) VRAM Estimation Constants
