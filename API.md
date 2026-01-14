@@ -15,6 +15,7 @@ A high-performance FastAPI backend for AI-powered image and video generation.
   - [Image Editing](#image-editing)
   - [Video Generation](#video-generation)
   - [LTX-2 Video Generation](#ltx-2-video-generation)
+  - [Batch Operations](#batch-operations)
 - [Error Handling](#error-handling)
 - [Configuration](#configuration)
 - [System Settings](#system-settings)
@@ -314,6 +315,121 @@ Check the status of a specific job.
   "message": "Job accepted for processing"
 }
 ```
+
+---
+
+### Batch Operations
+
+Batch endpoints allow submitting multiple items in a single request, reducing API overhead from 300+ calls to just 1.
+
+**Features:**
+
+- Single batch ID to poll instead of individual job IDs
+- Automatic retry-on-failure (failed items requeued once)
+- 5-minute auto-expiry (or immediate deletion on collection)
+
+#### `POST /api/v1/batch/image/generate`
+
+Submit a batch of image generation requests (max 500 items).
+
+**Request:**
+
+```json
+{
+  "batch_id": "batch-abc123",
+  "items": [
+    {
+      "prompt": "A sunset over mountains",
+      "aspect_ratio": "16:9",
+      "save_url": "https://storage.example.com/1.png"
+    },
+    {
+      "prompt": "A cat on a windowsill",
+      "aspect_ratio": "1:1",
+      "num_inference_steps": 20,
+      "save_url": "https://storage.example.com/2.png"
+    }
+  ]
+}
+```
+
+**Item Fields:** Same as individual `/api/v1/image/generate` (except `job_id` is auto-generated).
+
+**Response (202 Accepted):**
+
+```json
+{
+  "batch_id": "batch-abc123",
+  "status": "pending",
+  "total_items": 2,
+  "status_url": "/api/v1/batch/batch-abc123",
+  "message": "Batch accepted for processing (2 images)"
+}
+```
+
+---
+
+#### `POST /api/v1/batch/image/edit`
+
+Submit a batch of image editing requests (max 500 items).
+
+**Item Fields:** Same as individual `/api/v1/image/edit`.
+
+---
+
+#### `POST /api/v1/batch/video/generate`
+
+Submit a batch of video generation requests (max 100 items).
+
+**Item Fields:** Same as individual `/api/v1/ltx2/generate`.
+
+---
+
+#### `GET /api/v1/batch/{batch_id}`
+
+Get batch status (non-destructive).
+
+**Response:**
+
+```json
+{
+  "batch_id": "batch-abc123",
+  "status": "processing",
+  "batch_type": "image_generation",
+  "total_items": 100,
+  "completed_items": 50,
+  "failed_items": 1,
+  "pending_items": 30,
+  "processing_items": 19,
+  "retrying_items": 0,
+  "created_at": 1715420000.0,
+  "items": [
+    {
+      "item_index": 0,
+      "job_id": "batch-abc123__item_0",
+      "status": "completed",
+      "retry_count": 0,
+      "result": { "save_url": "...", "generation_time": 2.5 }
+    },
+    {
+      "item_index": 1,
+      "job_id": "batch-abc123__item_1",
+      "status": "processing",
+      "retry_count": 0
+    }
+  ]
+}
+```
+
+---
+
+#### `DELETE /api/v1/batch/{batch_id}`
+
+Collect batch results and immediately delete the batch. Use when done polling.
+
+> **Recommended:** Use DELETE instead of GET for final retrieval to prevent 5-minute auto-expiry issues.
+
+**Response:** Same as GET, but batch is deleted after response.
 
 ---
 

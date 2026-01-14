@@ -414,15 +414,17 @@ class ZImageGenerator(ImageGenerator):
         images = vae.decode(latents, return_dict=False)[0]
         
         # Process to PIL and encode
+        # Process to PIL and encode
         images = (images / 2 + 0.5).clamp(0, 1)
         images = images.cpu().permute(0, 2, 3, 1).float().numpy()
         images = (images * 255).round().astype("uint8")
         
         from PIL import Image as PILImage
+        from concurrent.futures import ThreadPoolExecutor
         
-        result_bytes = []
-        for idx in range(batch_size):
-            image = PILImage.fromarray(images[idx])
+        def _process_single_image(idx_and_img):
+            idx, img_array = idx_and_img
+            image = PILImage.fromarray(img_array)
             
             # Crop to target dimensions if needed
             if gen_width != target_width or gen_height != target_height:
@@ -433,9 +435,14 @@ class ZImageGenerator(ImageGenerator):
                 image = image.crop((left, top, right, bottom))
             
             buffer = io.BytesIO()
-            image.save(buffer, format="PNG")
+            image.save(buffer, format="PNG", optimize=False, compress_level=1)  # Faster saving
             buffer.seek(0)
-            result_bytes.append(buffer.getvalue())
+            return buffer.getvalue()
+        
+        # Parallelize PNG encoding (CPU intensive)
+        # Use simple ThreadPool since this is I/O / GIL-releasing
+        with ThreadPoolExecutor(max_workers=min(batch_size, 8)) as executor:
+            result_bytes = list(executor.map(_process_single_image, enumerate(images)))
         
         return result_bytes
 

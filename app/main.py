@@ -14,7 +14,7 @@ from app import __version__
 from app.config import get_settings
 from app.exceptions import APIError
 from app.models.common import ErrorResponse
-from app.routers import health, image_generation, image_editing, video_generation, ltx2_generation, mode, system, lora_management, jobs, gpu, download_status, settings as settings_router_module
+from app.routers import health, image_generation, image_editing, video_generation, ltx2_generation, mode, system, lora_management, jobs, gpu, download_status, settings as settings_router_module, batch as batch_router
 from app.utils.logging import setup_logging
 
 # Initialize settings
@@ -118,12 +118,25 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     job_manager.start()
     logger.info("JobManager started (Queue System Active)")
 
+    # Initialize BatchManager for batch job submissions
+    from app.services.batch_manager import BatchManager
+    from app.routers.batch import set_batch_manager_instance
+    
+    logger.info("Initializing BatchManager...")
+    batch_manager = BatchManager(settings, job_manager)
+    set_batch_manager_instance(batch_manager)
+    batch_manager.start()
+    logger.info("BatchManager started (5-minute auto-expiry active)")
+
     yield
 
     # Shutdown
     logger.info("Shutting down Vid-Bolt GPU API...")
     
-    # Stop background tasks
+    # Stop BatchManager
+    batch_manager.stop()
+    
+    # Stop JobManager
     job_manager.stop()
     logger.info("Shutdown complete")
 
@@ -300,3 +313,4 @@ app.include_router(jobs.router)
 app.include_router(gpu.router)
 app.include_router(download_status.router)
 app.include_router(settings_router_module.router)
+app.include_router(batch_router.router)

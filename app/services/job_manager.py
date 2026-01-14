@@ -250,6 +250,47 @@ class JobManager:
     async def try_submit_job(self, *args, **kwargs) -> bool:
         return await self.submit_job(*args, **kwargs)
 
+    async def requeue_job(self, job_id: str) -> bool:
+        """Requeue a failed job to the back of its bucket queue.
+        
+        This is used by BatchManager for retry-on-failure. The job is moved
+        to the end of its original bucket, giving priority to other jobs.
+        
+        Args:
+            job_id: Job ID to requeue
+            
+        Returns:
+            True if successfully requeued, False if job not found
+        """
+        job = self._jobs.get(job_id)
+        if not job:
+            logger.warning(f"Cannot requeue job {job_id}: not found")
+            return False
+        
+        # Reset job state for retry
+        job.status = JobStatus.PENDING
+        job.started_at = None
+        job.completed_at = None
+        job.error_message = None
+        job.error_code = None
+        job.progress_percent = None
+        job.progress_stage = None
+        
+        # Get bucket key from job's stored params
+        bucket_key = getattr(job, '_bucket_key', None)
+        if not bucket_key:
+            logger.warning(f"Cannot requeue job {job_id}: no bucket key")
+            return False
+        
+        # Add back to queue at the END (other jobs get priority)
+        async with self._condition:
+            self._pending_buckets[bucket_key].append(job_id)
+            self._pending_jobs_set.add(job_id)
+            self._condition.notify()
+        
+        logger.info(f"Requeued job {job_id} to back of {bucket_key} queue")
+        return True
+
     async def _worker_loop(self) -> None:
         """Main worker loop handling job execution and batch scheduling."""
         from app.services.model_manager import VRAMLoadMode, ModelMode

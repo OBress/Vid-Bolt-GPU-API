@@ -39,6 +39,10 @@ class JobInfo(BaseModel):
     progress_stage: Optional[str] = None    # "loading", "generating", "upscaling", "uploading"
     queue_position: Optional[int] = None    # Current position in queue (1-based), only if status is PENDING
     
+    # Batch linkage (if this job is part of a batch)
+    batch_id: Optional[str] = None          # Parent batch ID
+    batch_index: Optional[int] = None       # 0-based index within the batch
+    
     # Internal execution details (not serialized)
     _task_func: Any = PrivateAttr(default=None)
     _kwargs: Dict[str, Any] = PrivateAttr(default_factory=dict)
