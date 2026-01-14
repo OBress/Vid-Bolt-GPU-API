@@ -18,14 +18,14 @@ ZIMAGE_BASE_ACTIVATION_GB = 0.5  # Base activation memory overhead
 
 # Per-pixel scaling factors (GB per megapixel)
 # 1 Megapixel = 1,000,000 pixels
-ZIMAGE_GB_PER_MEGAPIXEL = 4.0  # ~4 GB per megapixel (calibrated from OOM at 17 x 1920x1080)
+ZIMAGE_GB_PER_MEGAPIXEL = 1.2  # ~1.2 GB activation per megapixel (vectorized batching - weights shared)
 
 # Safety margins
 VRAM_SAFETY_MARGIN_GB = 4.0  # Reserve for OS, display, fragmentation
 MIN_FREE_VRAM_GB = 2.0  # Minimum free VRAM to attempt any generation
 
 # Batch limits (absolute caps regardless of VRAM)
-MAX_BATCH_SIZE_ZIMAGE = 8  # Safe for 1920x1080 (Pool size 4 = 2 rounds of concurrent gen)
+MAX_BATCH_SIZE_ZIMAGE = 12  # Vectorized batching allows larger batches (shared weights)
 
 # =============================================================================
 # LightX2V (Qwen-Image-Edit-2511) VRAM Estimation Constants

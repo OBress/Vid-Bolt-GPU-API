@@ -62,7 +62,7 @@ class InferenceConfig:
     ZIMAGE_ATTENTION_BACKEND = "sdpa"
     # Z-Image instance counts for concurrent pool (each instance ~8GB + 3GB activation)
     ZIMAGE_MAX_INSTANCES_ALL = 1         # Single instance when sharing VRAM with LightX2V + LTX-2
-    ZIMAGE_MAX_INSTANCES_DEDICATED = 4   # Safe utilization for 96GB GPU (6 pushed to 80GB static)
+    ZIMAGE_MAX_INSTANCES_DEDICATED = 6   # Higher utilization for 96GB GPU
     
     # LightX2V settings
     LIGHTX2V_ATTN_MODE = "torch_sdpa"

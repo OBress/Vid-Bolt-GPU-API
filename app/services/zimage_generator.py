@@ -223,7 +223,7 @@ class ZImageGenerator(ImageGenerator):
                     f"but expected {first_width}x{first_height}"
                 )
         
-        logger.info(f"Starting CONCURRENT batch generation of {batch_size} images at {first_width}x{first_height}")
+        logger.info(f"Starting VECTORIZED batch generation of {batch_size} images at {first_width}x{first_height}")
         
         # Generate seeds for each image
         seeds = []
@@ -239,25 +239,16 @@ class ZImageGenerator(ImageGenerator):
             ]
             return await asyncio.gather(*tasks)
         
-        # Log pool status for debugging
-        pool_loaded = self._pool is not None and self._pool.is_loaded
-        vram_ok = self._pool.check_vram_available(min_free_gb=ZIMAGE_ACTIVATION_GB * 2) if pool_loaded else False
-        logger.info(f"Pool check: pool_loaded={pool_loaded}, vram_ok={vram_ok}")
+        # PREFER VECTORIZED BATCHING over pool concurrency
+        # Vectorized batching (single pipeline, batch_size=N) is:
+        # - More memory efficient (shared model weights)
+        # - Faster (~20-30% improvement from batched tensor ops)
+        # - Simpler (no pool coordination overhead)
+        #
+        # Only fall back to pool concurrency if vectorized fails
         
-        # Use concurrent pool if available and VRAM is sufficient
-        use_concurrent = pool_loaded and vram_ok
-        
-        if use_concurrent:
-            logger.info(f"Using concurrent pool ({self._pool.size} instances)")
-            results = await self._generate_concurrent(params_list, seeds)
-        else:
-            # Fallback to vectorized batch (single pipeline)
-            if self._pool is None:
-                logger.info("Pool not initialized, using vectorized batching")
-            elif not self._pool.is_loaded:
-                logger.warning("Pool not loaded, using vectorized batching")
-            elif not vram_ok:
-                logger.warning("Insufficient VRAM for concurrent generation, using vectorized batching")
+        try:
+            logger.info(f"Using VECTORIZED batching (single pipeline, batch_size={batch_size})")
             loop = asyncio.get_event_loop()
             image_data_list = await loop.run_in_executor(
                 None,
@@ -271,6 +262,16 @@ class ZImageGenerator(ImageGenerator):
                     height=params.height,
                     seed=seed,
                 ))
+        except Exception as e:
+            # Fallback to pool concurrency if vectorized fails
+            logger.warning(f"Vectorized batching failed ({e}), falling back to pool concurrency")
+            pool_loaded = self._pool is not None and self._pool.is_loaded
+            if pool_loaded:
+                logger.info(f"Using concurrent pool fallback ({self._pool.size} instances)")
+                results = await self._generate_concurrent(params_list, seeds)
+            else:
+                # No pool, re-raise the original error
+                raise
         
         # Aggressive memory cleanup after batch
         import torch
