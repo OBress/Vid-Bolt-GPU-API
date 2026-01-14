@@ -235,8 +235,8 @@ class ModelManager:
             await self._unload_lightx2v()
             await self._unload_ltx2()
             
-            # Load Z-Image
-            await self._load_zimage()
+            # Load Z-Image with dedicated mode (8 instances for concurrent pool)
+            await self._load_zimage(target_mode=VRAMLoadMode.IMAGE_GENERATION)
             
             logger.info("Successfully switched to Image Generation Mode")
         finally:

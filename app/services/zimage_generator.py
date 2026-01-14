@@ -239,20 +239,25 @@ class ZImageGenerator(ImageGenerator):
             ]
             return await asyncio.gather(*tasks)
         
+        # Log pool status for debugging
+        pool_loaded = self._pool is not None and self._pool.is_loaded
+        vram_ok = self._pool.check_vram_available(min_free_gb=ZIMAGE_ACTIVATION_GB * 2) if pool_loaded else False
+        logger.info(f"Pool check: pool_loaded={pool_loaded}, vram_ok={vram_ok}")
+        
         # Use concurrent pool if available and VRAM is sufficient
-        use_concurrent = (
-            self._pool is not None 
-            and self._pool.is_loaded 
-            and self._pool.check_vram_available(min_free_gb=ZIMAGE_ACTIVATION_GB * 2)
-        )
+        use_concurrent = pool_loaded and vram_ok
         
         if use_concurrent:
             logger.info(f"Using concurrent pool ({self._pool.size} instances)")
             results = await self._generate_concurrent(params_list, seeds)
         else:
-            # Fallback to vectorized batch (single pipeline) or sequential
-            if self._pool is not None and not self._pool.check_vram_available():
-                logger.warning("Insufficient VRAM for concurrent generation, using sequential")
+            # Fallback to vectorized batch (single pipeline)
+            if self._pool is None:
+                logger.info("Pool not initialized, using vectorized batching")
+            elif not self._pool.is_loaded:
+                logger.warning("Pool not loaded, using vectorized batching")
+            elif not vram_ok:
+                logger.warning("Insufficient VRAM for concurrent generation, using vectorized batching")
             loop = asyncio.get_event_loop()
             image_data_list = await loop.run_in_executor(
                 None,
@@ -266,6 +271,12 @@ class ZImageGenerator(ImageGenerator):
                     height=params.height,
                     seed=seed,
                 ))
+        
+        # Aggressive memory cleanup after batch
+        import torch
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+            torch.cuda.ipc_collect()
         
         logger.info(f"Batch generation completed: {batch_size} images")
         return results

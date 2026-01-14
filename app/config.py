@@ -91,7 +91,7 @@ class InferenceConfig:
     LTX2_CONCURRENT_VRAM_BUDGET_GB = 72.0  # VRAM available for activations (after base model)
     
     # Job timeouts (seconds)
-    IMAGE_JOB_TIMEOUT = 120      # 2 minutes for image jobs
+    IMAGE_JOB_TIMEOUT = 300      # 5 minutes for image batch jobs (large batches at 1920x1080)
     VIDEO_JOB_TIMEOUT = 600      # 10 minutes for video jobs
     
     # Limits
