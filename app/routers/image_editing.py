@@ -115,9 +115,10 @@ async def edit_image(
         job_id=body.job_id,
         job_type=JobType.IMAGE_EDITING,
         task_func=_run_image_edit,
-        # Args
-
-        # Args
+        webhook_url=body.webhook_url,
+        item_id=body.item_id,
+        webhook_secret=body.webhook_secret,
+        # Args for task_func:
         generator=active_generator,
         storage=storage,
         params=params,

@@ -43,10 +43,16 @@ class JobInfo(BaseModel):
     batch_id: Optional[str] = None          # Parent batch ID
     batch_index: Optional[int] = None       # 0-based index within the batch
     
+    # Webhook configuration
+    item_id: Optional[str] = None           # Client identifier (defaults to job_id in webhook)
+    
     # Internal execution details (not serialized)
     _task_func: Any = PrivateAttr(default=None)
     _kwargs: Dict[str, Any] = PrivateAttr(default_factory=dict)
     _job_type: Any = PrivateAttr(default=None)  # JobType enum value
+    _webhook_url: Optional[str] = PrivateAttr(default=None)
+    _webhook_secret: Optional[str] = PrivateAttr(default=None)
+    _bucket_key: Any = PrivateAttr(default=None)  # For requeue support
 
 
 

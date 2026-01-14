@@ -12,6 +12,12 @@ class BatchVideoGenerateItem(BaseModel):
     
     Mirrors LTX2GenerateRequest fields but without job_id (auto-generated).
     """
+    item_id: str = Field(
+        ...,
+        description="REQUIRED: Client identifier for this item (returned in webhook)",
+        min_length=1,
+        max_length=100,
+    )
     input_image_url: str = Field(
         ...,
         description="URL of the start frame image",
@@ -79,6 +85,14 @@ class BatchVideoGenerateRequest(BaseModel):
         description="Unique batch identifier (UUID) provided by the caller",
         min_length=1,
     )
+    webhook_url: str = Field(
+        ...,
+        description="REQUIRED: URL to POST when each item completes (success or failure)",
+    )
+    webhook_secret: Optional[str] = Field(
+        default=None,
+        description="Secret for signing webhook payloads (HMAC-SHA256)",
+    )
     items: List[BatchVideoGenerateItem] = Field(
         ...,
         description="List of video generation requests (max 100)",
@@ -91,14 +105,17 @@ class BatchVideoGenerateRequest(BaseModel):
             "examples": [
                 {
                     "batch_id": "batch-550e8400-e29b-41d4-a716-446655440002",
+                    "webhook_url": "https://myapp.com/api/gpu-callback",
                     "items": [
                         {
+                            "item_id": "video_scene_001",
                             "input_image_url": "https://example.com/start1.png",
                             "prompt": "Gentle waves on the beach, cinematic motion",
                             "duration_seconds": 5.0,
                             "save_url": "https://example.com/upload/1.mp4"
                         },
                         {
+                            "item_id": "video_scene_002",
                             "input_image_url": "https://example.com/start2.png",
                             "prompt": "Clouds moving across the sky, timelapse",
                             "duration_seconds": 3.0,

@@ -12,6 +12,12 @@ class BatchImageEditItem(BaseModel):
     
     Mirrors ImageEditRequest fields but without job_id (auto-generated).
     """
+    item_id: str = Field(
+        ...,
+        description="REQUIRED: Client identifier for this item (returned in webhook)",
+        min_length=1,
+        max_length=100,
+    )
     input_image_url: str = Field(
         ...,
         description="URL of the input image to edit",
@@ -46,6 +52,14 @@ class BatchImageEditRequest(BaseModel):
         description="Unique batch identifier (UUID) provided by the caller",
         min_length=1,
     )
+    webhook_url: str = Field(
+        ...,
+        description="REQUIRED: URL to POST when each item completes (success or failure)",
+    )
+    webhook_secret: Optional[str] = Field(
+        default=None,
+        description="Secret for signing webhook payloads (HMAC-SHA256)",
+    )
     items: List[BatchImageEditItem] = Field(
         ...,
         description="List of image edit requests (max 500)",
@@ -58,13 +72,16 @@ class BatchImageEditRequest(BaseModel):
             "examples": [
                 {
                     "batch_id": "batch-550e8400-e29b-41d4-a716-446655440001",
+                    "webhook_url": "https://myapp.com/api/gpu-callback",
                     "items": [
                         {
+                            "item_id": "edit_001",
                             "input_image_url": "https://example.com/input1.png",
                             "prompt": "Convert to oil painting style",
                             "save_url": "https://example.com/upload/1.png"
                         },
                         {
+                            "item_id": "edit_002",
                             "input_image_url": "https://example.com/input2.png",
                             "prompt": "Add dramatic lighting",
                             "save_url": "https://example.com/upload/2.png"

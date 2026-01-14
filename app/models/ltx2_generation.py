@@ -88,6 +88,18 @@ class LTX2GenerateRequest(BaseModel):
         description="Auto-enhance the prompt for better results"
     )
     save_url: str = Field(..., description="Presigned URL (PUT) for direct storage upload")
+    webhook_url: str = Field(
+        ...,
+        description="REQUIRED: URL to POST when generation completes (success or failure)",
+    )
+    item_id: str | None = Field(
+        default=None,
+        description="Client identifier for this item (returned in webhook, defaults to job_id)",
+    )
+    webhook_secret: str | None = Field(
+        default=None,
+        description="Secret for signing webhook payload (HMAC-SHA256)",
+    )
 
     model_config = {
         "json_schema_extra": {
@@ -98,7 +110,8 @@ class LTX2GenerateRequest(BaseModel):
                     "prompt": "Gentle waves on the beach, cinematic motion",
                     "duration_seconds": 5.0,
                     "frame_rate": 24.0,
-                    "save_url": "https://example.com/upload/video.mp4"
+                    "save_url": "https://example.com/upload/video.mp4",
+                    "webhook_url": "https://myapp.com/api/gpu-callback",
                 }
             ]
         }
@@ -210,6 +223,18 @@ class KeyframeInterpolateRequest(BaseModel):
         description="Auto-enhance the prompt for better results"
     )
     save_url: str = Field(..., description="Presigned URL (PUT) for direct storage upload")
+    webhook_url: str = Field(
+        ...,
+        description="REQUIRED: URL to POST when interpolation completes (success or failure)",
+    )
+    item_id: str | None = Field(
+        default=None,
+        description="Client identifier for this item (returned in webhook, defaults to job_id)",
+    )
+    webhook_secret: str | None = Field(
+        default=None,
+        description="Secret for signing webhook payload (HMAC-SHA256)",
+    )
 
     model_config = {
         "json_schema_extra": {
@@ -223,7 +248,8 @@ class KeyframeInterpolateRequest(BaseModel):
                     ],
                     "duration_seconds": 5.0,
                     "frame_rate": 24.0,
-                    "save_url": "https://example.com/upload/video.mp4"
+                    "save_url": "https://example.com/upload/video.mp4",
+                    "webhook_url": "https://myapp.com/api/gpu-callback",
                 }
             ]
         }

@@ -12,6 +12,12 @@ class BatchImageGenerateItem(BaseModel):
     
     Mirrors ImageGenerateRequest fields but without job_id (auto-generated).
     """
+    item_id: str = Field(
+        ...,
+        description="REQUIRED: Client identifier for this item (returned in webhook)",
+        min_length=1,
+        max_length=100,
+    )
     prompt: str = Field(
         ...,
         description="Text prompt describing the image to generate",
@@ -70,6 +76,14 @@ class BatchImageGenerateRequest(BaseModel):
         description="Unique batch identifier (UUID) provided by the caller",
         min_length=1,
     )
+    webhook_url: str = Field(
+        ...,
+        description="REQUIRED: URL to POST when each item completes (success or failure)",
+    )
+    webhook_secret: Optional[str] = Field(
+        default=None,
+        description="Secret for signing webhook payloads (HMAC-SHA256)",
+    )
     items: List[BatchImageGenerateItem] = Field(
         ...,
         description="List of image generation requests (max 500)",
@@ -82,13 +96,16 @@ class BatchImageGenerateRequest(BaseModel):
             "examples": [
                 {
                     "batch_id": "batch-550e8400-e29b-41d4-a716-446655440000",
+                    "webhook_url": "https://myapp.com/api/gpu-callback",
                     "items": [
                         {
+                            "item_id": "scene_001_image",
                             "prompt": "A beautiful sunset over mountains",
                             "aspect_ratio": "16:9",
                             "save_url": "https://example.com/upload/1.png"
                         },
                         {
+                            "item_id": "scene_002_image",
                             "prompt": "A cat sitting on a windowsill",
                             "aspect_ratio": "1:1",
                             "save_url": "https://example.com/upload/2.png"

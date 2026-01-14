@@ -114,6 +114,16 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     # This is required for _process_batch() to access generators
     job_manager.set_model_manager(model_manager)
     
+    # Initialize WebhookService for callback notifications
+    from app.services.webhook_service import WebhookService, set_webhook_service_instance
+    
+    logger.info("Initializing WebhookService...")
+    webhook_service = WebhookService(settings)
+    await webhook_service.start()
+    set_webhook_service_instance(webhook_service)
+    job_manager.set_webhook_service(webhook_service)
+    logger.info("WebhookService started (1 retry, 30s delay)")
+    
     # Start background tasks (Worker + Cleanup)
     job_manager.start()
     logger.info("JobManager started (Queue System Active)")
@@ -132,6 +142,9 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
 
     # Shutdown
     logger.info("Shutting down Vid-Bolt GPU API...")
+    
+    # Stop WebhookService
+    await webhook_service.stop()
     
     # Stop BatchManager
     batch_manager.stop()

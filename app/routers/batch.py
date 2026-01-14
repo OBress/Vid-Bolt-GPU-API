@@ -100,6 +100,8 @@ async def batch_generate_images(
             items=body.items,
             generator=generator,
             storage=storage,
+            webhook_url=body.webhook_url,
+            webhook_secret=body.webhook_secret,
         )
     except ValueError as e:
         raise HTTPException(status_code=409, detail=str(e))
@@ -164,6 +166,8 @@ async def batch_edit_images(
             items=body.items,
             generator=generator,
             storage=storage,
+            webhook_url=body.webhook_url,
+            webhook_secret=body.webhook_secret,
         )
     except ValueError as e:
         raise HTTPException(status_code=409, detail=str(e))
@@ -228,6 +232,8 @@ async def batch_generate_videos(
             items=body.items,
             generator=generator,
             storage=storage,
+            webhook_url=body.webhook_url,
+            webhook_secret=body.webhook_secret,
         )
     except ValueError as e:
         raise HTTPException(status_code=409, detail=str(e))

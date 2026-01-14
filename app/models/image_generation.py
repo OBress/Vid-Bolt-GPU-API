@@ -55,6 +55,18 @@ class ImageGenerateRequest(BaseModel):
         ...,
         description="Presigned URL (PUT) for direct storage upload",
     )
+    webhook_url: str = Field(
+        ...,
+        description="REQUIRED: URL to POST when generation completes (success or failure)",
+    )
+    item_id: Optional[str] = Field(
+        default=None,
+        description="Client identifier for this item (returned in webhook, defaults to job_id)",
+    )
+    webhook_secret: Optional[str] = Field(
+        default=None,
+        description="Secret for signing webhook payload (HMAC-SHA256)",
+    )
 
     @model_validator(mode="after")
     def validate_dimensions(self):
@@ -77,6 +89,7 @@ class ImageGenerateRequest(BaseModel):
                     "aspect_ratio": "16:9",
                     "num_inference_steps": 20,
                     "save_url": "https://example.com/upload/image.png",
+                    "webhook_url": "https://myapp.com/api/gpu-callback",
                 }
             ]
         }

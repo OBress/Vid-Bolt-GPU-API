@@ -21,6 +21,7 @@ from typing import Any, Callable, Dict, List, Optional, Coroutine, Tuple
 
 from app.config import Settings, InferenceConfig
 from app.models.job import JobInfo, JobResult, JobStatus
+from app.models.webhook import WebhookPayload
 from app.services.model_manager import VRAMLoadMode, JobType, ModelMode
 
 logger = logging.getLogger(__name__)
@@ -62,10 +63,17 @@ class JobManager:
         self._cleanup_task: Optional[asyncio.Task] = None
         self._worker_task: Optional[asyncio.Task] = None
         self._running = False
+        
+        # Webhook service (set during startup)
+        self._webhook_service = None
 
     def set_model_manager(self, model_manager: "ModelManager"):
         """Set the ModelManager instance (circular dependency check)."""
         self._model_manager = model_manager
+
+    def set_webhook_service(self, webhook_service):
+        """Set the WebhookService instance."""
+        self._webhook_service = webhook_service
 
     def get_job(self, job_id: str) -> Optional[JobInfo]:
         """Get job information by ID."""
@@ -200,6 +208,9 @@ class JobManager:
         job_id: str,
         job_type: JobType,
         task_func: Callable[..., Coroutine[Any, Any, Any]],
+        webhook_url: str,
+        item_id: Optional[str] = None,
+        webhook_secret: Optional[str] = None,
         **kwargs
     ) -> bool:
         """Submit a job to the queue.
@@ -208,6 +219,9 @@ class JobManager:
             job_id: Unique job ID
             job_type: Job type (IMAGE_GENERATION, IMAGE_EDITING, VIDEO_GENERATION)
             task_func: Async function to execute
+            webhook_url: REQUIRED - URL to POST when job completes
+            item_id: Optional client identifier (defaults to job_id in webhook)
+            webhook_secret: Optional HMAC signing secret
             **kwargs: Arguments for task_func (must include 'params' with width/height)
             
         Returns:
@@ -218,11 +232,14 @@ class JobManager:
             job_id=job_id,
             status=JobStatus.PENDING,
             created_at=time.time(),
+            item_id=item_id,
         )
         # Store execution details (PrivateAttrs must be set after init)
         job._task_func = task_func
         job._kwargs = kwargs
         job._job_type = job_type
+        job._webhook_url = webhook_url
+        job._webhook_secret = webhook_secret
         
         # Extract dimensions for bucketing (default to standard size)
         params = kwargs.get("params")
@@ -518,12 +535,16 @@ class JobManager:
                         f"{error_msg} within batch", 
                         "BATCH_ITEM_FAILED"
                     )
+                    # Send failure webhook
+                    await self._send_webhook(job)
                 else:
                     job.status = JobStatus.COMPLETED
                     job.completed_at = time.time()
                     job.result = result
                     job.progress_percent = 100
                     job.progress_stage = "completed"
+                    # Send success webhook
+                    await self._send_webhook(job)
             
             # Count successes
             completed = sum(1 for j in jobs if j.status == JobStatus.COMPLETED)
@@ -534,9 +555,11 @@ class JobManager:
         except asyncio.TimeoutError:
             for job in jobs:
                 self._handle_job_error(job, f"Batch timed out after {timeout_seconds}s", "JOB_TIMEOUT")
+                await self._send_webhook(job)
         except Exception as e:
             for job in jobs:
                 self._handle_job_error(job, str(e), "GENERATION_FAILED")
+                await self._send_webhook(job)
         finally:
             self._cleanup_gpu_memory()
 
@@ -582,10 +605,15 @@ class JobManager:
             job.progress_stage = "completed"
             logger.info(f"Job {job_id} completed successfully")
             
+            # Send success webhook
+            await self._send_webhook(job)
+            
         except asyncio.TimeoutError:
             self._handle_job_error(job, f"Job timed out after {timeout_seconds} seconds", "JOB_TIMEOUT")
+            await self._send_webhook(job)
         except Exception as e:
             self._handle_job_error(job, str(e), "GENERATION_FAILED")
+            await self._send_webhook(job)
         finally:
             # Cleanup GPU memory after every job
             self._cleanup_gpu_memory()
@@ -628,3 +656,42 @@ class JobManager:
             gc.collect()
         except Exception as e:
             logger.warning(f"Failed to clean up GPU memory: {e}")
+
+    async def _send_webhook(self, job: JobInfo) -> None:
+        """Send webhook for a completed/failed job and schedule deletion."""
+        if not self._webhook_service:
+            logger.warning(f"WebhookService not available, skipping webhook for {job.job_id}")
+            return
+        
+        webhook_url = getattr(job, '_webhook_url', None)
+        if not webhook_url:
+            logger.warning(f"No webhook URL for job {job.job_id}")
+            return
+        
+        # Build payload
+        is_success = job.status == JobStatus.COMPLETED
+        payload = WebhookPayload(
+            event="generation.completed" if is_success else "generation.failed",
+            job_id=job.job_id,
+            item_id=job.item_id or job.job_id,
+            batch_id=job.batch_id,
+            status="completed" if is_success else "failed",
+            completed_at=job.completed_at or time.time(),
+            generation_type=job._job_type.value if job._job_type else "unknown",
+            result=job.result if is_success else None,
+            error_message=job.error_message if not is_success else None,
+            error_code=job.error_code if not is_success else None,
+            retry_count=0,  # TBD: integrate with BatchManager retry count
+        )
+        
+        # Callback to delete job after successful delivery
+        async def cleanup_job():
+            self._jobs.pop(job.job_id, None)
+            logger.debug(f"Deleted job {job.job_id} after webhook delivery")
+        
+        await self._webhook_service.deliver(
+            webhook_url=webhook_url,
+            payload=payload,
+            secret=getattr(job, '_webhook_secret', None),
+            on_success=cleanup_job,
+        )

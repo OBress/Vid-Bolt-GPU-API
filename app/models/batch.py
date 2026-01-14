@@ -31,11 +31,12 @@ class BatchItemState(str, Enum):
 class BatchItemStatus(BaseModel):
     """Status of a single item within a batch."""
     item_index: int = Field(..., description="0-based position in original request")
+    item_id: str = Field(..., description="Client-provided identifier for this item")
     job_id: str = Field(..., description="Internal job ID for this item")
     status: BatchItemState = Field(..., description="Current state of this item")
     retry_count: int = Field(default=0, ge=0, le=1, description="Number of retry attempts (0 or 1)")
     error_message: Optional[str] = Field(default=None, description="Error message if failed")
-    result: Optional[JobResult] = Field(default=None, description="Result if completed successfully")
+    # Note: result is not included here - results are delivered via webhook only
 
 
 class BatchInfo(BaseModel):

@@ -120,6 +120,8 @@ class BatchManager:
         items: List[BatchImageGenerateItem],
         generator: Any,
         storage: "StorageService",
+        webhook_url: str,
+        webhook_secret: Optional[str] = None,
     ) -> BatchInfo:
         """Submit a batch of image generation requests.
         
@@ -128,6 +130,8 @@ class BatchManager:
             items: List of image generation items
             generator: Image generator instance
             storage: Storage service for uploads
+            webhook_url: URL to POST when each item completes
+            webhook_secret: Optional HMAC signing secret
             
         Returns:
             BatchInfo with initial pending status
@@ -159,16 +163,25 @@ class BatchManager:
                 lora_name=item.lora_name if item.lora_name and item.lora_name.lower() != "none" else None,
             )
             
-            # Submit to JobManager
+            # Submit to JobManager with webhook config
             await self._job_manager.submit_job(
                 job_id=job_id,
                 job_type=JobType.IMAGE_GENERATION,
                 task_func=_run_image_generation,
+                webhook_url=webhook_url,
+                item_id=item.item_id,
+                webhook_secret=webhook_secret,
                 generator=generator,
                 storage=storage,
                 params=params,
                 save_url=item.save_url,
             )
+            
+            # Update job with batch linkage
+            job = self._job_manager.get_job(job_id)
+            if job:
+                job.batch_id = batch_id
+                job.batch_index = idx
             
             job_ids.append(job_id)
             self._retry_counts[job_id] = 0
@@ -190,6 +203,8 @@ class BatchManager:
         items: List[BatchImageEditItem],
         generator: Any,
         storage: "StorageService",
+        webhook_url: str,
+        webhook_secret: Optional[str] = None,
     ) -> BatchInfo:
         """Submit a batch of image editing requests.
         
@@ -198,6 +213,8 @@ class BatchManager:
             items: List of image editing items
             generator: Image editor instance
             storage: Storage service for uploads
+            webhook_url: URL to POST when each item completes
+            webhook_secret: Optional HMAC signing secret
             
         Returns:
             BatchInfo with initial pending status
@@ -240,16 +257,25 @@ class BatchManager:
                 seed=item.seed,
             )
             
-            # Submit to JobManager
+            # Submit to JobManager with webhook config
             await self._job_manager.submit_job(
                 job_id=job_id,
                 job_type=JobType.IMAGE_EDITING,
                 task_func=_run_image_edit,
+                webhook_url=webhook_url,
+                item_id=item.item_id,
+                webhook_secret=webhook_secret,
                 generator=generator,
                 storage=storage,
                 params=params,
                 save_url=item.save_url,
             )
+            
+            # Update job with batch linkage
+            job = self._job_manager.get_job(job_id)
+            if job:
+                job.batch_id = batch_id
+                job.batch_index = idx
             
             job_ids.append(job_id)
             self._retry_counts[job_id] = 0
@@ -271,6 +297,8 @@ class BatchManager:
         items: List[BatchVideoGenerateItem],
         generator: Any,
         storage: "StorageService",
+        webhook_url: str,
+        webhook_secret: Optional[str] = None,
     ) -> BatchInfo:
         """Submit a batch of video generation requests.
         
@@ -279,6 +307,8 @@ class BatchManager:
             items: List of video generation items
             generator: Video generator instance
             storage: Storage service for uploads
+            webhook_url: URL to POST when each item completes
+            webhook_secret: Optional HMAC signing secret
             
         Returns:
             BatchInfo with initial pending status
@@ -325,16 +355,25 @@ class BatchManager:
                 enhance_prompt=item.enhance_prompt,
             )
             
-            # Submit to JobManager
+            # Submit to JobManager with webhook config
             await self._job_manager.submit_job(
                 job_id=job_id,
                 job_type=JobType.VIDEO_GENERATION,
                 task_func=_run_ltx2_generation,
+                webhook_url=webhook_url,
+                item_id=item.item_id,
+                webhook_secret=webhook_secret,
                 generator=generator,
                 storage=storage,
                 params=params,
                 save_url=item.save_url,
             )
+            
+            # Update job with batch linkage
+            job = self._job_manager.get_job(job_id)
+            if job:
+                job.batch_id = batch_id
+                job.batch_index = idx
             
             job_ids.append(job_id)
             self._retry_counts[job_id] = 0
@@ -447,21 +486,22 @@ class BatchManager:
                 
                 items.append(BatchItemStatus(
                     item_index=idx,
+                    item_id=job.item_id or job_id,
                     job_id=job_id,
                     status=state,
                     retry_count=retry_count,
                     error_message=job.error_message,
-                    result=job.result,
                 ))
             else:
-                # Job not found - treat as pending
+                # Job not found (already cleaned up after webhook) - mark as completed
                 items.append(BatchItemStatus(
                     item_index=idx,
+                    item_id=job_id,  # Fallback to job_id
                     job_id=job_id,
-                    status=BatchItemState.PENDING,
+                    status=BatchItemState.COMPLETED,
                     retry_count=retry_count,
                 ))
-                pending_count += 1
+                completed_count += 1
         
         # Determine overall batch status
         all_done = completed_count + failed_count == len(job_ids)

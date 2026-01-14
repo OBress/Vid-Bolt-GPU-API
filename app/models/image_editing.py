@@ -31,6 +31,18 @@ class ImageEditRequest(BaseModel):
     mask_image_url: str | None = Field(default=None, description="URL of the mask image for inpainting")
     seed: int | None = Field(default=None, description="Random seed for reproducibility")
     save_url: str = Field(..., description="Presigned URL (PUT) for direct storage upload")
+    webhook_url: str = Field(
+        ...,
+        description="REQUIRED: URL to POST when editing completes (success or failure)",
+    )
+    item_id: str | None = Field(
+        default=None,
+        description="Client identifier for this item (returned in webhook, defaults to job_id)",
+    )
+    webhook_secret: str | None = Field(
+        default=None,
+        description="Secret for signing webhook payload (HMAC-SHA256)",
+    )
 
     model_config = {
         "json_schema_extra": {
@@ -41,6 +53,7 @@ class ImageEditRequest(BaseModel):
                     "prompt": "Convert to oil painting style",
                     "aspect_ratio": "16:9",
                     "save_url": "https://example.com/upload/edited.png",
+                    "webhook_url": "https://myapp.com/api/gpu-callback",
                 }
             ]
         }

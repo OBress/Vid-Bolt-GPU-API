@@ -7,6 +7,7 @@ A high-performance FastAPI backend for AI-powered image and video generation.
 - [Overview](#overview)
 - [Quick Start](#quick-start)
 - [Authentication](#authentication)
+- [Webhooks](#webhooks)
 - [Mode System](#mode-system)
 - [Endpoints](#endpoints)
   - [Health & System](#health--system)
@@ -94,6 +95,83 @@ X-API-Key: your-secure-api-key
 ```
 
 **Exception:** The `/health` endpoint does not require authentication.
+
+---
+
+## Webhooks
+
+> **IMPORTANT:** All generation endpoints require a `webhook_url`. Results are delivered via webhook only - job data is deleted after successful webhook delivery.
+
+### How It Works
+
+1. Submit a generation request with a `webhook_url`
+2. Poll `/api/v1/jobs/{job_id}` for **progress only** (no result in response)
+3. Receive webhook callback when job completes (success or failure)
+4. Job data is automatically deleted after webhook delivery
+
+### Webhook Payload (Success)
+
+```json
+{
+  "event": "generation.completed",
+  "job_id": "550e8400-e29b-41d4-a716-446655440000",
+  "item_id": "scene_001_image",
+  "batch_id": null,
+  "status": "completed",
+  "completed_at": 1715420015.0,
+  "generation_type": "image_generation",
+  "result": {
+    "save_url": "https://storage.example.com/output.png",
+    "generation_time": 2.5,
+    "metadata": { "seed": 12345, "width": 1920, "height": 1080 }
+  }
+}
+```
+
+### Webhook Payload (Failure)
+
+```json
+{
+  "event": "generation.failed",
+  "job_id": "550e8400-e29b-41d4-a716-446655440001",
+  "item_id": "scene_002_image",
+  "batch_id": "batch-abc123",
+  "status": "failed",
+  "completed_at": 1715420020.0,
+  "generation_type": "image_generation",
+  "error_message": "GPU out of memory",
+  "error_code": "GPU_OUT_OF_MEMORY",
+  "retry_count": 1
+}
+```
+
+### Webhook Headers
+
+| Header                | Description                                          |
+| --------------------- | ---------------------------------------------------- |
+| `Content-Type`        | `application/json`                                   |
+| `X-Webhook-Event`     | `generation.completed` or `generation.failed`        |
+| `X-Job-Id`            | The job ID                                           |
+| `X-Webhook-Signature` | HMAC-SHA256 signature (if `webhook_secret` provided) |
+
+### Webhook Retry Logic
+
+- **Timeout:** 10 seconds per delivery attempt
+- **Retries:** 1 retry after initial failure (30 second delay)
+- **Total attempts:** 2 (initial + 1 retry)
+
+### HMAC Signature Verification
+
+If you provide a `webhook_secret`, the payload is signed with HMAC-SHA256:
+
+```python
+import hmac
+import hashlib
+
+def verify_signature(payload_body: bytes, signature: str, secret: str) -> bool:
+    expected = f"sha256={hmac.new(secret.encode(), payload_body, hashlib.sha256).hexdigest()}"
+    return hmac.compare_digest(expected, signature)
+```
 
 ---
 
@@ -249,8 +327,11 @@ Check the status of a specific job.
 | `prompt` | string | ✅ | Text description (max 2000 chars) | - |
 | `aspect_ratio` | string | ❌ | `16:9`, `9:16`, `1:1`, `4:3`, `3:4` | `16:9` |
 | `save_url` | string | ✅ | Presigned PUT URL for output | - |
+| `webhook_url` | string | ✅ | **REQUIRED:** URL to POST when complete | - |
+| `item_id` | string | ❌ | Client identifier (returned in webhook) | `job_id` |
+| `webhook_secret` | string | ❌ | HMAC signing secret | - |
 
-**Response (Immediate):**
+**Response (Immediate - 202 Accepted):**
 
 ```json
 {
@@ -260,6 +341,8 @@ Check the status of a specific job.
   "message": "Job accepted for processing"
 }
 ```
+
+> **Note:** Results are delivered via webhook only. The status endpoint shows progress but not the final result.
 
 ---
 
@@ -276,8 +359,11 @@ Check the status of a specific job.
 | `input_image_url` | string | ✅ | URL of image to edit | - |
 | `prompt` | string | ✅ | Edit instruction | - |
 | `save_url` | string | ✅ | Presigned PUT URL for output | - |
+| `webhook_url` | string | ✅ | **REQUIRED:** URL to POST when complete | - |
+| `item_id` | string | ❌ | Client identifier (returned in webhook) | `job_id` |
+| `webhook_secret` | string | ❌ | HMAC signing secret | - |
 
-**Response (Immediate):**
+**Response (Immediate - 202 Accepted):**
 
 ```json
 {
@@ -304,8 +390,11 @@ Check the status of a specific job.
 | `prompt` | string | ✅ | Motion description | - |
 | `duration_seconds` | float | ❌ | Video length (1.0-8.0) | `4.0` |
 | `save_url` | string | ✅ | Presigned PUT URL | - |
+| `webhook_url` | string | ✅ | **REQUIRED:** URL to POST when complete | - |
+| `item_id` | string | ❌ | Client identifier (returned in webhook) | `job_id` |
+| `webhook_secret` | string | ❌ | HMAC signing secret | - |
 
-**Response (Immediate):**
+**Response (Immediate - 202 Accepted):**
 
 ```json
 {
@@ -324,7 +413,8 @@ Batch endpoints allow submitting multiple items in a single request, reducing AP
 
 **Features:**
 
-- Single batch ID to poll instead of individual job IDs
+- Per-item webhook callbacks (each item triggers its own webhook)
+- Client-provided `item_id` for tracking each item
 - Automatic retry-on-failure (failed items requeued once)
 - 5-minute auto-expiry (or immediate deletion on collection)
 
@@ -337,23 +427,42 @@ Submit a batch of image generation requests (max 500 items).
 ```json
 {
   "batch_id": "batch-abc123",
+  "webhook_url": "https://myapp.com/api/gpu-callback",
+  "webhook_secret": "optional-hmac-secret",
   "items": [
     {
+      "item_id": "scene_001_image",
       "prompt": "A sunset over mountains",
       "aspect_ratio": "16:9",
       "save_url": "https://storage.example.com/1.png"
     },
     {
+      "item_id": "scene_002_image",
       "prompt": "A cat on a windowsill",
       "aspect_ratio": "1:1",
-      "num_inference_steps": 20,
       "save_url": "https://storage.example.com/2.png"
     }
   ]
 }
 ```
 
-**Item Fields:** Same as individual `/api/v1/image/generate` (except `job_id` is auto-generated).
+**Batch Request Fields:**
+
+| Field            | Type   | Required | Description                                        |
+| ---------------- | ------ | -------- | -------------------------------------------------- |
+| `batch_id`       | string | ✅       | Unique batch identifier                            |
+| `webhook_url`    | string | ✅       | URL to POST when each item completes               |
+| `webhook_secret` | string | ❌       | HMAC signing secret                                |
+| `items`          | array  | ✅       | List of items (max 500 for images, 100 for videos) |
+
+**Item Fields:**
+
+| Field            | Type   | Required | Description                                   |
+| ---------------- | ------ | -------- | --------------------------------------------- |
+| `item_id`        | string | ✅       | **REQUIRED:** Client identifier for this item |
+| `prompt`         | string | ✅       | Text description                              |
+| `save_url`       | string | ✅       | Presigned PUT URL                             |
+| _(other fields)_ | -      | ❌       | Same as individual endpoint                   |
 
 **Response (202 Accepted):**
 
@@ -387,7 +496,7 @@ Submit a batch of video generation requests (max 100 items).
 
 #### `GET /api/v1/batch/{batch_id}`
 
-Get batch status (non-destructive).
+Get batch status (non-destructive). Shows progress but not results (results delivered via webhook).
 
 **Response:**
 
@@ -406,13 +515,14 @@ Get batch status (non-destructive).
   "items": [
     {
       "item_index": 0,
+      "item_id": "scene_001_image",
       "job_id": "batch-abc123__item_0",
       "status": "completed",
-      "retry_count": 0,
-      "result": { "save_url": "...", "generation_time": 2.5 }
+      "retry_count": 0
     },
     {
       "item_index": 1,
+      "item_id": "scene_002_image",
       "job_id": "batch-abc123__item_1",
       "status": "processing",
       "retry_count": 0
@@ -420,6 +530,8 @@ Get batch status (non-destructive).
   ]
 }
 ```
+
+> **Note:** The `result` field is not included in batch status. Results are delivered via webhook for each item.
 
 ---
 
@@ -456,6 +568,14 @@ Collect batch results and immediately delete the batch. Use when done polling.
 ---
 
 ## Changelog
+
+### v0.4.0
+
+- **Mandatory Webhooks**: All generation endpoints now require `webhook_url`
+- **Per-item Callbacks**: Results delivered via webhook for each item (single or batch)
+- **Job Cleanup**: Job data deleted after successful webhook delivery
+- **HMAC Signing**: Optional `webhook_secret` for payload verification
+- **Batch item_id**: Each batch item requires a client-provided `item_id`
 
 ### v0.3.0
 
