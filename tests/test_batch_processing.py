@@ -97,7 +97,7 @@ class TestVRAMEstimator:
         # 80GB available, should allow many images
         max_batch = calculate_max_batch_size(1024, 1024, available_vram_gb=80.0)
         
-        assert max_batch >= 8  # Should allow max configured batch (8)
+        assert max_batch >= 12  # Should allow max configured batch (12)
         assert max_batch <= MAX_BATCH_SIZE_ZIMAGE  # Never exceed cap
     
     def test_calculate_max_batch_low_vram(self):
@@ -450,6 +450,47 @@ class TestZImageGeneratorBatch:
             assert results[2].seed == 1002
         
         asyncio.run(run_test())
+    
+    def test_batch_uses_vectorized_approach(self, generator):
+        """Test that batch generation uses vectorized batching (not pool concurrency).
+        
+        With the refactored implementation, generate_batch should call
+        _generate_batch_sync for batches > 1, which processes all images
+        in a single forward pass.
+        """
+        from app.models.internal import ImageGenerationParams
+        from unittest.mock import patch
+        
+        params_list = [
+            ImageGenerationParams(
+                job_id=f"test-{i}",
+                prompt=f"Image {i}",
+                width=1024,
+                height=1024,
+                seed=None,
+                num_inference_steps=8,
+            )
+            for i in range(4)
+        ]
+        
+        async def run_test():
+            # Disable dry_run to test the actual vectorized path
+            generator.dry_run = False
+            
+            # Patch _generate_batch_sync to verify it gets called
+            with patch.object(generator, '_generate_batch_sync') as mock_batch_sync:
+                # Return mock image bytes
+                mock_batch_sync.return_value = [b'fake_png'] * 4
+                
+                results = await generator.generate_batch(params_list)
+                
+                # Should have called vectorized batch sync
+                mock_batch_sync.assert_called_once()
+                
+                # Should return correct number of results
+                assert len(results) == 4
+        
+        asyncio.run(run_test())
 
 
 # =============================================================================
@@ -671,20 +712,20 @@ class TestLightX2VVRAMEstimator:
         small_vram = estimate_lightx2v_vram_per_image(512, 512)
         assert vram > small_vram
     
-    def test_lightx2v_higher_than_zimage(self):
-        """Test that LightX2V uses more VRAM per image than Z-Image."""
+    def test_zimage_lower_than_lightx2v_vectorized(self):
+        """Test that Z-Image uses less VRAM per image than LightX2V with vectorized batching."""
         from app.services.vram_estimator import (
             estimate_lightx2v_vram_per_image,
             estimate_zimage_vram_per_image,
         )
         
-        # LightX2V should require more VRAM due to I2I conditioning
+        # With vectorized batching, Z-Image has lower per-image VRAM (1.2GB/MP)
+        # because model weights are shared. LightX2V (2.5GB/MP) is higher due to I2I.
         lightx2v_vram = estimate_lightx2v_vram_per_image(1024, 1024)
         zimage_vram = estimate_zimage_vram_per_image(1024, 1024)
         
-        # Z-Image now has conservative estimation (4.0GB/MP) to prevent OOM, 
-        # which is higher than LightX2V (2.5GB/MP) despite LightX2V's complexity.
-        assert lightx2v_vram < zimage_vram
+        # Z-Image should now be MORE efficient with vectorized batching
+        assert zimage_vram < lightx2v_vram
     
     def test_calculate_lightx2v_max_batch_high_vram(self):
         """Test LightX2V batch size with high available VRAM."""

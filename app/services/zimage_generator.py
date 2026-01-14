@@ -22,7 +22,6 @@ from PIL import Image
 from app.config import Settings
 from app.services.interfaces import ImageGenerator
 from app.models.internal import ImageGenerationParams, ImageGenerationResult
-from app.services.zimage_pool import ZIMAGE_ACTIVATION_GB
 
 logger = logging.getLogger(__name__)
 
@@ -41,22 +40,23 @@ class ZImageGenerator(ImageGenerator):
         dry_run: Whether running in dry-run mode (workflow testing without models)
     """
 
-    def __init__(self, settings: Settings, max_instances: int = 6):
+    def __init__(self, settings: Settings):
         """Initialize the Z-Image generator.
 
         Args:
             settings: Application settings containing model paths and configuration
-            max_instances: Maximum concurrent instances for pool mode
         """
         self.settings = settings
-        self.pipeline: Optional[Any] = None  # ZImagePipeline (single instance mode)
-        self._pool: Optional[Any] = None  # ZImageInstancePool (concurrent mode)
-        self._max_instances = max_instances
+        self.pipeline: Optional[Any] = None  # ZImagePipeline
         self.is_loaded = False
         self.dry_run = settings.zimage_dry_run
         self._current_lora: Optional[str] = None
         self._lora_scale: Optional[float] = None
-        self._use_pool = max_instances > 1
+
+    @property
+    def _loaded(self) -> bool:
+        """Check if models are loaded (implements abstract property)."""
+        return self.is_loaded
 
     def load_models(self) -> None:
         """Load Z-Image model via ZImagePipeline.
@@ -239,39 +239,23 @@ class ZImageGenerator(ImageGenerator):
             ]
             return await asyncio.gather(*tasks)
         
-        # PREFER VECTORIZED BATCHING over pool concurrency
-        # Vectorized batching (single pipeline, batch_size=N) is:
-        # - More memory efficient (shared model weights)
-        # - Faster (~20-30% improvement from batched tensor ops)
-        # - Simpler (no pool coordination overhead)
-        #
-        # Only fall back to pool concurrency if vectorized fails
+        # Use vectorized batching (single pipeline, batch_size=N)
+        # More memory efficient (shared weights) and faster (batched tensor ops)
         
-        try:
-            logger.info(f"Using VECTORIZED batching (single pipeline, batch_size={batch_size})")
-            loop = asyncio.get_event_loop()
-            image_data_list = await loop.run_in_executor(
-                None,
-                lambda: self._generate_batch_sync(params_list, seeds),
-            )
-            results = []
-            for params, seed, image_data in zip(params_list, seeds, image_data_list):
-                results.append(ImageGenerationResult(
-                    image_data=image_data,
-                    width=params.width,
-                    height=params.height,
-                    seed=seed,
-                ))
-        except Exception as e:
-            # Fallback to pool concurrency if vectorized fails
-            logger.warning(f"Vectorized batching failed ({e}), falling back to pool concurrency")
-            pool_loaded = self._pool is not None and self._pool.is_loaded
-            if pool_loaded:
-                logger.info(f"Using concurrent pool fallback ({self._pool.size} instances)")
-                results = await self._generate_concurrent(params_list, seeds)
-            else:
-                # No pool, re-raise the original error
-                raise
+        logger.info(f"Using VECTORIZED batching (single pipeline, batch_size={batch_size})")
+        loop = asyncio.get_event_loop()
+        image_data_list = await loop.run_in_executor(
+            None,
+            lambda: self._generate_batch_sync(params_list, seeds),
+        )
+        results = []
+        for params, seed, image_data in zip(params_list, seeds, image_data_list):
+            results.append(ImageGenerationResult(
+                image_data=image_data,
+                width=params.width,
+                height=params.height,
+                seed=seed,
+            ))
         
         # Aggressive memory cleanup after batch
         import torch
@@ -282,103 +266,6 @@ class ZImageGenerator(ImageGenerator):
         logger.info(f"Batch generation completed: {batch_size} images")
         return results
     
-    async def _generate_concurrent(
-        self,
-        params_list: List[ImageGenerationParams],
-        seeds: List[int]
-    ) -> List[ImageGenerationResult]:
-        """Generate images concurrently using the instance pool.
-        
-        Each image is generated in parallel on a separate pipeline instance.
-        """
-        from app.services.zimage_pool import PooledZImageInstance
-        
-        async def generate_one(params: ImageGenerationParams, seed: int) -> ImageGenerationResult:
-            """Generate a single image using a pooled instance."""
-            instance = await self._pool.acquire()
-            try:
-                # Run generation in thread pool
-                loop = asyncio.get_event_loop()
-                image_data = await loop.run_in_executor(
-                    None,
-                    lambda: self._generate_with_instance(instance, params, seed)
-                )
-                return ImageGenerationResult(
-                    image_data=image_data,
-                    width=params.width,
-                    height=params.height,
-                    seed=seed,
-                )
-            finally:
-                await self._pool.release(instance)
-        
-        # Run all generations concurrently
-        tasks = [
-            generate_one(params, seed)
-            for params, seed in zip(params_list, seeds)
-        ]
-        return await asyncio.gather(*tasks)
-    
-    def _generate_with_instance(
-        self,
-        instance: Any,  # PooledZImageInstance
-        params: ImageGenerationParams,
-        seed: int
-    ) -> bytes:
-        """Generate a single image using a specific pipeline instance."""
-        import torch
-        import io
-        
-        pipeline = instance.pipeline
-        device = self.settings.zimage_device
-        dtype = torch.bfloat16 if self.settings.zimage_dtype == "bfloat16" else torch.float16
-        
-        # Calculate dimensions
-        target_width = params.width
-        target_height = params.height
-        gen_width = ((target_width + 31) // 32) * 32
-        gen_height = ((target_height + 31) // 32) * 32
-        
-        generator = torch.Generator(device).manual_seed(seed)
-        
-        # Use the instance's pipeline for generation
-        num_inference_steps = params.num_inference_steps or 8
-        
-        logger.info(
-            f"Generating at padded resolution",
-            extra={
-                "target": f"{target_width}x{target_height}",
-                "padded": f"{gen_width}x{gen_height}",
-                "instance_id": instance.instance_id,
-            },
-        )
-        
-        # Call pipeline
-        with torch.no_grad():
-            output = pipeline(
-                prompt=params.prompt,
-                height=gen_height,
-                width=gen_width,
-                num_inference_steps=num_inference_steps,
-                generator=generator,
-                guidance_scale=0.0,
-            )
-        
-        image = output.images[0]
-        
-        # Crop if needed
-        if gen_width != target_width or gen_height != target_height:
-            left = (gen_width - target_width) // 2
-            top = (gen_height - target_height) // 2
-            right = left + target_width
-            bottom = top + target_height
-            image = image.crop((left, top, right, bottom))
-        
-        # Convert to bytes
-        buffer = io.BytesIO()
-        image.save(buffer, format="PNG")
-        buffer.seek(0)
-        return buffer.getvalue()
 
     def _generate_batch_sync(
         self, 
