@@ -22,6 +22,7 @@ from PIL import Image
 from app.config import Settings
 from app.services.interfaces import ImageGenerator
 from app.models.internal import ImageGenerationParams, ImageGenerationResult
+from app.services.zimage_pool import ZIMAGE_ACTIVATION_GB
 
 logger = logging.getLogger(__name__)
 
@@ -40,18 +41,22 @@ class ZImageGenerator(ImageGenerator):
         dry_run: Whether running in dry-run mode (workflow testing without models)
     """
 
-    def __init__(self, settings: Settings):
+    def __init__(self, settings: Settings, max_instances: int = 6):
         """Initialize the Z-Image generator.
 
         Args:
             settings: Application settings containing model paths and configuration
+            max_instances: Maximum concurrent instances for pool mode
         """
         self.settings = settings
-        self.pipeline: Optional[Any] = None  # ZImagePipeline
+        self.pipeline: Optional[Any] = None  # ZImagePipeline (single instance mode)
+        self._pool: Optional[Any] = None  # ZImageInstancePool (concurrent mode)
+        self._max_instances = max_instances
         self.is_loaded = False
         self.dry_run = settings.zimage_dry_run
         self._current_lora: Optional[str] = None
         self._lora_scale: Optional[float] = None
+        self._use_pool = max_instances > 1
 
     def load_models(self) -> None:
         """Load Z-Image model via ZImagePipeline.
@@ -182,11 +187,10 @@ class ZImageGenerator(ImageGenerator):
     async def generate_batch(
         self, params_list: List[ImageGenerationParams]
     ) -> List[ImageGenerationResult]:
-        """Generate multiple images in a single batch (true vectorized processing).
+        """Generate multiple images concurrently using the instance pool.
         
-        This method processes multiple images in a single forward pass through the
-        transformer, maximizing GPU utilization. All images must have the same
-        dimensions (enforced by JobManager bucketing).
+        This method uses true concurrent generation with multiple pipeline
+        instances, maximizing GPU utilization on high-VRAM GPUs (96GB).
         
         Args:
             params_list: List of generation parameters (must have same dimensions)
@@ -207,9 +211,11 @@ class ZImageGenerator(ImageGenerator):
                 "ZIMAGE_DRY_RUN=false with models downloaded."
             )
         
-        # Validate all images have same dimensions
+        batch_size = len(params_list)
         first_width = params_list[0].width
         first_height = params_list[0].height
+        
+        # Validate all images have same dimensions
         for params in params_list:
             if params.width != first_width or params.height != first_height:
                 raise ValueError(
@@ -217,8 +223,7 @@ class ZImageGenerator(ImageGenerator):
                     f"but expected {first_width}x{first_height}"
                 )
         
-        batch_size = len(params_list)
-        logger.info(f"Starting batch generation of {batch_size} images at {first_width}x{first_height}")
+        logger.info(f"Starting CONCURRENT batch generation of {batch_size} images at {first_width}x{first_height}")
         
         # Generate seeds for each image
         seeds = []
@@ -226,43 +231,142 @@ class ZImageGenerator(ImageGenerator):
             seed = params.seed if params.seed is not None else random.randint(0, 2**32 - 1)
             seeds.append(seed)
         
-        # Handle LoRA - use first job's LoRA setting (batch should have consistent LoRA)
-        first_lora = params_list[0].lora_name
-        if first_lora != self._current_lora:
-            if first_lora is None:
-                await self.unload_lora()
-            else:
-                if self._current_lora is not None:
-                    await self.unload_lora()
-                await self.load_lora(first_lora)
-        
         if self.dry_run:
-            # Generate placeholder images for each in batch
-            results = []
-            for params, seed in zip(params_list, seeds):
-                result = await self._generate_dry_run(params, seed)
-                results.append(result)
-            return results
+            # Generate placeholder images concurrently
+            tasks = [
+                self._generate_dry_run(params, seed)
+                for params, seed in zip(params_list, seeds)
+            ]
+            return await asyncio.gather(*tasks)
         
-        # Run the synchronous batch generation in a thread pool
-        loop = asyncio.get_event_loop()
-        image_data_list = await loop.run_in_executor(
-            None,
-            lambda: self._generate_batch_sync(params_list, seeds),
+        # Use concurrent pool if available and VRAM is sufficient
+        use_concurrent = (
+            self._pool is not None 
+            and self._pool.is_loaded 
+            and self._pool.check_vram_available(min_free_gb=ZIMAGE_ACTIVATION_GB * 2)
         )
         
-        # Build results
-        results = []
-        for params, seed, image_data in zip(params_list, seeds, image_data_list):
-            results.append(ImageGenerationResult(
-                image_data=image_data,
-                width=params.width,
-                height=params.height,
-                seed=seed,
-            ))
+        if use_concurrent:
+            logger.info(f"Using concurrent pool ({self._pool.size} instances)")
+            results = await self._generate_concurrent(params_list, seeds)
+        else:
+            # Fallback to vectorized batch (single pipeline) or sequential
+            if self._pool is not None and not self._pool.check_vram_available():
+                logger.warning("Insufficient VRAM for concurrent generation, using sequential")
+            loop = asyncio.get_event_loop()
+            image_data_list = await loop.run_in_executor(
+                None,
+                lambda: self._generate_batch_sync(params_list, seeds),
+            )
+            results = []
+            for params, seed, image_data in zip(params_list, seeds, image_data_list):
+                results.append(ImageGenerationResult(
+                    image_data=image_data,
+                    width=params.width,
+                    height=params.height,
+                    seed=seed,
+                ))
         
         logger.info(f"Batch generation completed: {batch_size} images")
         return results
+    
+    async def _generate_concurrent(
+        self,
+        params_list: List[ImageGenerationParams],
+        seeds: List[int]
+    ) -> List[ImageGenerationResult]:
+        """Generate images concurrently using the instance pool.
+        
+        Each image is generated in parallel on a separate pipeline instance.
+        """
+        from app.services.zimage_pool import PooledZImageInstance
+        
+        async def generate_one(params: ImageGenerationParams, seed: int) -> ImageGenerationResult:
+            """Generate a single image using a pooled instance."""
+            instance = await self._pool.acquire()
+            try:
+                # Run generation in thread pool
+                loop = asyncio.get_event_loop()
+                image_data = await loop.run_in_executor(
+                    None,
+                    lambda: self._generate_with_instance(instance, params, seed)
+                )
+                return ImageGenerationResult(
+                    image_data=image_data,
+                    width=params.width,
+                    height=params.height,
+                    seed=seed,
+                )
+            finally:
+                await self._pool.release(instance)
+        
+        # Run all generations concurrently
+        tasks = [
+            generate_one(params, seed)
+            for params, seed in zip(params_list, seeds)
+        ]
+        return await asyncio.gather(*tasks)
+    
+    def _generate_with_instance(
+        self,
+        instance: Any,  # PooledZImageInstance
+        params: ImageGenerationParams,
+        seed: int
+    ) -> bytes:
+        """Generate a single image using a specific pipeline instance."""
+        import torch
+        import io
+        
+        pipeline = instance.pipeline
+        device = self.settings.zimage_device
+        dtype = torch.bfloat16 if self.settings.zimage_dtype == "bfloat16" else torch.float16
+        
+        # Calculate dimensions
+        target_width = params.width
+        target_height = params.height
+        gen_width = ((target_width + 31) // 32) * 32
+        gen_height = ((target_height + 31) // 32) * 32
+        
+        generator = torch.Generator(device).manual_seed(seed)
+        
+        # Use the instance's pipeline for generation
+        num_inference_steps = params.num_inference_steps or 8
+        
+        logger.info(
+            f"Generating at padded resolution",
+            extra={
+                "target": f"{target_width}x{target_height}",
+                "padded": f"{gen_width}x{gen_height}",
+                "instance_id": instance.instance_id,
+            },
+        )
+        
+        # Call pipeline
+        with torch.no_grad():
+            output = pipeline(
+                prompt=params.prompt,
+                height=gen_height,
+                width=gen_width,
+                num_inference_steps=num_inference_steps,
+                generator=generator,
+                guidance_scale=0.0,
+            )
+        
+        image = output.images[0]
+        
+        # Crop if needed
+        if gen_width != target_width or gen_height != target_height:
+            left = (gen_width - target_width) // 2
+            top = (gen_height - target_height) // 2
+            right = left + target_width
+            bottom = top + target_height
+            image = image.crop((left, top, right, bottom))
+        
+        # Convert to bytes
+        buffer = io.BytesIO()
+        image.save(buffer, format="PNG")
+        buffer.seek(0)
+        return buffer.getvalue()
 
     def _generate_batch_sync(
         self, 

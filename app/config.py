@@ -60,6 +60,9 @@ class InferenceConfig:
     ZIMAGE_COMPILE = False
     # Diffusers uses SDPA by default; options: "sdpa", "flash", "_flash_3"
     ZIMAGE_ATTENTION_BACKEND = "sdpa"
+    # Z-Image instance counts for concurrent pool (each instance ~8GB + 3GB activation)
+    ZIMAGE_MAX_INSTANCES_ALL = 2         # Conservative when sharing VRAM with LightX2V + LTX-2
+    ZIMAGE_MAX_INSTANCES_DEDICATED = 8   # Full utilization when Z-Image-only mode (96GB GPU)
     
     # LightX2V settings
     LIGHTX2V_ATTN_MODE = "torch_sdpa"
@@ -215,6 +218,16 @@ class Settings(BaseSettings):
         if self.zimage_dry_run_override is not None:
             return self.zimage_dry_run_override
         return self.mock_mode
+    
+    @property
+    def zimage_max_instances_all(self) -> int:
+        """Max Z-Image instances when in ALL mode (sharing VRAM)."""
+        return InferenceConfig.ZIMAGE_MAX_INSTANCES_ALL
+    
+    @property
+    def zimage_max_instances_dedicated(self) -> int:
+        """Max Z-Image instances when in dedicated IMAGE_GENERATION mode."""
+        return InferenceConfig.ZIMAGE_MAX_INSTANCES_DEDICATED
     
     # --- LightX2V ---
     @property

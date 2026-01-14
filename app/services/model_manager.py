@@ -308,21 +308,73 @@ class ModelManager:
     # --- Individual Model Load/Unload ---
 
     async def _load_zimage(self) -> None:
-        """Load Z-Image Turbo model."""
-        from app.services.zimage_generator import ZImageGenerator
+        """Load Z-Image Turbo model with concurrent instance pool.
         
-        if self._zimage_generator is None:
-            self._zimage_generator = ZImageGenerator(self._settings)
+        Instance count is determined by the current mode:
+        - IMAGE_GENERATION: More instances (8) since we have full VRAM
+        - ALL mode: Fewer instances (2) since sharing with other models
+        """
+        from app.services.zimage_generator import ZImageGenerator
+        from app.services.zimage_pool import ZImageInstancePool
+        
+        # Determine instance count based on target mode
+        if self._mode == VRAMLoadMode.IMAGE_GENERATION:
+            max_instances = self._settings.zimage_max_instances_dedicated
+            logger.info(f"Loading Z-Image in dedicated mode with {max_instances} instances")
+        else:
+            # ALL mode or any other - use conservative count
+            max_instances = self._settings.zimage_max_instances_all
+            logger.info(f"Loading Z-Image in shared mode with {max_instances} instances")
+        
+        # Always recreate generator to get correct instance count for the mode
+        if self._zimage_generator is not None and self._zimage_generator._loaded:
+            # Already loaded - check if we need to reload with different instance count
+            current_pool_size = (
+                self._zimage_generator._pool.size 
+                if self._zimage_generator._pool else 0
+            )
+            if current_pool_size == max_instances:
+                logger.info(f"Z-Image already loaded with {max_instances} instances, skipping")
+                return
+            else:
+                logger.info(f"Reloading Z-Image: {current_pool_size} -> {max_instances} instances")
+                await asyncio.to_thread(self._zimage_generator.unload_models)
+        
+        # Create new generator with the appropriate instance count
+        self._zimage_generator = ZImageGenerator(
+            self._settings,
+            max_instances=max_instances
+        )
         
         if not self._zimage_generator._loaded:
-            logger.info("Loading Z-Image Turbo models...")
-            await asyncio.to_thread(self._zimage_generator.load_models)
+            logger.info("Loading Z-Image Turbo models with concurrent pool...")
+            # Load the pool if max_instances > 1
+            if max_instances > 1 and not self._settings.zimage_dry_run:
+                # Create and load the pool
+                pool = ZImageInstancePool(
+                    self._settings,
+                    max_instances=max_instances,
+                    dry_run=self._settings.zimage_dry_run
+                )
+                await asyncio.to_thread(pool.load_all)
+                self._zimage_generator._pool = pool
+                self._zimage_generator.is_loaded = True
+            else:
+                # Single instance or dry-run mode
+                await asyncio.to_thread(self._zimage_generator.load_models)
 
     async def _unload_zimage(self) -> None:
-        """Unload Z-Image Turbo model."""
-        if self._zimage_generator and self._zimage_generator._loaded:
-            logger.info("Unloading Z-Image Turbo models...")
-            await asyncio.to_thread(self._zimage_generator.unload_models)
+        """Unload Z-Image Turbo model and pool."""
+        if self._zimage_generator:
+            # Unload pool if present
+            if self._zimage_generator._pool is not None:
+                logger.info("Unloading Z-Image instance pool...")
+                await asyncio.to_thread(self._zimage_generator._pool.unload_all)
+                self._zimage_generator._pool = None
+            # Unload single pipeline if present
+            if self._zimage_generator._loaded:
+                logger.info("Unloading Z-Image Turbo models...")
+                await asyncio.to_thread(self._zimage_generator.unload_models)
         self._force_gc()
 
     async def _load_lightx2v(self) -> None:
