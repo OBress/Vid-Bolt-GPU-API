@@ -97,7 +97,7 @@ class TestVRAMEstimator:
         # 80GB available, should allow many images
         max_batch = calculate_max_batch_size(1024, 1024, available_vram_gb=80.0)
         
-        assert max_batch >= 20  # Should allow max configured batch (20)
+        assert max_batch >= 24  # Should allow max configured batch (24)
         assert max_batch <= MAX_BATCH_SIZE_ZIMAGE  # Never exceed cap
     
     def test_calculate_max_batch_low_vram(self):
