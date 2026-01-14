@@ -74,7 +74,7 @@ class InferenceConfig:
     LIGHTX2V_TEXT_ENCODER_OFFLOAD = True
     # LightX2V instance counts per mode (each instance ~16GB VRAM)
     LIGHTX2V_MAX_INSTANCES_ALL = 1       # Conservative when sharing VRAM with Z-Image + LTX-2
-    LIGHTX2V_MAX_INSTANCES_DEDICATED = 5  # Full utilization when LightX2V-only mode
+    LIGHTX2V_MAX_INSTANCES_DEDICATED = 2  # Safe utilization (2x ~28GB = 56GB static)
     
     # LTX-2 settings (Optimized for Distilled Model)
     # Distilled model uses 8 predefined sigmas (Stage 1: 8 steps, Stage 2: 4 steps)
