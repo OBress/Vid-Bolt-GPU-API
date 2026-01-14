@@ -57,7 +57,7 @@ class InferenceConfig:
     MAX_CONCURRENT_VIDEO_GENERATIONS = 1  # LTX-2 + Stream-DiffVSR workflow
     
     # Z-Image settings (uses Diffusers ZImagePipeline)
-    ZIMAGE_COMPILE = True
+    ZIMAGE_COMPILE = False  # Disabled: torch.compile inductor fails with dynamic shapes
     # Diffusers uses SDPA by default; options: "sdpa", "flash", "_flash_3"
     ZIMAGE_ATTENTION_BACKEND = "sdpa"
     

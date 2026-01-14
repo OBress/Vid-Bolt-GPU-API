@@ -22,6 +22,11 @@ from typing import Any, Callable, Dict, List, Optional, Coroutine, Tuple
 from app.config import Settings, InferenceConfig
 from app.models.job import JobInfo, JobResult, JobStatus
 from app.models.webhook import WebhookPayload
+from app.models.internal import (
+    ImageGenerationResult,
+    ImageEditResult,
+    VideoGenerationResult,
+)
 from app.services.model_manager import VRAMLoadMode, JobType, ModelMode
 
 logger = logging.getLogger(__name__)
@@ -668,8 +673,68 @@ class JobManager:
             logger.warning(f"No webhook URL for job {job.job_id}")
             return
         
-        # Build payload
+        # Convert internal dataclass result to JobResult Pydantic model
+        job_result: Optional[JobResult] = None
         is_success = job.status == JobStatus.COMPLETED
+        
+        if is_success and job.result is not None:
+            raw_result = job.result
+            
+            if isinstance(raw_result, ImageGenerationResult):
+                job_result = JobResult(
+                    save_url=None,  # Set by upload step later
+                    generation_time=None,
+                    metadata={
+                        "width": raw_result.width,
+                        "height": raw_result.height,
+                        "seed": raw_result.seed,
+                        "image_size_bytes": len(raw_result.image_data) if raw_result.image_data else 0,
+                    }
+                )
+            elif isinstance(raw_result, ImageEditResult):
+                job_result = JobResult(
+                    save_url=None,
+                    generation_time=None,
+                    metadata={
+                        "width": raw_result.width,
+                        "height": raw_result.height,
+                        "original_width": raw_result.original_width,
+                        "original_height": raw_result.original_height,
+                        "seed": raw_result.seed,
+                        "image_size_bytes": len(raw_result.image_data) if raw_result.image_data else 0,
+                    }
+                )
+            elif isinstance(raw_result, VideoGenerationResult):
+                job_result = JobResult(
+                    save_url=None,
+                    generation_time=None,
+                    duration_seconds=raw_result.duration_seconds,
+                    has_audio=raw_result.has_audio,
+                    metadata={
+                        "width": raw_result.width,
+                        "height": raw_result.height,
+                        "frame_rate": raw_result.frame_rate,
+                        "seed": raw_result.seed,
+                        "video_size_bytes": len(raw_result.video_data) if raw_result.video_data else 0,
+                        "upscale_info": raw_result.upscale_info,
+                    }
+                )
+            elif isinstance(raw_result, JobResult):
+                # Already a JobResult, use directly
+                job_result = raw_result
+            else:
+                # Fallback: try to convert dict-like objects
+                logger.warning(f"Unknown result type {type(raw_result)}, attempting dict conversion")
+                try:
+                    if hasattr(raw_result, '__dict__'):
+                        job_result = JobResult(metadata=raw_result.__dict__)
+                    else:
+                        job_result = JobResult(metadata={"raw": str(raw_result)})
+                except Exception as e:
+                    logger.error(f"Failed to convert result: {e}")
+                    job_result = JobResult(metadata={"conversion_error": str(e)})
+        
+        # Build payload
         payload = WebhookPayload(
             event="generation.completed" if is_success else "generation.failed",
             job_id=job.job_id,
@@ -678,7 +743,7 @@ class JobManager:
             status="completed" if is_success else "failed",
             completed_at=job.completed_at or time.time(),
             generation_type=job._job_type.value if job._job_type else "unknown",
-            result=job.result if is_success else None,
+            result=job_result,
             error_message=job.error_message if not is_success else None,
             error_code=job.error_code if not is_success else None,
             retry_count=0,  # TBD: integrate with BatchManager retry count
