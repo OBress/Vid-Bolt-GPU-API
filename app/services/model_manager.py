@@ -123,11 +123,19 @@ class ModelManager:
         """Get the current mode status."""
         loaded_models = []
         
-        if self._zimage_generator and self._zimage_generator._loaded:
+        # Debug logging for status
+        z_loaded = self._zimage_generator and self._zimage_generator._loaded
+        lx2v_loaded = self._lightx2v_generator and self._lightx2v_generator._loaded
+        ltx2_loaded = self._ltx2_generator and self._ltx2_generator._loaded
+        
+        if self._mode == VRAMLoadMode.ALL and not (z_loaded or lx2v_loaded or ltx2_loaded):
+             logger.debug(f"Status check: Mode={self._mode}, Z-Img={z_loaded}, LightX2V={lx2v_loaded}, LTX2={ltx2_loaded}")
+        
+        if z_loaded:
             loaded_models.append("z-image-turbo")
-        if self._lightx2v_generator and self._lightx2v_generator._loaded:
+        if lx2v_loaded:
             loaded_models.append("qwen-image-edit-2511")
-        if self._ltx2_generator and self._ltx2_generator._loaded:
+        if ltx2_loaded:
             loaded_models.append("ltx-2-19b")
             
         return ModeStatus(

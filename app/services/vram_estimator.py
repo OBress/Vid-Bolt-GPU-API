@@ -25,7 +25,7 @@ VRAM_SAFETY_MARGIN_GB = 4.0  # Reserve for OS, display, fragmentation
 MIN_FREE_VRAM_GB = 2.0  # Minimum free VRAM to attempt any generation
 
 # Batch limits (absolute caps regardless of VRAM)
-MAX_BATCH_SIZE_ZIMAGE = 8  # Safe for 1920x1080 (Matches pool size of 8)
+MAX_BATCH_SIZE_ZIMAGE = 8  # Safe for 1920x1080 (Pool size 4 = 2 rounds of concurrent gen)
 
 # =============================================================================
 # LightX2V (Qwen-Image-Edit-2511) VRAM Estimation Constants

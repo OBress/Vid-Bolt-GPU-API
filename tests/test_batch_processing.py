@@ -97,7 +97,7 @@ class TestVRAMEstimator:
         # 80GB available, should allow many images
         max_batch = calculate_max_batch_size(1024, 1024, available_vram_gb=80.0)
         
-        assert max_batch >= 10  # Should allow decent batch
+        assert max_batch >= 8  # Should allow max configured batch (8)
         assert max_batch <= MAX_BATCH_SIZE_ZIMAGE  # Never exceed cap
     
     def test_calculate_max_batch_low_vram(self):
@@ -682,7 +682,9 @@ class TestLightX2VVRAMEstimator:
         lightx2v_vram = estimate_lightx2v_vram_per_image(1024, 1024)
         zimage_vram = estimate_zimage_vram_per_image(1024, 1024)
         
-        assert lightx2v_vram > zimage_vram
+        # Z-Image now has conservative estimation (4.0GB/MP) to prevent OOM, 
+        # which is higher than LightX2V (2.5GB/MP) despite LightX2V's complexity.
+        assert lightx2v_vram < zimage_vram
     
     def test_calculate_lightx2v_max_batch_high_vram(self):
         """Test LightX2V batch size with high available VRAM."""
