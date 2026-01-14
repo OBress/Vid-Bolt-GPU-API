@@ -292,7 +292,8 @@ class ModelManager:
         logger.info("Cleared GPU cache before loading models")
         
         try:
-            await self._load_zimage()
+            # Pass ALL mode explicitly so Z-Image uses 1 instance, not 8
+            await self._load_zimage(target_mode=VRAMLoadMode.ALL)
             await self._load_lightx2v()
             await self._load_ltx2()
             
@@ -307,24 +308,30 @@ class ModelManager:
 
     # --- Individual Model Load/Unload ---
 
-    async def _load_zimage(self) -> None:
+    async def _load_zimage(self, target_mode: VRAMLoadMode = None) -> None:
         """Load Z-Image Turbo model with concurrent instance pool.
         
-        Instance count is determined by the current mode:
+        Instance count is determined by the target mode:
         - IMAGE_GENERATION: More instances (8) since we have full VRAM
-        - ALL mode: Fewer instances (2) since sharing with other models
+        - ALL mode: Single instance (1) since sharing with other models
+        
+        Args:
+            target_mode: The mode being switched to (defaults to current mode)
         """
         from app.services.zimage_generator import ZImageGenerator
         from app.services.zimage_pool import ZImageInstancePool
         
+        # Use target_mode if provided, otherwise use current mode
+        effective_mode = target_mode if target_mode is not None else self._mode
+        
         # Determine instance count based on target mode
-        if self._mode == VRAMLoadMode.IMAGE_GENERATION:
+        if effective_mode == VRAMLoadMode.IMAGE_GENERATION:
             max_instances = self._settings.zimage_max_instances_dedicated
             logger.info(f"Loading Z-Image in dedicated mode with {max_instances} instances")
         else:
-            # ALL mode or any other - use conservative count
+            # ALL mode or any other - use single instance
             max_instances = self._settings.zimage_max_instances_all
-            logger.info(f"Loading Z-Image in shared mode with {max_instances} instances")
+            logger.info(f"Loading Z-Image in shared mode with {max_instances} instance(s)")
         
         # Always recreate generator to get correct instance count for the mode
         if self._zimage_generator is not None and self._zimage_generator._loaded:

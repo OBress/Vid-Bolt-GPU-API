@@ -61,7 +61,7 @@ class InferenceConfig:
     # Diffusers uses SDPA by default; options: "sdpa", "flash", "_flash_3"
     ZIMAGE_ATTENTION_BACKEND = "sdpa"
     # Z-Image instance counts for concurrent pool (each instance ~8GB + 3GB activation)
-    ZIMAGE_MAX_INSTANCES_ALL = 2         # Conservative when sharing VRAM with LightX2V + LTX-2
+    ZIMAGE_MAX_INSTANCES_ALL = 1         # Single instance when sharing VRAM with LightX2V + LTX-2
     ZIMAGE_MAX_INSTANCES_DEDICATED = 8   # Full utilization when Z-Image-only mode (96GB GPU)
     
     # LightX2V settings
