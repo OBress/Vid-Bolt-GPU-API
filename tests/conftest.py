@@ -95,7 +95,7 @@ def sample_job_id() -> str:
     return "550e8400-e29b-41d4-a716-446655440000"
 
 
-@pytest.fixture
+@pytest.fixture(autouse=True)
 async def mock_job_manager() -> Generator[MagicMock, None, None]:
     """Create a fresh JobManager for each test."""
     from app.services.job_manager import JobManager
