@@ -136,6 +136,15 @@ class LightX2VInstancePool:
         """Load actual LightX2V pipelines."""
         from pathlib import Path
         
+        # FIX: Explicitly set AI_DEVICE to cuda to prevent meta-tensor initialization issues
+        # This is critical because the library defaults to lazy loading (meta device) if not set.
+        try:
+            import lightx2v_platform.base.global_var
+            lightx2v_platform.base.global_var.AI_DEVICE = "cuda"
+            logger.info("Set LightX2V AI_DEVICE to 'cuda'")
+        except ImportError:
+            logger.warning("Could not import lightx2v_platform to set AI_DEVICE")
+
         try:
             from lightx2v import LightX2VPipeline
         except ImportError as e:
