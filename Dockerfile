@@ -132,6 +132,17 @@ ENV MOCK_MODE=false
 ENV LOG_LEVEL=INFO
 
 # =============================================================================
+# Copy LightX2V source for FP8 converter tool
+# =============================================================================
+COPY LightX2V /app/LightX2V
+
+# =============================================================================
+# Entrypoint Script (handles FP8 conversion on first startup)
+# =============================================================================
+COPY scripts/docker-entrypoint.sh /app/docker-entrypoint.sh
+RUN chmod +x /app/docker-entrypoint.sh
+
+# =============================================================================
 # Expose & Run
 # =============================================================================
 EXPOSE 8000
@@ -140,5 +151,8 @@ EXPOSE 8000
 HEALTHCHECK --interval=30s --timeout=10s --start-period=60s --retries=3 \
     CMD curl -f http://localhost:8000/health || exit 1
 
-# Default command
+# Entrypoint handles FP8 conversion check
+ENTRYPOINT ["/app/docker-entrypoint.sh"]
+
+# Default command (passed to entrypoint)
 CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000", "--workers", "1"]
