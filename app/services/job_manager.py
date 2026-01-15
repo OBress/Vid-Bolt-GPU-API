@@ -549,9 +549,89 @@ class JobManager:
                     # Send failure webhook
                     await self._send_webhook(job)
                 else:
+                    # Success
+                    try:
+                        # Upload content to R2
+                        storage = job._kwargs.get("storage")
+                        save_url = job._kwargs.get("save_url")
+                        
+                        if storage and save_url:
+                            # Determine content to upload and mime type
+                            data = None
+                            content_type = "application/octet-stream"
+                            
+                            if job_type == JobType.IMAGE_GENERATION and hasattr(result, 'image_data'):
+                                data = result.image_data
+                                content_type = "image/png"
+                            elif job_type == JobType.IMAGE_EDITING and hasattr(result, 'image_data'):
+                                data = result.image_data
+                                content_type = "image/png"
+                            elif job_type == JobType.VIDEO_GENERATION and hasattr(result, 'video_data'):
+                                data = result.video_data
+                                content_type = "video/mp4"
+
+                            if data:
+                                # Upload
+                                final_url = await storage.upload_to_url(
+                                    data=data,
+                                    url=save_url,
+                                    content_type=content_type,
+                                )
+                                
+                                # Create proper JobResult with URL
+                                if job_type == JobType.IMAGE_GENERATION:
+                                    job.result = JobResult(
+                                        save_url=final_url,
+                                        generation_time=getattr(result, 'generation_time', 0.0),
+                                        metadata={
+                                            "seed": result.seed,
+                                            "width": result.width,
+                                            "height": result.height,
+                                            "image_size_bytes": len(data),
+                                        }
+                                    )
+                                elif job_type == JobType.IMAGE_EDITING:
+                                    job.result = JobResult(
+                                        save_url=final_url,
+                                        generation_time=getattr(result, 'generation_time', 0.0),
+                                        metadata={
+                                            "width": result.width,
+                                            "height": result.height,
+                                            "original_width": result.original_width,
+                                            "original_height": result.original_height,
+                                            "seed": result.seed,
+                                            "image_size_bytes": len(data),
+                                        }
+                                    )
+                                elif job_type == JobType.VIDEO_GENERATION:
+                                    job.result = JobResult(
+                                        save_url=final_url,
+                                        generation_time=getattr(result, 'generation_time', 0.0),
+                                        duration_seconds=result.duration_seconds,
+                                        has_audio=result.has_audio,
+                                        metadata={
+                                            "width": result.width,
+                                            "height": result.height,
+                                            "frame_rate": result.frame_rate,
+                                            "seed": result.seed,
+                                            "video_size_bytes": len(data),
+                                            "upscale_info": result.upscale_info,
+                                        }
+                                    )
+                            else:
+                                logger.warning(f"No data to upload for job {job.job_id}")
+                                job.result = result # Fallback
+                        else:
+                            logger.warning(f"Missing storage or save_url for job {job.job_id} in batch")
+                            job.result = result # Fallback to raw result (no URL)
+                            
+                    except Exception as e:
+                        logger.error(f"Failed to upload batch result for {job.job_id}: {e}")
+                        # Don't fail the whole job, but result will lack URL
+                        job.result = result 
+                        
                     job.status = JobStatus.COMPLETED
                     job.completed_at = time.time()
-                    job.result = result
                     job.progress_percent = 100
                     job.progress_stage = "completed"
                     # Send success webhook
