@@ -731,24 +731,51 @@ class ZImageGenerator(ImageGenerator):
         # --- 5. Decode Latents ---
         
         shift_factor = getattr(vae.config, "shift_factor", 0.0) or 0.0
-        latents = (latents.to(vae.dtype) / vae.config.scaling_factor) + shift_factor
+        latents_scaled = (latents.to(vae.dtype) / vae.config.scaling_factor) + shift_factor
+        
+        # Delete original latents BEFORE decode to free memory
+        del latents
         
         # Decode
-        image = vae.decode(latents, return_dict=False)[0]
+        decoded_image = vae.decode(latents_scaled, return_dict=False)[0]
         
-        # Process to PIL
-        image = (image / 2 + 0.5).clamp(0, 1)
-        image = image.cpu().permute(0, 2, 3, 1).float().numpy()
-        image = (image * 255).round().astype("uint8")
+        # Delete scaled latents immediately after decode
+        del latents_scaled
         
-        # CRITICAL: Cleanup GPU tensors before returning
-        del latents, latent_model_input, latent_model_input_list
-        del prompt_embeds, prompt_embeds_list, text_input_ids, prompt_masks
-        del noise_pred, model_out_list
+        # Process to PIL - move to CPU immediately
+        decoded_image = (decoded_image / 2 + 0.5).clamp(0, 1)
+        image_cpu = decoded_image.cpu().permute(0, 2, 3, 1).float().numpy()
         
+        # Delete GPU tensor immediately after CPU transfer
+        del decoded_image
+        
+        # CRITICAL: Force cleanup NOW - tensors are deleted, release memory
         import gc
         gc.collect()
         torch.cuda.empty_cache()
+        
+        # Log VRAM for debugging
+        allocated_gb = torch.cuda.memory_allocated() / (1024**3)
+        logger.info(f"VRAM after single-image decode cleanup: {allocated_gb:.2f}GB allocated")
+        
+        image = (image_cpu * 255).round().astype("uint8")
+        del image_cpu
+        
+        # Cleanup remaining denoising loop tensors
+        try:
+            del latent_model_input, latent_model_input_list
+            del prompt_embeds, prompt_embeds_list, text_input_ids, prompt_masks
+            del noise_pred, model_out_list
+            del timestep, timesteps
+        except NameError:
+            pass
+        
+        gc.collect()
+        torch.cuda.empty_cache()
+        
+        # Final VRAM check
+        final_gb = torch.cuda.memory_allocated() / (1024**3)
+        logger.info(f"VRAM after single-image full cleanup: {final_gb:.2f}GB (should be ~15-20GB)")
         
         from PIL import Image as PILImage
         return PILImage.fromarray(image[0])
@@ -959,22 +986,41 @@ class ZImageGenerator(ImageGenerator):
         # --- 5. Decode Latents ---
         
         shift_factor = getattr(vae.config, "shift_factor", 0.0) or 0.0
-        latents = (latents.to(vae.dtype) / vae.config.scaling_factor) + shift_factor
+        latents_scaled = (latents.to(vae.dtype) / vae.config.scaling_factor) + shift_factor
+        
+        # Delete original latents BEFORE decode to free memory
+        del latents
         
         # Decode
-        image = vae.decode(latents, return_dict=False)[0]
+        decoded_image = vae.decode(latents_scaled, return_dict=False)[0]
         
-        # Process to PIL
-        image = (image / 2 + 0.5).clamp(0, 1)
-        image = image.cpu().permute(0, 2, 3, 1).float().numpy()
-        image = (image * 255).round().astype("uint8")
+        # Delete scaled latents immediately after decode
+        del latents_scaled
         
-        # CRITICAL: Cleanup GPU tensors before returning
-        del latents, latent_model_input, latent_model_input_list
-        del prompt_embeds, prompt_embeds_list, text_input_ids, prompt_masks
-        del noise_pred, model_out_list
+        # Process to PIL - move to CPU immediately
+        decoded_image = (decoded_image / 2 + 0.5).clamp(0, 1)
+        image_cpu = decoded_image.cpu().permute(0, 2, 3, 1).float().numpy()
         
+        # Delete GPU tensor immediately after CPU transfer
+        del decoded_image
+        
+        # CRITICAL: Force cleanup NOW
         import gc
+        gc.collect()
+        torch.cuda.empty_cache()
+        
+        image = (image_cpu * 255).round().astype("uint8")
+        del image_cpu
+        
+        # Cleanup remaining denoising loop tensors
+        try:
+            del latent_model_input, latent_model_input_list
+            del prompt_embeds, prompt_embeds_list, text_input_ids, prompt_masks
+            del noise_pred, model_out_list
+            del timestep, timesteps
+        except NameError:
+            pass
+        
         gc.collect()
         torch.cuda.empty_cache()
         
