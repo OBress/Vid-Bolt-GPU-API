@@ -106,9 +106,10 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         model_manager = ModelManager(settings)
         set_model_manager_instance(model_manager)
         
-        # Static Loading: Load ALL models at startup
-        logger.info("Loading ALL models for static VRAM usage (Instant Switching)...")
-        await model_manager.load_all_models()
+        # Load image generation mode by default (can switch dynamically via /mode endpoints)
+        from app.services.model_manager import VRAMLoadMode
+        logger.info("Loading IMAGE_GENERATION mode (Z-Image Turbo)...")
+        await model_manager.set_vram_mode(VRAMLoadMode.IMAGE_GENERATION)
         
         logger.info(f"ModelManager initialized in {settings.default_model_mode} mode")
 

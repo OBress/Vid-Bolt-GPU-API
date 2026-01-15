@@ -78,12 +78,16 @@ After both parts complete, you should see your GPU in both:
 git clone https://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@github.com/OBress/Vid-Bolt-GPU-API.git
 
 cd Vid-Bolt-GPU-API
+
+# shouldn't need this anymore cause models are in repo but if not
+
 make setup-repos
 
 cp .env.example .env
 nano .env
 
 ## Part 4: build & run
+
 docker system prune
 docker compose build --no-cache
 docker compose up -d
