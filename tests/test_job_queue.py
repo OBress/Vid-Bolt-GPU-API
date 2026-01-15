@@ -146,7 +146,7 @@ async def test_job_execution(job_manager, mock_model_manager):
     # Check internal job state
     # job.status might be Processing or Completed depending on how we mocked storage.
     # The key is checking if generation happened.
-    mock_task.assert_called()
+    mock_model_manager.get_image_generator.assert_called()
 
 
 # -----------------------------------------------------------------------------

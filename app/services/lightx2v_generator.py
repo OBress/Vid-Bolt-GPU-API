@@ -28,11 +28,6 @@ from app.services.lightx2v_pool import LightX2VInstancePool, PooledInstance
 logger = logging.getLogger(__name__)
 
 
-@dataclass
-class LightX2VComponents:
-    """Container for LightX2V pipeline."""
-    
-    pipeline: Any  # LightX2VPipeline instance
 
 
 class LightX2VImageEditGenerator(ImageEditor):
@@ -59,8 +54,6 @@ class LightX2VImageEditGenerator(ImageEditor):
         self.settings = settings
         self._max_instances = max_instances
         self._pool: Optional[LightX2VInstancePool] = None
-        # Keep legacy components for single-image fast path
-        self.components: Optional[LightX2VComponents] = None
         self.is_loaded = False
         self.dry_run = settings.lightx2v_dry_run
         self._temp_dir: Optional[tempfile.TemporaryDirectory] = None
@@ -167,21 +160,27 @@ class LightX2VImageEditGenerator(ImageEditor):
             # Return a placeholder image for dry-run testing
             return await self._edit_dry_run(params, seed)
 
-        # Run the synchronous generation in a thread pool
-        loop = asyncio.get_event_loop()
-        image_data, orig_w, orig_h, out_w, out_h = await loop.run_in_executor(
-            None,
-            lambda: self._edit_sync(params, seed),
-        )
+        # Acquire instance from pool (blocks until one is available)
+        instance = await self._pool.acquire()
+        try:
+            # Run the synchronous generation in a thread pool using the acquired instance
+            loop = asyncio.get_event_loop()
+            image_data, orig_w, orig_h, out_w, out_h = await loop.run_in_executor(
+                None,
+                lambda: self._edit_with_instance(instance, params, seed),
+            )
 
-        return ImageEditResult(
-            image_data=image_data,
-            original_width=orig_w,
-            original_height=orig_h,
-            width=out_w,
-            height=out_h,
-            seed=seed,
-        )
+            return ImageEditResult(
+                image_data=image_data,
+                original_width=orig_w,
+                original_height=orig_h,
+                width=out_w,
+                height=out_h,
+                seed=seed,
+            )
+        finally:
+            # Always release the instance back to the pool
+            await self._pool.release(instance)
 
     async def edit_batch(
         self, 
@@ -303,73 +302,6 @@ class LightX2VImageEditGenerator(ImageEditor):
         
         return list(results)
 
-    def _edit_sync(
-        self, params: ImageEditParams, seed: int
-    ) -> tuple[bytes, int, int, int, int]:
-        """Synchronous image editing (runs in thread pool).
-        
-        Args:
-            params: Edit parameters
-            seed: Random seed for generation
-            
-        Returns:
-            Tuple of (image_bytes, orig_width, orig_height, output_width, output_height)
-        """
-        # Get original image dimensions
-        input_image = Image.open(io.BytesIO(params.input_image_data))
-        orig_width, orig_height = input_image.size
-        
-        # Cap dimensions at 2048x2048 (preserve aspect ratio)
-        max_dim = 2048
-        target_width, target_height = orig_width, orig_height
-        if orig_width > max_dim or orig_height > max_dim:
-            scale = min(max_dim / orig_width, max_dim / orig_height)
-            target_width = int(orig_width * scale)
-            target_height = int(orig_height * scale)
-            logger.info(f"Capping resolution from {orig_width}x{orig_height} to {target_width}x{target_height}")
-
-        # Save input image to temp file (LightX2V expects file paths)
-        assert self._temp_dir is not None
-        input_path = Path(self._temp_dir.name) / f"{params.job_id}_input.png"
-        output_path = Path(self._temp_dir.name) / f"{params.job_id}_output.png"
-        
-        input_image.save(input_path, format="PNG")
-
-        # Run inference
-        import torch
-        with torch.inference_mode():
-            self.components.pipeline.generate(
-                seed=seed,
-                image_path=str(input_path),
-                prompt=params.prompt,
-                negative_prompt="",
-                save_result_path=str(output_path),
-            )
-
-        # Load output image
-        output_image = Image.open(output_path)
-        model_out_w, model_out_h = output_image.size
-        
-        # Resize output to match target dimensions (original or capped)
-        if output_image.size != (target_width, target_height):
-            logger.info(f"Resizing output from {model_out_w}x{model_out_h} to {target_width}x{target_height}")
-            output_image = output_image.resize(
-                (target_width, target_height),
-                Image.Resampling.LANCZOS
-            )
-
-        buffer = io.BytesIO()
-        output_image.save(buffer, format="PNG")
-        buffer.seek(0)
-
-        # Clean up temp files
-        try:
-            input_path.unlink()
-            output_path.unlink()
-        except Exception as e:
-            logger.warning(f"Failed to clean up temp files: {e}")
-
-        return buffer.getvalue(), orig_width, orig_height, target_width, target_height
 
     def _edit_with_instance(
         self, 
@@ -550,26 +482,6 @@ class LightX2VImageEditGenerator(ImageEditor):
         if self._pool is not None:
             self._pool.unload_all()
             self._pool = None
-        
-        # Legacy components cleanup (if any)
-        if self.components is not None:
-            import gc
-            try:
-                import torch
-                
-                if hasattr(self.components, 'pipeline') and self.components.pipeline is not None:
-                    del self.components.pipeline
-                
-                self.components = None
-                
-                gc.collect()
-                if torch.cuda.is_available():
-                    torch.cuda.empty_cache()
-                    torch.cuda.synchronize()
-                    
-            except ImportError:
-                self.components = None
-                gc.collect()
         
         self.is_loaded = False
         logger.info("LightX2V models unloaded successfully")

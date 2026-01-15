@@ -77,7 +77,7 @@ class TestBatchModels:
             BatchImageGenerateItem(item_id=f"item-{i}", prompt=f"Test {i}", save_url=f"https://example.com/{i}.png")
             for i in range(500)
         ]
-        request = BatchImageGenerateRequest(batch_id="test-batch", items=items, webhook_url="http://webhook.test")
+        request = BatchImageGenerateRequest(batch_id="test-batch", items=items)
         assert len(request.items) == 500
     
     def test_batch_request_max_items_video(self):
@@ -94,7 +94,7 @@ class TestBatchModels:
             )
             for i in range(100)
         ]
-        request = BatchVideoGenerateRequest(batch_id="test-batch", items=items, webhook_url="http://webhook.test")
+        request = BatchVideoGenerateRequest(batch_id="test-batch", items=items)
         assert len(request.items) == 100
     
     def test_batch_info_status_aggregation(self):
@@ -316,7 +316,7 @@ class TestBatchEndpoints:
             headers=api_key_headers,
             json={
                 "batch_id": batch_id,
-                "items": [{"item_id": "del", "prompt": "Test", "save_url": "https://example.com/1.png"}],
+                "items": [{"prompt": "Test", "save_url": "https://example.com/1.png"}],
                 "webhook_url": "http://webhook.test"
             }
         )

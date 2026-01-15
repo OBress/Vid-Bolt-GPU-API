@@ -759,11 +759,22 @@ class JobManager:
                 allocated = torch.cuda.memory_allocated() / (1024**3)
                 reserved = torch.cuda.memory_reserved() / (1024**3)
                 
-                # Model weights should be ~15-20GB. If higher, something's leaking.
-                if allocated > 25:
+                # Determine expected usage based on mode
+                expected_limit = 25.0  # Default (Z-Image)
+                if self._model_manager:
+                    mode = self._model_manager.current_mode
+                    if mode == VRAMLoadMode.IMAGE_EDITING:
+                        expected_limit = 45.0  # 5 instances * ~7-8GB
+                    elif mode == VRAMLoadMode.VIDEO_GENERATION:
+                        expected_limit = 35.0  # LTX-2
+                    elif mode == VRAMLoadMode.ALL:
+                        expected_limit = 60.0  # Everything loaded
+
+                # Model weights should be within expected limit. If higher, something's leaking.
+                if allocated > expected_limit:
                     logger.warning(
                         f"VRAM cleanup incomplete: {allocated:.2f}GB allocated "
-                        f"(expected ~15-20GB). Forcing additional GC cycle."
+                        f"(expected ~{expected_limit}GB). Forcing additional GC cycle."
                     )
                     # Force another GC cycle
                     gc.collect()
@@ -772,10 +783,10 @@ class JobManager:
                     
                     # Check again
                     allocated = torch.cuda.memory_allocated() / (1024**3)
-                    if allocated > 25:
+                    if allocated > expected_limit:
                         logger.error(
                             f"VRAM LEAK DETECTED: {allocated:.2f}GB still allocated after cleanup! "
-                            f"Next job may OOM."
+                            f"(Limit: {expected_limit}GB). Next job may OOM."
                         )
                 
                 logger.debug(f"GPU cleanup complete: {allocated:.2f}GB allocated, {reserved:.2f}GB reserved")
