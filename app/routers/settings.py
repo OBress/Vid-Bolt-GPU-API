@@ -19,15 +19,15 @@ class VRAMModeResponse(BaseModel):
 
 class VRAMModeRequest(BaseModel):
     """Request model for setting VRAM mode."""
-    mode: Literal["image_generation", "image_editing", "video_generation", "all"]
+    mode: Literal["image_generation", "image_editing", "video_generation"]
 
 
 # Mode descriptions
 MODE_DESCRIPTIONS = {
-    VRAMLoadMode.IMAGE_GENERATION: "Image Generation - Z-Image Turbo only (~8GB VRAM)",
-    VRAMLoadMode.IMAGE_EDITING: "Image Editing - LightX2V only (~12GB VRAM)",
-    VRAMLoadMode.VIDEO_GENERATION: "Video Generation - LTX-2 only (~20GB VRAM)",
-    VRAMLoadMode.ALL: "All Models - All generators loaded (~40GB+ VRAM)",
+    VRAMLoadMode.IMAGE_GENERATION: "Image Generation - Z-Image Turbo only (~16GB VRAM)",
+    VRAMLoadMode.IMAGE_EDITING: "Image Editing - LightX2V only (~40GB VRAM)",
+    VRAMLoadMode.VIDEO_GENERATION: "Video Generation - LTX-2 DistilledPipeline only (~40GB VRAM)",
+    VRAMLoadMode.ALL: "All Models - Disabled (requires ~100GB+ VRAM)",
 }
 
 
@@ -39,10 +39,9 @@ async def get_vram_mode(
     """Get the current VRAM loading mode.
     
     Available modes:
-    - **image_generation**: Z-Image Turbo only
-    - **image_editing**: LightX2V (Qwen-Image-Edit) only
-    - **video_generation**: LTX-2 only
-    - **all**: All models loaded simultaneously
+    - **image_generation**: Z-Image Turbo only (~16GB)
+    - **image_editing**: LightX2V (Qwen-Image-Edit) only (~40GB)
+    - **video_generation**: LTX-2 DistilledPipeline (~40GB, supports start + optional end frame)
     """
     mode = model_manager.vram_mode
     description = MODE_DESCRIPTIONS.get(mode, f"Unknown mode: {mode.value}")
@@ -62,10 +61,12 @@ async def set_vram_mode(
     """Set the VRAM loading mode.
     
     Each mode loads only specific models:
-    - **image_generation**: Unloads all, loads Z-Image Turbo
-    - **image_editing**: Unloads all, loads LightX2V
-    - **video_generation**: Unloads all, loads LTX-2
-    - **all**: Loads all models (requires 40GB+ VRAM)
+    - **image_generation**: Unloads all, loads Z-Image Turbo (~16GB)
+    - **image_editing**: Unloads all, loads LightX2V (~40GB)
+    - **video_generation**: Unloads all, loads LTX-2 DistilledPipeline (~40GB)
+    
+    Note: ALL mode is disabled (requires ~100GB VRAM). Video generation supports
+    1 start frame with optional end frame (1-2 keyframes total).
     
     Raises:
         503 Service Unavailable: If system is currently busy with a job

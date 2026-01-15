@@ -54,7 +54,7 @@ class InferenceConfig:
     
     # Concurrency limits
     MAX_CONCURRENT_IMAGE_GENERATIONS = 2  # Across Z-Image + Qwen-Image-Edit
-    MAX_CONCURRENT_VIDEO_GENERATIONS = 1  # LTX-2 + Stream-DiffVSR workflow
+    MAX_CONCURRENT_VIDEO_GENERATIONS = 1  # LTX-2 in ALL mode (conservative)
     
     # Z-Image settings (uses Diffusers ZImagePipeline)
     ZIMAGE_COMPILE = False  # Disabled: torch.compile inductor fails with dynamic shapes
@@ -84,7 +84,7 @@ class InferenceConfig:
     # LTX-2 Concurrent Generation Settings
     # Enables parallel video generation using shared pipeline (stateless architecture)
     LTX2_CONCURRENT_ENABLED = True  # Enable concurrent video generation
-    LTX2_MAX_CONCURRENT_VIDEOS = 4  # Absolute cap on concurrent videos
+    LTX2_MAX_CONCURRENT_VIDEOS = 3  # Max concurrent in VIDEO_GENERATION mode (FP8)
     LTX2_CONCURRENT_VRAM_BUDGET_GB = 72.0  # VRAM available for activations (after base model)
     
     # Job timeouts (seconds)

@@ -61,11 +61,12 @@ class LTX2Components:
 class LTX2Generator(VideoGenerator):
     """LTX-2 video generation service.
 
-    This service handles loading two LTX-2 pipelines:
-    - DistilledPipeline: For fast I2V (single start frame) generation
-    - KeyframeInterpolationPipeline: For multi-keyframe interpolation
+    Uses the DistilledPipeline for Image-to-Video generation:
+    - Fast 8+4 step inference schedule
+    - Supports 1 start frame with optional end frame (1-2 keyframes)
+    - Exact keyframe preservation via latent replacement
+    - ~40GB VRAM usage
     
-    Both use the 19b-distilled checkpoint with FP8 for optimal performance.
     The pipeline generates synchronized audio alongside video.
     """
 
@@ -146,40 +147,14 @@ class LTX2Generator(VideoGenerator):
                 "pip install -e path/to/LTX-2/packages/ltx-pipelines"
             ) from e
 
-        # Validate distilled LoRA path for KeyframeInterpolationPipeline
-        distilled_lora_path = Path(self.settings.ltx2_distilled_lora_path)
-        if not distilled_lora_path.exists():
-            raise FileNotFoundError(
-                f"LTX-2 distilled LoRA not found at {distilled_lora_path.absolute()}. "
-                f"Download with: huggingface-cli download Lightricks/LTX-2 "
-                f"ltx-2-19b-distilled-lora-384.safetensors --local-dir {distilled_lora_path.parent}"
-            )
-
-        # Initialize pipelines
+        # Initialize DistilledPipeline (only pipeline we use)
         device = torch.device(self.settings.ltx2_device)
         
-        # DistilledPipeline for I2V (single keyframe, fastest)
-        logger.info("Loading DistilledPipeline for I2V generation...")
+        # DistilledPipeline for I2V generation
+        # Supports 1 start frame with optional end frame (1-2 keyframes total)
+        logger.info("Loading DistilledPipeline for I2V generation (~40GB VRAM)...")
         distilled_pipeline = DistilledPipeline(
             checkpoint_path=str(checkpoint_path.absolute()),
-            spatial_upsampler_path=str(spatial_upsampler_path.absolute()),
-            gemma_root=str(gemma_root.absolute()),
-            loras=[],  # No extra LoRAs
-            device=device,
-            fp8transformer=self.settings.ltx2_fp8_enabled,
-        )
-        
-        # KeyframeInterpolationPipeline for multi-keyframe (start + end frames)
-        # Uses guiding latents for smooth transitions between keyframes
-        logger.info("Loading KeyframeInterpolationPipeline for keyframe interpolation...")
-        distilled_lora_spec = LoraPathStrengthAndSDOps(
-            path=str(distilled_lora_path.absolute()),
-            strength=1.0,
-            sd_ops=None,
-        )
-        keyframe_pipeline = KeyframeInterpolationPipeline(
-            checkpoint_path=str(checkpoint_path.absolute()),
-            distilled_lora=[distilled_lora_spec],
             spatial_upsampler_path=str(spatial_upsampler_path.absolute()),
             gemma_root=str(gemma_root.absolute()),
             loras=[],  # No extra LoRAs
@@ -189,7 +164,7 @@ class LTX2Generator(VideoGenerator):
 
         self.components = LTX2Components(
             distilled_pipeline=distilled_pipeline,
-            keyframe_pipeline=keyframe_pipeline,
+            keyframe_pipeline=None,  # Not used - we only support 1-2 keyframes
         )
         self.is_loaded = True
 
@@ -230,11 +205,12 @@ class LTX2Generator(VideoGenerator):
             warmup_path = Path(self._temp_dir.name) / "warmup_frame.png"
             warmup_image.save(warmup_path, format="PNG")
             
-            # Run warmup with DistilledPipeline (fastest)
+            # Run warmup with DistilledPipeline
             # This forces all model weights to GPU and compiles CUDA kernels
             with torch.inference_mode():
                 tiling_config = TilingConfig.default()
                 
+                # Warmup DistilledPipeline
                 video_chunks, audio = self.components.distilled_pipeline(
                     prompt="warmup",
                     seed=42,
@@ -281,39 +257,22 @@ class LTX2Generator(VideoGenerator):
         import torch
         
         distilled = self.components.distilled_pipeline
-        keyframe = self.components.keyframe_pipeline
         
-        # Cache text encoders by calling once (triggers full load if not done yet)
-        logger.info("Caching text encoders for thread-safe concurrent access...")
+        # Cache text encoder by calling once (triggers full load if not done yet)
+        logger.info("Caching text encoder for thread-safe concurrent access...")
         
         try:
-            # Load and cache text encoder for DistilledPipeline
             with torch.inference_mode():
                 distilled_text_encoder = distilled.model_ledger.text_encoder()
             
             # Patch the method to return cached instance
             distilled.model_ledger._cached_text_encoder = distilled_text_encoder
-            original_distilled_text_encoder = distilled.model_ledger.text_encoder
             
             def cached_distilled_text_encoder():
                 return distilled.model_ledger._cached_text_encoder
             
             distilled.model_ledger.text_encoder = cached_distilled_text_encoder
             logger.info("  Patched DistilledPipeline.model_ledger.text_encoder() to use cached instance")
-            
-            # Load and cache text encoder for KeyframeInterpolationPipeline
-            with torch.inference_mode():
-                keyframe_text_encoder = keyframe.model_ledger.text_encoder()
-            
-            # Patch the method to return cached instance
-            keyframe.model_ledger._cached_text_encoder = keyframe_text_encoder
-            
-            def cached_keyframe_text_encoder():
-                return keyframe.model_ledger._cached_text_encoder
-            
-            keyframe.model_ledger.text_encoder = cached_keyframe_text_encoder
-            logger.info("  Patched KeyframeInterpolationPipeline.model_ledger.text_encoder() to use cached instance")
-            
             logger.info("Text encoder caching enabled - concurrent generation is now thread-safe")
             
         except Exception as e:
@@ -741,32 +700,22 @@ class LTX2Generator(VideoGenerator):
         # Configure tiling for video decoding
         tiling_config = TilingConfig.default()
 
-        # Choose pipeline based on keyframe count:
-        # - 1 keyframe (I2V): Use DistilledPipeline (fastest, latent replacement)
-        # - 2+ keyframes: Use KeyframeInterpolationPipeline (guiding latents for smooth transitions)
-        use_keyframe_pipeline = len(params.keyframes) >= 2
-        
-        if use_keyframe_pipeline:
-            logger.info(f"Using KeyframeInterpolationPipeline for {len(params.keyframes)} keyframes")
-            video_chunks, audio = self.components.keyframe_pipeline(
-                prompt=params.prompt,
-                negative_prompt=params.negative_prompt,
-                seed=seed,
-                height=params.height,
-                width=params.width,
-                num_frames=num_frames,
-                frame_rate=params.frame_rate,
-                num_inference_steps=self.settings.ltx2_num_inference_steps,
-                cfg_guidance_scale=self.settings.ltx2_cfg_guidance_scale,
-                images=images,
-                tiling_config=tiling_config,
-                enhance_prompt=params.enhance_prompt,
+        # Validate keyframe count (DistilledPipeline only supports 1-2 keyframes)
+        num_keyframes = len(params.keyframes)
+        if num_keyframes > 2:
+            raise ValueError(
+                f"Too many keyframes ({num_keyframes}). Video generation supports "
+                f"maximum 2 keyframes: 1 start frame with optional end frame."
             )
-        else:
-            logger.info("Using DistilledPipeline for single-frame I2V")
-            video_chunks, audio = self.components.distilled_pipeline(
-                prompt=params.prompt,
-                seed=seed,
+        
+        if num_keyframes < 1:
+            raise ValueError("At least 1 keyframe (start frame) is required for video generation.")
+        
+        # Use DistilledPipeline for I2V generation
+        logger.info(f"Using DistilledPipeline for I2V ({num_keyframes} keyframe(s))")
+        video_chunks, audio = self.components.distilled_pipeline(
+            prompt=params.prompt,
+            seed=seed,
                 height=params.height,
                 width=params.width,
                 num_frames=num_frames,

@@ -34,8 +34,8 @@ class VRAMLoadMode(str, Enum):
     """VRAM loading mode - defines which models are loaded."""
     IMAGE_GENERATION = "image_generation"  # Z-Image Turbo only
     IMAGE_EDITING = "image_editing"        # LightX2V only
-    VIDEO_GENERATION = "video_generation"  # LTX-2 only
-    ALL = "all"                            # All models loaded
+    VIDEO_GENERATION = "video_generation"  # LTX-2 DistilledPipeline only (~40GB)
+    ALL = "all"                            # All models loaded (disabled)
 
 
 # For backwards compatibility and job scheduling
@@ -152,10 +152,17 @@ class ModelManager:
             mode: Target VRAM mode
             
         Raises:
-            RuntimeError: If currently busy with a job
+            RuntimeError: If currently busy with a job or if ALL mode is requested
         """
         if self._is_busy:
             raise RuntimeError("Cannot change VRAM mode while a job is in progress")
+        
+        # Disable ALL mode (too much VRAM required)
+        if mode == VRAMLoadMode.ALL:
+            raise RuntimeError(
+                "ALL mode is disabled - insufficient VRAM for all models (~100GB required). "
+                "Use individual modes: image_generation, image_editing, or video_generation."
+            )
         
         if mode == self._mode and self._loaded:
             logger.info(f"Already in {mode.value} mode with models loaded")
@@ -169,8 +176,6 @@ class ModelManager:
             await self._switch_to_image_editing_mode()
         elif mode == VRAMLoadMode.VIDEO_GENERATION:
             await self._switch_to_video_generation_mode()
-        elif mode == VRAMLoadMode.ALL:
-            await self._load_all_models()
         
         self._mode = mode
         self._loaded = True
@@ -271,24 +276,33 @@ class ModelManager:
             self._is_switching = False
 
     async def _switch_to_video_generation_mode(self) -> None:
-        """Switch to Video Generation mode (LTX-2 only)."""
+        """Switch to Video Generation mode (LTX-2 DistilledPipeline only).
+        
+        This mode is optimized for Image-to-Video generation with:
+        - 1 start frame (required)
+        - 1 optional end frame
+        
+        Uses the fast DistilledPipeline with fixed 8+4 step schedule (~40GB VRAM).
+        """
         if self._is_busy:
             raise RuntimeError("Cannot switch modes while a job is in progress")
         
-        logger.info("Switching to Video Generation Mode (LTX-2 only)...")
+        logger.info("Switching to Video Generation Mode (LTX-2 DistilledPipeline only)...")
         self._is_switching = True
         
         try:
             # Unload other models
             await self._unload_zimage()
             await self._unload_lightx2v()
+            await self._unload_ltx2()
             
-            # Load LTX-2
+            # Load LTX-2 with DistilledPipeline only
             await self._load_ltx2()
             
-            logger.info("Successfully switched to Video Generation Mode")
+            logger.info("Successfully switched to Video Generation Mode (~40GB VRAM)")
         finally:
             self._is_switching = False
+
 
     async def _load_all_models(self) -> None:
         """Load all models into VRAM (ALL mode)."""
@@ -391,14 +405,18 @@ class ModelManager:
         self._force_gc()
 
     async def _load_ltx2(self) -> None:
-        """Load LTX-2 video model."""
+        """Load LTX-2 video model (DistilledPipeline only).
+        
+        Loads only the DistilledPipeline which supports I2V with 1-2 keyframes.
+        Uses ~40GB VRAM.
+        """
         from app.services.ltx2_generator import LTX2Generator
         
         if self._ltx2_generator is None:
             self._ltx2_generator = LTX2Generator(self._settings)
         
         if not self._ltx2_generator._loaded:
-            logger.info("Loading LTX-2 19B models...")
+            logger.info("Loading LTX-2 19B (DistilledPipeline)...")
             await asyncio.to_thread(self._ltx2_generator.load_models)
 
     async def _unload_ltx2(self) -> None:
