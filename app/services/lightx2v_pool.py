@@ -184,11 +184,12 @@ class LightX2VInstancePool:
                 "strength": self.settings.lightx2v_lora_strength
             }])
             
-            # Enable native resolution processing (up to 4K)
-            # resolution sets the target pixel area: 2160*2160 ≈ 4.6MP (covers 4K)
-            # max_custom_size allows dimensions up to 4096px
-            # This prevents LightX2V from downscaling 1080p to ~768p internally
-            pipe.resolution = 2160
+            # Enable native resolution processing (match input resolution)
+            # resolution sets the target pixel area: resolution^2 pixels
+            # With resolution=1080, it targets 1080*1080 ≈ 1.16MP which keeps
+            # 1920x1088 images at their native size (no upscaling)
+            # max_custom_size allows dimensions up to 4096px for flexibility
+            pipe.resolution = 1080
             pipe.max_custom_size = 4096
             
             # Create generator
