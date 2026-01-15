@@ -17,9 +17,11 @@ ENV PYTHONDONTWRITEBYTECODE=1
 # System Dependencies
 # =============================================================================
 # Add deadsnakes PPA for Python 3.12 (not in Ubuntu 22.04 default repos)
+# Note: Using manual PPA addition to avoid Launchpad API dependency
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    software-properties-common \
-    && add-apt-repository -y ppa:deadsnakes/ppa \
+    software-properties-common gnupg \
+    && echo "deb https://ppa.launchpadcontent.net/deadsnakes/ppa/ubuntu jammy main" > /etc/apt/sources.list.d/deadsnakes.list \
+    && apt-key adv --keyserver keyserver.ubuntu.com --recv-keys F23C5A6CF475977595C89F51BA6932366A755776 \
     && apt-get update && apt-get install -y --no-install-recommends \
     build-essential \
     python3.12 \
