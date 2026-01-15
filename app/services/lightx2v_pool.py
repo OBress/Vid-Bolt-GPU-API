@@ -184,13 +184,9 @@ class LightX2VInstancePool:
                 "strength": self.settings.lightx2v_lora_strength
             }])
             
-            # Enable native resolution processing (match input resolution)
-            # resolution sets the target pixel area: resolution^2 pixels
-            # With resolution=1080, it targets 1080*1080 ≈ 1.16MP which keeps
-            # 1920x1088 images at their native size (no upscaling)
-            # max_custom_size allows dimensions up to 4096px for flexibility
-            pipe.resolution = 1080
-            pipe.max_custom_size = 4096
+            # Resolution is controlled via custom_shape at generate() time 
+            # (see lightx2v_generator.py). This forces exact input dimensions
+            # and bypasses the resolution-based area calculation.
             
             # Create generator
             pipe.create_generator(

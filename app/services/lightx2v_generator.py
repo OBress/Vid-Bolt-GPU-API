@@ -341,10 +341,21 @@ class LightX2VImageEditGenerator(ImageEditor):
         
         input_image.save(input_path, format="PNG")
 
+        # Calculate dimensions rounded UP to 32px (VAE/model requirement)
+        # Round UP so generated image >= target, enabling center-crop to work
+        # e.g., 1920x1080 -> 1920x1088 (1080 isn't divisible by 32)
+        import math
+        target_w_32 = math.ceil(target_width / 32) * 32
+        target_h_32 = math.ceil(target_height / 32) * 32
+        if target_w_32 != target_width or target_h_32 != target_height:
+            logger.debug(f"Rounding UP to 32px multiple: {target_width}x{target_height} -> {target_w_32}x{target_h_32}")
+        
         # Run inference using this instance's pipeline
-        # Model will generate at native resolution (or nearest 32px multiple)
+        # Pass custom_shape=[height, width] to force exact resolution (bypasses resolution calculation)
         import torch
         with torch.inference_mode():
+            # Set custom_shape on pipeline before generate to force native resolution
+            instance.pipeline.custom_shape = [target_h_32, target_w_32]
             instance.pipeline.generate(
                 seed=seed,
                 image_path=str(input_path),
