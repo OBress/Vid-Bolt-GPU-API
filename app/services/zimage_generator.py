@@ -258,10 +258,22 @@ class ZImageGenerator(ImageGenerator):
             ))
         
         # Aggressive memory cleanup after batch
+        # CRITICAL: Run cleanup synchronously to prevent next job from starting
+        # while previous batch's tensors are still held by thread pool
+        import gc
         import torch
+        gc.collect()  # Force Python GC to release tensor references from thread
         if torch.cuda.is_available():
+            torch.cuda.synchronize()  # Wait for all GPU ops to complete
             torch.cuda.empty_cache()
             torch.cuda.ipc_collect()
+            
+            # Verify cleanup actually worked
+            allocated_gb = torch.cuda.memory_allocated() / (1024**3)
+            if allocated_gb > 25:  # Model weights are ~15-20GB
+                logger.warning(f"VRAM still high after cleanup: {allocated_gb:.2f}GB - forcing additional GC")
+                gc.collect()
+                torch.cuda.empty_cache()
         
         logger.info(f"Batch generation completed: {batch_size} images")
         return results

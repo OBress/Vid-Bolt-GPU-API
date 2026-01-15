@@ -360,6 +360,12 @@ class JobManager:
                     # Batch processing
                     await self._process_batch(batch_job_ids, bucket_key)
                 
+                # CRITICAL: Memory barrier between jobs
+                # Thread pool workers may still hold tensor references in their stack frames
+                # Force cleanup and yield to event loop before starting next job
+                self._cleanup_gpu_memory()
+                await asyncio.sleep(0.05)  # 50ms yield for GC to release thread references
+                
             except asyncio.CancelledError:
                 break
             except Exception as e:
@@ -650,17 +656,48 @@ class JobManager:
         return any(indicator.lower() in error_message.lower() for indicator in oom_indicators)
 
     def _cleanup_gpu_memory(self) -> None:
-        """Clean up GPU memory aggressively after job completion."""
+        """Clean up GPU memory aggressively after job completion.
+        
+        CRITICAL: This must fully release VRAM before returning, otherwise
+        the next job will OOM due to tensors from the thread pool.
+        """
         try:
             import torch
-            gc.collect()  # Force Python GC first to release tensor references
+            
+            # Step 1: Force Python GC FIRST to release tensor references from threads
+            gc.collect()
+            
             if torch.cuda.is_available():
-                torch.cuda.empty_cache()  # Release cached memory to CUDA
-                torch.cuda.ipc_collect()  # Clean up IPC handles from multiprocessing
-                torch.cuda.synchronize()  # Wait for all GPU operations
-                # Log VRAM state for debugging
+                # Step 2: Synchronize BEFORE cleanup (wait for all GPU ops to complete)
+                torch.cuda.synchronize()
+                
+                # Step 3: Release cached memory
+                torch.cuda.empty_cache()
+                torch.cuda.ipc_collect()
+                
+                # Step 4: Verify cleanup worked
                 allocated = torch.cuda.memory_allocated() / (1024**3)
                 reserved = torch.cuda.memory_reserved() / (1024**3)
+                
+                # Model weights should be ~15-20GB. If higher, something's leaking.
+                if allocated > 25:
+                    logger.warning(
+                        f"VRAM cleanup incomplete: {allocated:.2f}GB allocated "
+                        f"(expected ~15-20GB). Forcing additional GC cycle."
+                    )
+                    # Force another GC cycle
+                    gc.collect()
+                    torch.cuda.synchronize()
+                    torch.cuda.empty_cache()
+                    
+                    # Check again
+                    allocated = torch.cuda.memory_allocated() / (1024**3)
+                    if allocated > 25:
+                        logger.error(
+                            f"VRAM LEAK DETECTED: {allocated:.2f}GB still allocated after cleanup! "
+                            f"Next job may OOM."
+                        )
+                
                 logger.debug(f"GPU cleanup complete: {allocated:.2f}GB allocated, {reserved:.2f}GB reserved")
         except ImportError:
             gc.collect()
