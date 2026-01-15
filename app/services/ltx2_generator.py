@@ -85,6 +85,11 @@ class LTX2Generator(VideoGenerator):
         self._concurrent_controller: LTX2ConcurrencyController | None = None
         self._concurrent_enabled = getattr(settings, 'ltx2_concurrent_enabled', True)
 
+    @property
+    def _loaded(self) -> bool:
+        """Compatibility property for model_manager which expects _loaded."""
+        return self.is_loaded
+
     def load_models(self) -> None:
         """Load LTX-2 pipeline components.
 
