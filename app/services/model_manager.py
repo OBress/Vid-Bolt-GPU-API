@@ -407,7 +407,9 @@ class ModelManager:
         from app.services.lightx2v_generator import LightX2VImageEditGenerator
         
         # Determine instance count based on target mode
-        if self._mode == VRAMLoadMode.IMAGE_EDITING:
+        # Check switching_target when switching, otherwise use current mode
+        target_mode = self._switching_target if self._is_switching else self._mode
+        if target_mode == VRAMLoadMode.IMAGE_EDITING:
             max_instances = self._settings.lightx2v_max_instances_dedicated
             logger.info(f"Loading LightX2V in dedicated mode with {max_instances} instances")
         else:

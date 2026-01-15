@@ -231,6 +231,7 @@ def set_input_info(args):
             negative_prompt=args.negative_prompt,
             image_path=args.image_path,
             save_result_path=args.save_result_path,
+            custom_shape=getattr(args, 'custom_shape', []),
         )
     else:
         raise ValueError(f"Unsupported task: {args.task}")
