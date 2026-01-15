@@ -188,6 +188,7 @@ class LTX2Generator(VideoGenerator):
         )
         self.is_loaded = True
 
+
         # Create temp directory for intermediate files
         self._temp_dir = tempfile.TemporaryDirectory(prefix="ltx2_")
 
@@ -197,6 +198,54 @@ class LTX2Generator(VideoGenerator):
         self._run_warmup(device)
         
         logger.info("LTX-2 pipelines loaded and warmed up successfully")
+
+    def _run_warmup(self, device: "torch.device") -> None:
+        """Force models to materialize on GPU by accessing cached instances.
+        
+        The LTX-2 pipelines pre-load models in their __init__ but the underlying
+        model builders may use lazy loading. This warmup ensures all models are
+        fully materialized on GPU BEFORE any concurrent video generation calls,
+        preventing race conditions during lazy initialization.
+        
+        Args:
+            device: The target GPU device
+        """
+        import torch
+        from ltx_core.text_encoders.gemma import encode_text
+        
+        logger.info("Warming up LTX-2 models to force GPU materialization...")
+        
+        # Access the cached text encoder from both pipelines to force loading
+        # The pipelines cache these in their __init__ via self.text_encoder = self.model_ledger.text_encoder()
+        distilled = self.components.distilled_pipeline
+        keyframe = self.components.keyframe_pipeline
+        
+        # Force text encoder materialization by running a minimal encode
+        # This is the component that causes race conditions during concurrent access
+        try:
+            with torch.inference_mode():
+                # Use a minimal prompt to trigger full model materialization
+                _ = encode_text(distilled.text_encoder, prompts=["warmup"])
+                logger.info("  DistilledPipeline text_encoder materialized")
+                
+            with torch.inference_mode():
+                _ = encode_text(keyframe.text_encoder, prompts=["warmup"])
+                logger.info("  KeyframeInterpolationPipeline text_encoder materialized")
+                
+        except Exception as e:
+            logger.warning(f"Warmup encode_text failed (non-fatal): {e}")
+        
+        # Log VRAM usage after warmup
+        try:
+            free_bytes, total_bytes = torch.cuda.mem_get_info(device)
+            used_gb = (total_bytes - free_bytes) / (1024 ** 3)
+            total_gb = total_bytes / (1024 ** 3)
+            logger.info(f"  VRAM after warmup: {used_gb:.1f}GB / {total_gb:.1f}GB")
+        except Exception:
+            pass
+        
+        logger.info("LTX-2 warmup complete - models ready for concurrent generation")
+
 
     # ========================================================================
     # I2V (Image-to-Video) Generation
