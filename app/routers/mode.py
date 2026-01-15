@@ -17,6 +17,11 @@ class ModeStatusResponse(BaseModel):
     is_busy: bool
     active_job_id: str | None
     loaded_models: list[str]
+    # Switching progress fields
+    is_switching: bool = False
+    switching_target: str | None = None
+    switching_step: str | None = None
+    switching_progress: float | None = None  # 0.0-1.0
 
 
 class ModeSwitchRequest(BaseModel):
@@ -41,6 +46,9 @@ async def get_mode_status(
     
     Returns the current mode (image/video/switching/none), whether the system
     is busy processing a job, and which models are currently loaded.
+    
+    When is_switching is true, check switching_target, switching_step, and
+    switching_progress for mode switch status.
     """
     status = model_manager.get_status()
     return ModeStatusResponse(
@@ -48,6 +56,10 @@ async def get_mode_status(
         is_busy=status.is_busy,
         active_job_id=status.active_job_id,
         loaded_models=status.loaded_models,
+        is_switching=status.is_switching,
+        switching_target=status.switching_target,
+        switching_step=status.switching_step,
+        switching_progress=status.switching_progress,
     )
 
 

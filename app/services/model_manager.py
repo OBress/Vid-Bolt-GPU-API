@@ -53,6 +53,11 @@ class ModeStatus:
     is_busy: bool = False
     active_job_id: Optional[str] = None
     loaded_models: list[str] = field(default_factory=list)
+    # Switching progress fields
+    is_switching: bool = False
+    switching_target: Optional[str] = None
+    switching_step: Optional[str] = None
+    switching_progress: Optional[float] = None  # 0.0-1.0
     
     def to_dict(self) -> dict:
         """Convert to dictionary for API response."""
@@ -61,6 +66,10 @@ class ModeStatus:
             "is_busy": self.is_busy,
             "active_job_id": self.active_job_id,
             "loaded_models": self.loaded_models,
+            "is_switching": self.is_switching,
+            "switching_target": self.switching_target,
+            "switching_step": self.switching_step,
+            "switching_progress": self.switching_progress,
         }
 
 
@@ -88,6 +97,11 @@ class ModelManager:
         self._is_busy = False
         self._active_job_id: Optional[str] = None
         self._lock = asyncio.Lock()
+        
+        # Switching progress tracking
+        self._switching_target: Optional[VRAMLoadMode] = None
+        self._switching_step: Optional[str] = None
+        self._switching_progress: Optional[float] = None
         
         # Generator instances (lazy loaded)
         self._zimage_generator: Optional["ImageGenerator"] = None
@@ -143,6 +157,10 @@ class ModelManager:
             is_busy=self._is_busy,
             active_job_id=self._active_job_id,
             loaded_models=loaded_models,
+            is_switching=self._is_switching,
+            switching_target=self._switching_target.value if self._switching_target else None,
+            switching_step=self._switching_step,
+            switching_progress=self._switching_progress,
         )
 
     async def set_vram_mode(self, mode: VRAMLoadMode) -> None:
@@ -157,24 +175,51 @@ class ModelManager:
         if self._is_busy:
             raise RuntimeError("Cannot change VRAM mode while a job is in progress")
         
+        if self._is_switching:
+            raise RuntimeError(f"Already switching to {self._switching_target.value if self._switching_target else 'unknown'}")
+        
         if mode == self._mode and self._loaded:
             logger.info(f"Already in {mode.value} mode with models loaded")
             return
         
         logger.info(f"Switching VRAM mode from {self._mode.value} to {mode.value}")
         
-        if mode == VRAMLoadMode.IMAGE_GENERATION:
-            await self._switch_to_image_generation_mode()
-        elif mode == VRAMLoadMode.IMAGE_EDITING:
-            await self._switch_to_image_editing_mode()
-        elif mode == VRAMLoadMode.VIDEO_GENERATION:
-            await self._switch_to_video_generation_mode()
-        elif mode == VRAMLoadMode.ALL:
-            await self._load_all_models()
+        # Set switching state
+        self._is_switching = True
+        self._switching_target = mode
+        self._switching_step = "Initializing..."
+        self._switching_progress = 0.0
         
-        self._mode = mode
-        self._loaded = True
-        logger.info(f"VRAM mode set to {mode.value}")
+        try:
+            if mode == VRAMLoadMode.IMAGE_GENERATION:
+                await self._switch_to_image_generation_mode()
+            elif mode == VRAMLoadMode.IMAGE_EDITING:
+                await self._switch_to_image_editing_mode()
+            elif mode == VRAMLoadMode.VIDEO_GENERATION:
+                await self._switch_to_video_generation_mode()
+            elif mode == VRAMLoadMode.ALL:
+                await self._load_all_models()
+            
+            self._mode = mode
+            self._loaded = True
+            logger.info(f"VRAM mode set to {mode.value}")
+        finally:
+            # Clear switching state
+            self._is_switching = False
+            self._switching_target = None
+            self._switching_step = None
+            self._switching_progress = None
+    
+    def _set_switching_progress(self, step: str, progress: float) -> None:
+        """Update switching progress for status reporting.
+        
+        Args:
+            step: Description of current step
+            progress: Progress percentage (0.0 to 1.0)
+        """
+        self._switching_step = step
+        self._switching_progress = progress
+        logger.info(f"Mode switch progress: {step} ({progress*100:.0f}%)")
 
     async def ensure_mode_for_job(self, job_type: JobType) -> bool:
         """Ensure the system can handle the given job type.
@@ -236,19 +281,19 @@ class ModelManager:
             raise RuntimeError("Cannot switch modes while a job is in progress")
         
         logger.info("Switching to Image Generation Mode (Z-Image only)...")
-        self._is_switching = True
         
-        try:
-            # Unload other models
-            await self._unload_lightx2v()
-            await self._unload_ltx2()
-            
-            # Load Z-Image with dedicated mode (8 instances for concurrent pool)
-            await self._load_zimage(target_mode=VRAMLoadMode.IMAGE_GENERATION)
-            
-            logger.info("Successfully switched to Image Generation Mode")
-        finally:
-            self._is_switching = False
+        # Unload other models
+        self._set_switching_progress("Unloading LightX2V...", 0.1)
+        await self._unload_lightx2v()
+        self._set_switching_progress("Unloading LTX-2...", 0.3)
+        await self._unload_ltx2()
+        
+        # Load Z-Image with dedicated mode (8 instances for concurrent pool)
+        self._set_switching_progress("Loading Z-Image Turbo...", 0.5)
+        await self._load_zimage(target_mode=VRAMLoadMode.IMAGE_GENERATION)
+        
+        self._set_switching_progress("Finalizing...", 1.0)
+        logger.info("Successfully switched to Image Generation Mode")
 
     async def _switch_to_image_editing_mode(self) -> None:
         """Switch to Image Editing mode (LightX2V only)."""
@@ -256,19 +301,19 @@ class ModelManager:
             raise RuntimeError("Cannot switch modes while a job is in progress")
         
         logger.info("Switching to Image Editing Mode (LightX2V only)...")
-        self._is_switching = True
         
-        try:
-            # Unload other models
-            await self._unload_zimage()
-            await self._unload_ltx2()
-            
-            # Load LightX2V
-            await self._load_lightx2v()
-            
-            logger.info("Successfully switched to Image Editing Mode")
-        finally:
-            self._is_switching = False
+        # Unload other models
+        self._set_switching_progress("Unloading Z-Image...", 0.1)
+        await self._unload_zimage()
+        self._set_switching_progress("Unloading LTX-2...", 0.3)
+        await self._unload_ltx2()
+        
+        # Load LightX2V
+        self._set_switching_progress("Loading LightX2V...", 0.5)
+        await self._load_lightx2v()
+        
+        self._set_switching_progress("Finalizing...", 1.0)
+        logger.info("Successfully switched to Image Editing Mode")
 
     async def _switch_to_video_generation_mode(self) -> None:
         """Switch to Video Generation mode (LTX-2 DistilledPipeline only).
@@ -283,40 +328,42 @@ class ModelManager:
             raise RuntimeError("Cannot switch modes while a job is in progress")
         
         logger.info("Switching to Video Generation Mode (LTX-2 DistilledPipeline only)...")
-        self._is_switching = True
         
-        try:
-            # Unload other models
-            await self._unload_zimage()
-            await self._unload_lightx2v()
-            await self._unload_ltx2()
-            
-            # Load LTX-2 with DistilledPipeline only
-            await self._load_ltx2()
-            
-            logger.info("Successfully switched to Video Generation Mode (~40GB VRAM)")
-        finally:
-            self._is_switching = False
+        # Unload other models
+        self._set_switching_progress("Unloading Z-Image...", 0.05)
+        await self._unload_zimage()
+        self._set_switching_progress("Unloading LightX2V...", 0.1)
+        await self._unload_lightx2v()
+        self._set_switching_progress("Unloading previous LTX-2...", 0.15)
+        await self._unload_ltx2()
+        
+        # Load LTX-2 with DistilledPipeline only (this is the slow part)
+        self._set_switching_progress("Loading LTX-2 models (this takes 2-3 minutes)...", 0.2)
+        await self._load_ltx2()
+        
+        self._set_switching_progress("Finalizing...", 1.0)
+        logger.info("Successfully switched to Video Generation Mode (~40GB VRAM)")
 
 
     async def _load_all_models(self) -> None:
         """Load all models into VRAM (ALL mode)."""
         logger.info("Loading ALL models into VRAM...")
-        self._is_switching = True
         
         # Clear any stale GPU memory before loading (helps with container restarts)
+        self._set_switching_progress("Clearing GPU cache...", 0.05)
         self._force_gc()
         logger.info("Cleared GPU cache before loading models")
         
-        try:
-            # Pass ALL mode explicitly so Z-Image uses 1 instance, not 8
-            await self._load_zimage(target_mode=VRAMLoadMode.ALL)
-            await self._load_lightx2v()
-            await self._load_ltx2()
-            
-            logger.info("All models loaded successfully")
-        finally:
-            self._is_switching = False
+        # Pass ALL mode explicitly so Z-Image uses 1 instance, not 8
+        self._set_switching_progress("Loading Z-Image Turbo...", 0.1)
+        await self._load_zimage(target_mode=VRAMLoadMode.ALL)
+        self._set_switching_progress("Loading LightX2V...", 0.3)
+        await self._load_lightx2v()
+        self._set_switching_progress("Loading LTX-2 (this takes 2-3 minutes)...", 0.5)
+        await self._load_ltx2()
+        
+        self._set_switching_progress("Finalizing...", 1.0)
+        logger.info("All models loaded successfully")
 
     # Legacy compatibility
     async def load_all_models(self) -> None:
