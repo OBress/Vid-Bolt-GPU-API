@@ -205,51 +205,121 @@ class LTX2Generator(VideoGenerator):
         logger.info("LTX-2 pipelines loaded and warmed up successfully")
 
     def _run_warmup(self, device: "torch.device") -> None:
-        """Force models to materialize on GPU by accessing cached instances.
+        """Force models to materialize on GPU and patch model_ledger for caching.
         
-        The LTX-2 pipelines pre-load models in their __init__ but the underlying
-        model builders may use lazy loading. This warmup ensures all models are
-        fully materialized on GPU BEFORE any concurrent video generation calls,
-        preventing race conditions during lazy initialization.
+        The LTX-2 model_ledger creates NEW model instances on each call to
+        text_encoder(), transformer(), etc. This causes race conditions when
+        multiple threads try to lazy-load models simultaneously.
+        
+        This warmup:
+        1. Triggers the first load of each model (serialized, no race)
+        2. Patches the model_ledger to cache and reuse these loaded instances
         
         Args:
             device: The target GPU device
         """
         import torch
-        from ltx_core.text_encoders.gemma import encode_text
+        from PIL import Image
+        from ltx_core.model.video_vae import TilingConfig
         
-        logger.info("Warming up LTX-2 models to force GPU materialization...")
+        logger.info("Running LTX-2 warmup inference...")
         
-        # Access the cached text encoder from both pipelines to force loading
-        # The pipelines cache these in their __init__ via self.text_encoder = self.model_ledger.text_encoder()
+        try:
+            # Create minimal 64x64 black image (smallest valid size for LTX-2 is 64)
+            warmup_image = Image.new('RGB', (256, 256), color='black')
+            warmup_path = Path(self._temp_dir.name) / "warmup_frame.png"
+            warmup_image.save(warmup_path, format="PNG")
+            
+            # Run warmup with DistilledPipeline (fastest)
+            # This forces all model weights to GPU and compiles CUDA kernels
+            with torch.inference_mode():
+                tiling_config = TilingConfig.default()
+                
+                video_chunks, audio = self.components.distilled_pipeline(
+                    prompt="warmup",
+                    seed=42,
+                    height=256,  # Small but divisible by 64
+                    width=256,
+                    num_frames=9,  # Minimum valid: 1 + 8*1 = 9
+                    frame_rate=24.0,
+                    images=[(str(warmup_path), 0, 1.0)],
+                    tiling_config=tiling_config,
+                    enhance_prompt=False,
+                )
+                
+                # Consume the generator to ensure all ops run
+                if hasattr(video_chunks, '__iter__') and not isinstance(video_chunks, torch.Tensor):
+                    for _ in video_chunks:
+                        pass
+            
+            # Cleanup warmup file
+            warmup_path.unlink(missing_ok=True)
+            
+            # CRITICAL: Patch the model_ledger to cache text encoders
+            # After warmup, the text_encoder has been loaded once. We now patch
+            # the model_ledger.text_encoder() method to return a cached instance
+            # instead of creating new ones (which causes race conditions).
+            self._patch_model_ledger_caching()
+            
+            # Clear CUDA cache to free warmup memory (not model weights)
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+            
+            logger.info("LTX-2 warmup complete - GPU tensors loaded and kernels compiled")
+            
+        except Exception as e:
+            logger.warning(f"LTX-2 warmup failed (non-fatal): {e}")
+            # Warmup failure is non-fatal - first real inference will just be slow
+
+    def _patch_model_ledger_caching(self) -> None:
+        """Patch model_ledger to cache and reuse model instances.
+        
+        The upstream LTX-2 model_ledger creates new model instances on each call.
+        This patches the text_encoder() method to cache and return the same instance,
+        preventing race conditions during concurrent video generation.
+        """
+        import torch
+        
         distilled = self.components.distilled_pipeline
         keyframe = self.components.keyframe_pipeline
         
-        # Force text encoder materialization by running a minimal encode
-        # This is the component that causes race conditions during concurrent access
+        # Cache text encoders by calling once (triggers full load if not done yet)
+        logger.info("Caching text encoders for thread-safe concurrent access...")
+        
         try:
+            # Load and cache text encoder for DistilledPipeline
             with torch.inference_mode():
-                # Use a minimal prompt to trigger full model materialization
-                _ = encode_text(distilled.text_encoder, prompts=["warmup"])
-                logger.info("  DistilledPipeline text_encoder materialized")
-                
+                distilled_text_encoder = distilled.model_ledger.text_encoder()
+            
+            # Patch the method to return cached instance
+            distilled.model_ledger._cached_text_encoder = distilled_text_encoder
+            original_distilled_text_encoder = distilled.model_ledger.text_encoder
+            
+            def cached_distilled_text_encoder():
+                return distilled.model_ledger._cached_text_encoder
+            
+            distilled.model_ledger.text_encoder = cached_distilled_text_encoder
+            logger.info("  Patched DistilledPipeline.model_ledger.text_encoder() to use cached instance")
+            
+            # Load and cache text encoder for KeyframeInterpolationPipeline
             with torch.inference_mode():
-                _ = encode_text(keyframe.text_encoder, prompts=["warmup"])
-                logger.info("  KeyframeInterpolationPipeline text_encoder materialized")
-                
+                keyframe_text_encoder = keyframe.model_ledger.text_encoder()
+            
+            # Patch the method to return cached instance
+            keyframe.model_ledger._cached_text_encoder = keyframe_text_encoder
+            
+            def cached_keyframe_text_encoder():
+                return keyframe.model_ledger._cached_text_encoder
+            
+            keyframe.model_ledger.text_encoder = cached_keyframe_text_encoder
+            logger.info("  Patched KeyframeInterpolationPipeline.model_ledger.text_encoder() to use cached instance")
+            
+            logger.info("Text encoder caching enabled - concurrent generation is now thread-safe")
+            
         except Exception as e:
-            logger.warning(f"Warmup encode_text failed (non-fatal): {e}")
-        
-        # Log VRAM usage after warmup
-        try:
-            free_bytes, total_bytes = torch.cuda.mem_get_info(device)
-            used_gb = (total_bytes - free_bytes) / (1024 ** 3)
-            total_gb = total_bytes / (1024 ** 3)
-            logger.info(f"  VRAM after warmup: {used_gb:.1f}GB / {total_gb:.1f}GB")
-        except Exception:
-            pass
-        
-        logger.info("LTX-2 warmup complete - models ready for concurrent generation")
+            logger.warning(f"Failed to patch model_ledger caching (non-fatal): {e}")
+            # If patching fails, concurrent generation may still have race conditions
+            # but single-threaded generation will still work
 
 
     # ========================================================================

@@ -1,4 +1,14 @@
 """Vid-Bolt GPU API - FastAPI application."""
+
+# CRITICAL: Set LightX2V device BEFORE any imports
+# This must be at the very top because LightX2V modules cache AI_DEVICE at import time.
+# Without this, models load on "meta" device causing: "Cannot copy out of meta tensor"
+try:
+    import lightx2v_platform.base.global_var
+    lightx2v_platform.base.global_var.AI_DEVICE = "cuda"
+except ImportError:
+    pass  # LightX2V not installed - that's fine
+
 import asyncio
 import logging
 from contextlib import asynccontextmanager
