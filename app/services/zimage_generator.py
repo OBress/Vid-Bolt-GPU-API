@@ -298,155 +298,161 @@ class ZImageGenerator(ImageGenerator):
         """
         import torch
         
-        batch_size = len(params_list)
-        
-        # All images have same dimensions (validated upstream)
-        target_width = params_list[0].width
-        target_height = params_list[0].height
-        gen_width = ((target_width + 31) // 32) * 32
-        gen_height = ((target_height + 31) // 32) * 32
-        
-        device = self.settings.zimage_device
-        dtype = torch.bfloat16 if self.settings.zimage_dtype == "bfloat16" else torch.float16
-        
-        # Pipeline components
-        transformer = self.pipeline.transformer
-        vae = self.pipeline.vae
-        text_encoder = self.pipeline.text_encoder
-        tokenizer = self.pipeline.tokenizer
-        scheduler = self.pipeline.scheduler
-        
-        # Constants from Z-Image config
-        BASE_IMAGE_SEQ_LEN = 256
-        MAX_IMAGE_SEQ_LEN = 4096
-        BASE_SHIFT = 0.5
-        MAX_SHIFT = 1.15
-        
-        # --- 1. Prepare Text Embeddings (Batched) ---
-        prompts = [p.prompt for p in params_list]
-        formatted_prompts = []
-        for prompt in prompts:
-            messages = [{"role": "user", "content": prompt}]
-            formatted = tokenizer.apply_chat_template(
-                messages,
-                tokenize=False,
-                add_generation_prompt=True,
+        # CRITICAL: Disable gradient calculation for inference to prevent VRAM leak
+        with torch.inference_mode():
+            batch_size = len(params_list)
+            
+            # All images have same dimensions (validated upstream)
+            target_width = params_list[0].width
+            target_height = params_list[0].height
+            gen_width = ((target_width + 31) // 32) * 32
+            gen_height = ((target_height + 31) // 32) * 32
+            
+            device = self.settings.zimage_device
+            dtype = torch.bfloat16 if self.settings.zimage_dtype == "bfloat16" else torch.float16
+            
+            # Pipeline components
+            transformer = self.pipeline.transformer
+            vae = self.pipeline.vae
+            text_encoder = self.pipeline.text_encoder
+            tokenizer = self.pipeline.tokenizer
+            scheduler = self.pipeline.scheduler
+            
+            # Constants from Z-Image config
+            BASE_IMAGE_SEQ_LEN = 256
+            MAX_IMAGE_SEQ_LEN = 4096
+            BASE_SHIFT = 0.5
+            MAX_SHIFT = 1.15
+            
+            # --- 1. Prepare Text Embeddings (Batched) ---
+            prompts = [p.prompt for p in params_list]
+            formatted_prompts = []
+            for prompt in prompts:
+                messages = [{"role": "user", "content": prompt}]
+                formatted = tokenizer.apply_chat_template(
+                    messages,
+                    tokenize=False,
+                    add_generation_prompt=True,
+                )
+                formatted_prompts.append(formatted)
+            
+            # Tokenize all prompts at once
+            text_inputs = tokenizer(
+                formatted_prompts,
+                padding="max_length",
+                max_length=256,
+                truncation=True,
+                return_tensors="pt",
             )
-            formatted_prompts.append(formatted)
-        
-        # Tokenize all prompts at once
-        text_inputs = tokenizer(
-            formatted_prompts,
-            padding="max_length",
-            max_length=256,
-            truncation=True,
-            return_tensors="pt",
-        )
-        
-        text_input_ids = text_inputs.input_ids.to(device)
-        prompt_masks = text_inputs.attention_mask.to(device).bool()
-        
-        # Encode all prompts at once
-        prompt_embeds = text_encoder(
-            input_ids=text_input_ids,
-            attention_mask=prompt_masks,
-            output_hidden_states=True,
-        ).hidden_states[-2]  # Penultimate layer
-        
-        # Select embeddings matching mask for each sample
-        prompt_embeds_list = []
-        for i in range(batch_size):
-            prompt_embeds_list.append(prompt_embeds[i][prompt_masks[i]])
-        
-        # --- 2. Prepare Latents (Batched) ---
-        if hasattr(vae, "config") and hasattr(vae.config, "block_out_channels"):
-            vae_scale_factor = 2 ** (len(vae.config.block_out_channels) - 1)
-        else:
-            vae_scale_factor = 8
-        vae_scale = vae_scale_factor * 2
-        
-        height_latent = 2 * (int(gen_height) // vae_scale)
-        width_latent = 2 * (int(gen_width) // vae_scale)
-        
-        # Create batched latents with different seeds
-        latent_shape = (transformer.in_channels, height_latent, width_latent)
-        latents_list = []
-        for seed in seeds:
-            gen = torch.Generator(device).manual_seed(seed)
-            latent = torch.randn(latent_shape, generator=gen, device=device, dtype=torch.float32)
-            latents_list.append(latent)
-        latents = torch.stack(latents_list, dim=0)  # (B, C, H, W)
-        
-        # --- 3. Prepare Scheduler ---
-        num_inference_steps = params_list[0].num_inference_steps or 8
-        image_seq_len = (height_latent // 2) * (width_latent // 2)
-        
-        m = (MAX_SHIFT - BASE_SHIFT) / (MAX_IMAGE_SEQ_LEN - BASE_IMAGE_SEQ_LEN)
-        b = BASE_SHIFT - m * BASE_IMAGE_SEQ_LEN
-        mu = image_seq_len * m + b
-        
-        scheduler.sigma_min = 0.0
-        scheduler.set_timesteps(num_inference_steps, device=device, mu=mu)
-        timesteps = scheduler.timesteps
-        
-        logger.info(f"Batch generation: {batch_size} images, {num_inference_steps} steps, mu={mu:.4f}")
-        
-        # --- 4. Denoising Loop (Batched) ---
-        for i, t in enumerate(timesteps):
-            # Skip last step if t == 0 (Critical fix)
-            if t == 0 and i == len(timesteps) - 1:
-                continue
             
-            timestep = t.expand(batch_size)
-            timestep = (1000 - timestep) / 1000
+            text_input_ids = text_inputs.input_ids.to(device)
+            prompt_masks = text_inputs.attention_mask.to(device).bool()
             
-            # Prepare model input
-            latent_model_input = latents.to(dtype)
-            latent_model_input = latent_model_input.unsqueeze(2)  # Add time dim
-            latent_model_input_list = list(latent_model_input.unbind(dim=0))
+            # Encode all prompts at once
+            prompt_embeds = text_encoder(
+                input_ids=text_input_ids,
+                attention_mask=prompt_masks,
+                output_hidden_states=True,
+            ).hidden_states[-2]  # Penultimate layer
             
-            # Forward pass with batched inputs
-            model_out_list = transformer(
-                latent_model_input_list,
-                timestep,
-                prompt_embeds_list,
-            )[0]
+            # Select embeddings matching mask for each sample
+            prompt_embeds_list = []
+            for i in range(batch_size):
+                prompt_embeds_list.append(prompt_embeds[i][prompt_masks[i]])
             
-            noise_pred = torch.stack([out.float() for out in model_out_list], dim=0)
-            noise_pred = -noise_pred.squeeze(2)
+            # --- 2. Prepare Latents (Batched) ---
+            if hasattr(vae, "config") and hasattr(vae.config, "block_out_channels"):
+                vae_scale_factor = 2 ** (len(vae.config.block_out_channels) - 1)
+            else:
+                vae_scale_factor = 8
+            vae_scale = vae_scale_factor * 2
             
-            # Scheduler step
-            latents = scheduler.step(noise_pred.to(torch.float32), t, latents, return_dict=False)[0]
-        
-        # --- 5. Decode Latents (Batched) ---
-        shift_factor = getattr(vae.config, "shift_factor", 0.0) or 0.0
-        latents = (latents.to(vae.dtype) / vae.config.scaling_factor) + shift_factor
-        
-        # VAE decode (may need to chunk for very large batches)
-        decoded_images = vae.decode(latents, return_dict=False)[0]
-        
-        # IMMEDIATELY delete latents after VAE decode - no longer needed
-        del latents
-        
-        # Process to PIL and encode - move to CPU ASAP
-        decoded_images = (decoded_images / 2 + 0.5).clamp(0, 1)
-        images_cpu = decoded_images.cpu().permute(0, 2, 3, 1).float().numpy()
-        
-        # Delete GPU tensor immediately after moving to CPU
-        del decoded_images
-        
-        # CRITICAL: Force cleanup NOW before CPU-bound PNG encoding
-        import gc
-        gc.collect()
-        torch.cuda.empty_cache()
-        torch.cuda.synchronize()
-        
-        # Log VRAM after immediate cleanup
-        allocated_gb = torch.cuda.memory_allocated() / (1024**3)
-        logger.info(f"VRAM after batch decode cleanup: {allocated_gb:.2f}GB allocated")
-        
-        images = (images_cpu * 255).round().astype("uint8")
-        del images_cpu
+            height_latent = 2 * (int(gen_height) // vae_scale)
+            width_latent = 2 * (int(gen_width) // vae_scale)
+            
+            # Create batched latents with different seeds
+            latent_shape = (transformer.in_channels, height_latent, width_latent)
+            latents_list = []
+            for seed in seeds:
+                gen = torch.Generator(device).manual_seed(seed)
+                latent = torch.randn(latent_shape, generator=gen, device=device, dtype=torch.float32)
+                latents_list.append(latent)
+            latents = torch.stack(latents_list, dim=0)  # (B, C, H, W)
+            
+            # --- 3. Prepare Scheduler ---
+            num_inference_steps = params_list[0].num_inference_steps or 8
+            image_seq_len = (height_latent // 2) * (width_latent // 2)
+            
+            m = (MAX_SHIFT - BASE_SHIFT) / (MAX_IMAGE_SEQ_LEN - BASE_IMAGE_SEQ_LEN)
+            b = BASE_SHIFT - m * BASE_IMAGE_SEQ_LEN
+            mu = image_seq_len * m + b
+            
+            scheduler.sigma_min = 0.0
+            scheduler.set_timesteps(num_inference_steps, device=device, mu=mu)
+            timesteps = scheduler.timesteps
+            
+            logger.info(f"Batch generation: {batch_size} images, {num_inference_steps} steps, mu={mu:.4f}")
+            
+            # --- 4. Denoising Loop (Batched) ---
+            for i, t in enumerate(timesteps):
+                # Skip last step if t == 0 (Critical fix)
+                if t == 0 and i == len(timesteps) - 1:
+                    continue
+                
+                timestep = t.expand(batch_size)
+                timestep = (1000 - timestep) / 1000
+                
+                # Prepare model input
+                latent_model_input = latents.to(dtype)
+                latent_model_input = latent_model_input.unsqueeze(2)  # Add time dim
+                latent_model_input_list = list(latent_model_input.unbind(dim=0))
+                
+                # Forward pass with batched inputs
+                model_out_list = transformer(
+                    latent_model_input_list,
+                    timestep,
+                    prompt_embeds_list,
+                )[0]
+                
+                noise_pred = torch.stack([out.float() for out in model_out_list], dim=0)
+                noise_pred = -noise_pred.squeeze(2)
+                
+                # Scheduler step
+                latents = scheduler.step(noise_pred.to(torch.float32), t, latents, return_dict=False)[0]
+            
+            # --- 5. Decode Latents (Batched) ---
+            shift_factor = getattr(vae.config, "shift_factor", 0.0) or 0.0
+            latents = (latents.to(vae.dtype) / vae.config.scaling_factor) + shift_factor
+            
+            # VAE decode (may need to chunk for very large batches)
+            decoded_images = vae.decode(latents, return_dict=False)[0]
+            
+            # IMMEDIATELY delete latents after VAE decode - no longer needed
+            del latents
+            
+            # Process to PIL and encode - move to CPU ASAP
+            decoded_images = (decoded_images / 2 + 0.5).clamp(0, 1)
+            images_cpu = decoded_images.cpu().permute(0, 2, 3, 1).float().numpy()
+            
+            # Delete GPU tensor immediately after moving to CPU
+            del decoded_images
+            
+            # CRITICAL: Force cleanup NOW before CPU-bound PNG encoding
+            import gc
+            gc.collect()
+            torch.cuda.empty_cache()
+            torch.cuda.synchronize()
+            
+            # Log VRAM after immediate cleanup
+            allocated_gb = torch.cuda.memory_allocated() / (1024**3)
+            logger.info(f"VRAM after batch decode cleanup: {allocated_gb:.2f}GB allocated")
+            
+            images = (images_cpu * 255).round().astype("uint8")
+            del images_cpu
+            
+            # NOTE: We step out of inference_mode here implicitly when we return, 
+            # but ThreadPool is creating new threads which won't share the mode anyway.
+            # But the tensors are already on CPU.
         
         from PIL import Image as PILImage
         from concurrent.futures import ThreadPoolExecutor
@@ -480,6 +486,8 @@ class ZImageGenerator(ImageGenerator):
             del prompt_embeds, prompt_embeds_list, text_input_ids, prompt_masks
             del timestep, timesteps
             del images
+            # Clean up the initial latents list
+            del latents_list
         except NameError:
             pass  # Some might not exist depending on code path
         
@@ -557,240 +565,242 @@ class ZImageGenerator(ImageGenerator):
         BASE_SHIFT = 0.5
         MAX_SHIFT = 1.15
         
-        # Unpack pipeline components
-        transformer = self.pipeline.transformer
-        vae = self.pipeline.vae
-        text_encoder = self.pipeline.text_encoder
-        tokenizer = self.pipeline.tokenizer
-        scheduler = self.pipeline.scheduler
+        # CRITICAL: Disable gradient calculation for inference to prevent VRAM leak
+        with torch.inference_mode():
+            # Unpack pipeline components
+            transformer = self.pipeline.transformer
+            vae = self.pipeline.vae
+            text_encoder = self.pipeline.text_encoder
+            tokenizer = self.pipeline.tokenizer
+            scheduler = self.pipeline.scheduler
         
-        # Parameters
-        height = params.height
-        width = params.width
-        # Determine actual generation dimensions (multiple of 32)
-        gen_width = ((width + 31) // 32) * 32
-        gen_height = ((height + 31) // 32) * 32
+            # Parameters
+            height = params.height
+            width = params.width
+            # Determine actual generation dimensions (multiple of 32)
+            gen_width = ((width + 31) // 32) * 32
+            gen_height = ((height + 31) // 32) * 32
         
-        num_inference_steps = params.num_inference_steps or 8
-        guidance_scale = 0.0 # Z-Image-Turbo defaults
+            num_inference_steps = params.num_inference_steps or 8
+            guidance_scale = 0.0 # Z-Image-Turbo defaults
         
-        device = self.settings.zimage_device
-        dtype = torch.bfloat16 if self.settings.zimage_dtype == "bfloat16" else torch.float16
+            device = self.settings.zimage_device
+            dtype = torch.bfloat16 if self.settings.zimage_dtype == "bfloat16" else torch.float16
 
-        # --- Helpers ---
-        def calculate_shift(
-            image_seq_len,
-            base_seq_len: int = BASE_IMAGE_SEQ_LEN,
-            max_seq_len: int = MAX_IMAGE_SEQ_LEN,
-            base_shift: float = BASE_SHIFT,
-            max_shift: float = MAX_SHIFT,
-        ):
-            m = (max_shift - base_shift) / (max_seq_len - base_seq_len)
-            b = base_shift - m * base_seq_len
-            mu = image_seq_len * m + b
-            return mu
+            # --- Helpers ---
+            def calculate_shift(
+                image_seq_len,
+                base_seq_len: int = BASE_IMAGE_SEQ_LEN,
+                max_seq_len: int = MAX_IMAGE_SEQ_LEN,
+                base_shift: float = BASE_SHIFT,
+                max_shift: float = MAX_SHIFT,
+            ):
+                m = (max_shift - base_shift) / (max_seq_len - base_seq_len)
+                b = base_shift - m * base_seq_len
+                mu = image_seq_len * m + b
+                return mu
 
-        def retrieve_timesteps(
-            scheduler,
-            num_inference_steps: Optional[int] = None,
-            device: Optional[Union[str, torch.device]] = None,
-            timesteps: Optional[List[int]] = None,
-            sigmas: Optional[List[float]] = None,
-            **kwargs,
-        ):
-            if timesteps is not None and sigmas is not None:
-                raise ValueError("Only one of `timesteps` or `sigmas` can be passed.")
-            if timesteps is not None:
-                accepts_timesteps = "timesteps" in set(inspect.signature(scheduler.set_timesteps).parameters.keys())
-                if not accepts_timesteps:
-                    raise ValueError(f"The scheduler does not support custom timestep schedules.")
-                scheduler.set_timesteps(timesteps=timesteps, device=device, **kwargs)
-                timesteps = scheduler.timesteps
-                num_inference_steps = len(timesteps)
-            elif sigmas is not None:
-                accept_sigmas = "sigmas" in set(inspect.signature(scheduler.set_timesteps).parameters.keys())
-                if not accept_sigmas:
-                    raise ValueError(f"The scheduler does not support custom sigmas schedules.")
-                scheduler.set_timesteps(sigmas=sigmas, device=device, **kwargs)
-                timesteps = scheduler.timesteps
-                num_inference_steps = len(timesteps)
+            def retrieve_timesteps(
+                scheduler,
+                num_inference_steps: Optional[int] = None,
+                device: Optional[Union[str, torch.device]] = None,
+                timesteps: Optional[List[int]] = None,
+                sigmas: Optional[List[float]] = None,
+                **kwargs,
+            ):
+                if timesteps is not None and sigmas is not None:
+                    raise ValueError("Only one of `timesteps` or `sigmas` can be passed.")
+                if timesteps is not None:
+                    accepts_timesteps = "timesteps" in set(inspect.signature(scheduler.set_timesteps).parameters.keys())
+                    if not accepts_timesteps:
+                        raise ValueError(f"The scheduler does not support custom timestep schedules.")
+                    scheduler.set_timesteps(timesteps=timesteps, device=device, **kwargs)
+                    timesteps = scheduler.timesteps
+                    num_inference_steps = len(timesteps)
+                elif sigmas is not None:
+                    accept_sigmas = "sigmas" in set(inspect.signature(scheduler.set_timesteps).parameters.keys())
+                    if not accept_sigmas:
+                        raise ValueError(f"The scheduler does not support custom sigmas schedules.")
+                    scheduler.set_timesteps(sigmas=sigmas, device=device, **kwargs)
+                    timesteps = scheduler.timesteps
+                    num_inference_steps = len(timesteps)
+                else:
+                    scheduler.set_timesteps(num_inference_steps, device=device, **kwargs)
+                    timesteps = scheduler.timesteps
+                return timesteps, num_inference_steps
+
+            # --- 1. Prepare Inputs ---
+        
+            # Calculate scaling factors
+            if hasattr(vae, "config") and hasattr(vae.config, "block_out_channels"):
+                vae_scale_factor = 2 ** (len(vae.config.block_out_channels) - 1)
             else:
-                scheduler.set_timesteps(num_inference_steps, device=device, **kwargs)
-                timesteps = scheduler.timesteps
-            return timesteps, num_inference_steps
+                vae_scale_factor = 8
+            # vae_scale = vae_scale_factor * 2 # Original code had *2 for some reason? 
+            # Z-Image pipeline.py says: vae_scale = vae_scale_factor * 2. 
+            # Let's trust the native implementation.
+            vae_scale = vae_scale_factor * 2
 
-        # --- 1. Prepare Inputs ---
+            # Prepare Text Embeddings
+            prompt = params.prompt
+            # Z-Image uses chat template
+            messages = [{"role": "user", "content": prompt}]
+            formatted_prompt = tokenizer.apply_chat_template(
+                messages,
+                tokenize=False,
+                add_generation_prompt=True,
+                # enable_thinking=True, # Original had this, might be needed?
+            )
         
-        # Calculate scaling factors
-        if hasattr(vae, "config") and hasattr(vae.config, "block_out_channels"):
-            vae_scale_factor = 2 ** (len(vae.config.block_out_channels) - 1)
-        else:
-            vae_scale_factor = 8
-        # vae_scale = vae_scale_factor * 2 # Original code had *2 for some reason? 
-        # Z-Image pipeline.py says: vae_scale = vae_scale_factor * 2. 
-        # Let's trust the native implementation.
-        vae_scale = vae_scale_factor * 2
-
-        # Prepare Text Embeddings
-        prompt = params.prompt
-        # Z-Image uses chat template
-        messages = [{"role": "user", "content": prompt}]
-        formatted_prompt = tokenizer.apply_chat_template(
-            messages,
-            tokenize=False,
-            add_generation_prompt=True,
-            # enable_thinking=True, # Original had this, might be needed?
-        )
+            # Tokenize
+            text_inputs = tokenizer(
+                [formatted_prompt],
+                padding="max_length",
+                max_length=256, # config.DEFAULT_MAX_SEQUENCE_LENGTH is imported as 256/4096? 
+                # In config/__init__.py, DEFAULT_MAX_SEQUENCE_LENGTH is imported from inference.
+                # I don't have its value. I'll guess 256 or look at pipeline.py default.
+                # pipeline.py says DEFAULT_MAX_SEQUENCE_LENGTH. 
+                # I will use 256 which is safely large for prompts, or check pipeline default.
+                truncation=True,
+                return_tensors="pt",
+            )
         
-        # Tokenize
-        text_inputs = tokenizer(
-            [formatted_prompt],
-            padding="max_length",
-            max_length=256, # config.DEFAULT_MAX_SEQUENCE_LENGTH is imported as 256/4096? 
-            # In config/__init__.py, DEFAULT_MAX_SEQUENCE_LENGTH is imported from inference.
-            # I don't have its value. I'll guess 256 or look at pipeline.py default.
-            # pipeline.py says DEFAULT_MAX_SEQUENCE_LENGTH. 
-            # I will use 256 which is safely large for prompts, or check pipeline default.
-            truncation=True,
-            return_tensors="pt",
-        )
-        
-        text_input_ids = text_inputs.input_ids.to(device)
-        prompt_masks = text_inputs.attention_mask.to(device).bool()
+            text_input_ids = text_inputs.input_ids.to(device)
+            prompt_masks = text_inputs.attention_mask.to(device).bool()
 
-        # Encode
-        prompt_embeds = text_encoder(
-            input_ids=text_input_ids,
-            attention_mask=prompt_masks,
-            output_hidden_states=True,
-        ).hidden_states[-2] # Penultimate layer
+            # Encode
+            prompt_embeds = text_encoder(
+                input_ids=text_input_ids,
+                attention_mask=prompt_masks,
+                output_hidden_states=True,
+            ).hidden_states[-2] # Penultimate layer
 
-        # Select embeddings matching mask
-        prompt_embeds_list = []
-        for i in range(len(prompt_embeds)):
-            prompt_embeds_list.append(prompt_embeds[i][prompt_masks[i]])
+            # Select embeddings matching mask
+            prompt_embeds_list = []
+            for i in range(len(prompt_embeds)):
+                prompt_embeds_list.append(prompt_embeds[i][prompt_masks[i]])
             
-        # --- 2. Prepare Latents ---
+            # --- 2. Prepare Latents ---
         
-        batch_size = 1
-        num_images_per_prompt = 1
+            batch_size = 1
+            num_images_per_prompt = 1
         
-        height_latent = 2 * (int(gen_height) // vae_scale)
-        width_latent = 2 * (int(gen_width) // vae_scale)
+            height_latent = 2 * (int(gen_height) // vae_scale)
+            width_latent = 2 * (int(gen_width) // vae_scale)
         
-        shape = (batch_size, transformer.in_channels, height_latent, width_latent)
+            shape = (batch_size, transformer.in_channels, height_latent, width_latent)
         
-        latents = torch.randn(shape, generator=generator, device=device, dtype=torch.float32)
+            latents = torch.randn(shape, generator=generator, device=device, dtype=torch.float32)
         
-        # --- 3. Prepare Scheduler ---
+            # --- 3. Prepare Scheduler ---
         
-        image_seq_len = (latents.shape[2] // 2) * (latents.shape[3] // 2)
+            image_seq_len = (latents.shape[2] // 2) * (latents.shape[3] // 2)
         
-        mu = calculate_shift(
-            image_seq_len,
-            base_seq_len=BASE_IMAGE_SEQ_LEN,
-            max_seq_len=MAX_IMAGE_SEQ_LEN,
-            base_shift=BASE_SHIFT,
-            max_shift=MAX_SHIFT,
-        )
+            mu = calculate_shift(
+                image_seq_len,
+                base_seq_len=BASE_IMAGE_SEQ_LEN,
+                max_seq_len=MAX_IMAGE_SEQ_LEN,
+                base_shift=BASE_SHIFT,
+                max_shift=MAX_SHIFT,
+            )
         
-        scheduler.sigma_min = 0.0
-        scheduler_kwargs = {"mu": mu}
+            scheduler.sigma_min = 0.0
+            scheduler_kwargs = {"mu": mu}
         
-        timesteps, num_inference_steps = retrieve_timesteps(
-            scheduler,
-            num_inference_steps,
-            device,
-            sigmas=None,
-            **scheduler_kwargs,
-        )
+            timesteps, num_inference_steps = retrieve_timesteps(
+                scheduler,
+                num_inference_steps,
+                device,
+                sigmas=None,
+                **scheduler_kwargs,
+            )
         
-        logger.info(f"Manual generation loop: {num_inference_steps} steps, mu={mu:.4f}")
+            logger.info(f"Manual generation loop: {num_inference_steps} steps, mu={mu:.4f}")
         
-        # --- 4. Denoising Loop ---
+            # --- 4. Denoising Loop ---
         
-        for i, t in enumerate(timesteps):
-            # CRITICAL FIX: Skip last step if t == 0
-            if t == 0 and i == len(timesteps) - 1:
-                logger.debug(f"Step {i+1}/{num_inference_steps} | t: {t.item():.2f} | Skipping last step (Fix applied)")
-                continue
+            for i, t in enumerate(timesteps):
+                # CRITICAL FIX: Skip last step if t == 0
+                if t == 0 and i == len(timesteps) - 1:
+                    logger.debug(f"Step {i+1}/{num_inference_steps} | t: {t.item():.2f} | Skipping last step (Fix applied)")
+                    continue
                 
-            timestep = t.expand(latents.shape[0])
-            timestep = (1000 - timestep) / 1000
-            # t_norm = timestep[0].item() # Not used unless CFG truncation
+                timestep = t.expand(latents.shape[0])
+                timestep = (1000 - timestep) / 1000
+                # t_norm = timestep[0].item() # Not used unless CFG truncation
 
-            # Prepare model input
-            latent_model_input = latents.to(dtype)
-            prompt_embeds_model_input = prompt_embeds_list
-            timestep_model_input = timestep
+                # Prepare model input
+                latent_model_input = latents.to(dtype)
+                prompt_embeds_model_input = prompt_embeds_list
+                timestep_model_input = timestep
             
-            latent_model_input = latent_model_input.unsqueeze(2)
-            latent_model_input_list = list(latent_model_input.unbind(dim=0))
+                latent_model_input = latent_model_input.unsqueeze(2)
+                latent_model_input_list = list(latent_model_input.unbind(dim=0))
             
-            # Predict noise
-            model_out_list = transformer(
-                latent_model_input_list,
-                timestep_model_input,
-                prompt_embeds_model_input,
-            )[0]
+                # Predict noise
+                model_out_list = transformer(
+                    latent_model_input_list,
+                    timestep_model_input,
+                    prompt_embeds_model_input,
+                )[0]
             
-            noise_pred = torch.stack([out.float() for out in model_out_list], dim=0)
-            noise_pred = -noise_pred.squeeze(2)
+                noise_pred = torch.stack([out.float() for out in model_out_list], dim=0)
+                noise_pred = -noise_pred.squeeze(2)
             
-            # Step
-            latents = scheduler.step(noise_pred.to(torch.float32), t, latents, return_dict=False)[0]
+                # Step
+                latents = scheduler.step(noise_pred.to(torch.float32), t, latents, return_dict=False)[0]
 
-        # --- 5. Decode Latents ---
+            # --- 5. Decode Latents ---
         
-        shift_factor = getattr(vae.config, "shift_factor", 0.0) or 0.0
-        latents_scaled = (latents.to(vae.dtype) / vae.config.scaling_factor) + shift_factor
+            shift_factor = getattr(vae.config, "shift_factor", 0.0) or 0.0
+            latents_scaled = (latents.to(vae.dtype) / vae.config.scaling_factor) + shift_factor
         
-        # Delete original latents BEFORE decode to free memory
-        del latents
+            # Delete original latents BEFORE decode to free memory
+            del latents
         
-        # Decode
-        decoded_image = vae.decode(latents_scaled, return_dict=False)[0]
+            # Decode
+            decoded_image = vae.decode(latents_scaled, return_dict=False)[0]
         
-        # Delete scaled latents immediately after decode
-        del latents_scaled
+            # Delete scaled latents immediately after decode
+            del latents_scaled
         
-        # Process to PIL - move to CPU immediately
-        decoded_image = (decoded_image / 2 + 0.5).clamp(0, 1)
-        image_cpu = decoded_image.cpu().permute(0, 2, 3, 1).float().numpy()
+            # Process to PIL - move to CPU immediately
+            decoded_image = (decoded_image / 2 + 0.5).clamp(0, 1)
+            image_cpu = decoded_image.cpu().permute(0, 2, 3, 1).float().numpy()
         
-        # Delete GPU tensor immediately after CPU transfer
-        del decoded_image
+            # Delete GPU tensor immediately after CPU transfer
+            del decoded_image
         
-        # CRITICAL: Force cleanup NOW - tensors are deleted, release memory
-        import gc
-        gc.collect()
-        torch.cuda.empty_cache()
+            # CRITICAL: Force cleanup NOW - tensors are deleted, release memory
+            import gc
+            gc.collect()
+            torch.cuda.empty_cache()
         
-        # Log VRAM for debugging
-        allocated_gb = torch.cuda.memory_allocated() / (1024**3)
-        logger.info(f"VRAM after single-image decode cleanup: {allocated_gb:.2f}GB allocated")
+            # Log VRAM for debugging
+            allocated_gb = torch.cuda.memory_allocated() / (1024**3)
+            logger.info(f"VRAM after single-image decode cleanup: {allocated_gb:.2f}GB allocated")
         
-        image = (image_cpu * 255).round().astype("uint8")
-        del image_cpu
+            image = (image_cpu * 255).round().astype("uint8")
+            del image_cpu
         
-        # Cleanup remaining denoising loop tensors
-        try:
-            del latent_model_input, latent_model_input_list
-            del prompt_embeds, prompt_embeds_list, text_input_ids, prompt_masks
-            del noise_pred, model_out_list
-            del timestep, timesteps
-        except NameError:
-            pass
+            # Cleanup remaining denoising loop tensors
+            try:
+                del latent_model_input, latent_model_input_list
+                del prompt_embeds, prompt_embeds_list, text_input_ids, prompt_masks
+                del noise_pred, model_out_list
+                del timestep, timesteps
+            except NameError:
+                pass
         
-        gc.collect()
-        torch.cuda.empty_cache()
+            gc.collect()
+            torch.cuda.empty_cache()
         
-        # Final VRAM check
-        final_gb = torch.cuda.memory_allocated() / (1024**3)
-        logger.info(f"VRAM after single-image full cleanup: {final_gb:.2f}GB (should be ~15-20GB)")
+            # Final VRAM check
+            final_gb = torch.cuda.memory_allocated() / (1024**3)
+            logger.info(f"VRAM after single-image full cleanup: {final_gb:.2f}GB (should be ~15-20GB)")
         
-        from PIL import Image as PILImage
-        return PILImage.fromarray(image[0])
+            from PIL import Image as PILImage
+            return PILImage.fromarray(image[0])
 
     def _manual_generation_loop(
         self, 
