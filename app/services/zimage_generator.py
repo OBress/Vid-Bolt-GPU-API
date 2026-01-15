@@ -411,13 +411,30 @@ class ZImageGenerator(ImageGenerator):
         latents = (latents.to(vae.dtype) / vae.config.scaling_factor) + shift_factor
         
         # VAE decode (may need to chunk for very large batches)
-        images = vae.decode(latents, return_dict=False)[0]
+        decoded_images = vae.decode(latents, return_dict=False)[0]
         
-        # Process to PIL and encode
-        # Process to PIL and encode
-        images = (images / 2 + 0.5).clamp(0, 1)
-        images = images.cpu().permute(0, 2, 3, 1).float().numpy()
-        images = (images * 255).round().astype("uint8")
+        # IMMEDIATELY delete latents after VAE decode - no longer needed
+        del latents
+        
+        # Process to PIL and encode - move to CPU ASAP
+        decoded_images = (decoded_images / 2 + 0.5).clamp(0, 1)
+        images_cpu = decoded_images.cpu().permute(0, 2, 3, 1).float().numpy()
+        
+        # Delete GPU tensor immediately after moving to CPU
+        del decoded_images
+        
+        # CRITICAL: Force cleanup NOW before CPU-bound PNG encoding
+        import gc
+        gc.collect()
+        torch.cuda.empty_cache()
+        torch.cuda.synchronize()
+        
+        # Log VRAM after immediate cleanup
+        allocated_gb = torch.cuda.memory_allocated() / (1024**3)
+        logger.info(f"VRAM after batch decode cleanup: {allocated_gb:.2f}GB allocated")
+        
+        images = (images_cpu * 255).round().astype("uint8")
+        del images_cpu
         
         from PIL import Image as PILImage
         from concurrent.futures import ThreadPoolExecutor
@@ -440,22 +457,26 @@ class ZImageGenerator(ImageGenerator):
             return buffer.getvalue()
         
         # Parallelize PNG encoding (CPU intensive)
-        # Use simple ThreadPool since this is I/O / GIL-releasing
         with ThreadPoolExecutor(max_workers=min(batch_size, 8)) as executor:
             result_bytes = list(executor.map(_process_single_image, enumerate(images)))
         
-        # CRITICAL: Explicitly delete GPU tensors to free VRAM before next batch
-        # Python's GC is too slow and tensors stay alive until next GC cycle
-        del latents, latent_model_input, latent_model_input_list
-        del prompt_embeds, prompt_embeds_list, text_input_ids, prompt_masks
-        del noise_pred, model_out_list
-        del images  # CPU numpy array is fine but let's be thorough
+        # Final cleanup - delete any remaining intermediates from denoising loop
+        # These are last-iteration values still in scope
+        try:
+            del latent_model_input, latent_model_input_list
+            del noise_pred, model_out_list
+            del prompt_embeds, prompt_embeds_list, text_input_ids, prompt_masks
+            del timestep, timesteps
+            del images
+        except NameError:
+            pass  # Some might not exist depending on code path
         
-        # Force GPU cache flush
-        import gc
         gc.collect()
         torch.cuda.empty_cache()
-        torch.cuda.synchronize()  # Wait for all GPU ops to complete
+        
+        # Final VRAM check
+        final_allocated_gb = torch.cuda.memory_allocated() / (1024**3)
+        logger.info(f"VRAM after full batch cleanup: {final_allocated_gb:.2f}GB (should be ~15-20GB for model weights)")
         
         return result_bytes
 
