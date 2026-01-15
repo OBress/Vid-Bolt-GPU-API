@@ -152,17 +152,10 @@ class ModelManager:
             mode: Target VRAM mode
             
         Raises:
-            RuntimeError: If currently busy with a job or if ALL mode is requested
+            RuntimeError: If currently busy with a job
         """
         if self._is_busy:
             raise RuntimeError("Cannot change VRAM mode while a job is in progress")
-        
-        # Disable ALL mode (too much VRAM required)
-        if mode == VRAMLoadMode.ALL:
-            raise RuntimeError(
-                "ALL mode is disabled - insufficient VRAM for all models (~100GB required). "
-                "Use individual modes: image_generation, image_editing, or video_generation."
-            )
         
         if mode == self._mode and self._loaded:
             logger.info(f"Already in {mode.value} mode with models loaded")
@@ -176,6 +169,8 @@ class ModelManager:
             await self._switch_to_image_editing_mode()
         elif mode == VRAMLoadMode.VIDEO_GENERATION:
             await self._switch_to_video_generation_mode()
+        elif mode == VRAMLoadMode.ALL:
+            await self._load_all_models()
         
         self._mode = mode
         self._loaded = True

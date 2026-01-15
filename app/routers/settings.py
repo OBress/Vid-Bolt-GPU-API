@@ -19,7 +19,7 @@ class VRAMModeResponse(BaseModel):
 
 class VRAMModeRequest(BaseModel):
     """Request model for setting VRAM mode."""
-    mode: Literal["image_generation", "image_editing", "video_generation"]
+    mode: Literal["image_generation", "image_editing", "video_generation", "all"]
 
 
 # Mode descriptions
@@ -27,7 +27,7 @@ MODE_DESCRIPTIONS = {
     VRAMLoadMode.IMAGE_GENERATION: "Image Generation - Z-Image Turbo only (~16GB VRAM)",
     VRAMLoadMode.IMAGE_EDITING: "Image Editing - LightX2V only (~40GB VRAM)",
     VRAMLoadMode.VIDEO_GENERATION: "Video Generation - LTX-2 DistilledPipeline only (~40GB VRAM)",
-    VRAMLoadMode.ALL: "All Models - Disabled (requires ~100GB+ VRAM)",
+    VRAMLoadMode.ALL: "All Models - Z-Image + LightX2V + LTX-2 (~76GB VRAM)",
 }
 
 
