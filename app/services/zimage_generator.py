@@ -808,6 +808,18 @@ class ZImageGenerator(ImageGenerator):
         seed: int, 
         generator: Any
     ) -> Any:
+        """Manual generation loop wrapper with inference mode."""
+        import torch
+        # CRITICAL: Disable gradient calculation for inference to prevent VRAM leak
+        with torch.inference_mode():
+            return self._manual_generation_loop_inner(params, seed, generator)
+
+    def _manual_generation_loop_inner(
+        self, 
+        params: ImageGenerationParams, 
+        seed: int, 
+        generator: Any
+    ) -> Any:
         """Manual generation loop to fix IndexError in pipeline.
         
         This replicates the Z-Image native generation logic but adds a check

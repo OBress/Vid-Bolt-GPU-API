@@ -336,13 +336,15 @@ class LightX2VImageEditGenerator(ImageEditor):
         input_image.save(input_path, format="PNG")
 
         # Run inference
-        self.components.pipeline.generate(
-            seed=seed,
-            image_path=str(input_path),
-            prompt=params.prompt,
-            negative_prompt="",
-            save_result_path=str(output_path),
-        )
+        import torch
+        with torch.inference_mode():
+            self.components.pipeline.generate(
+                seed=seed,
+                image_path=str(input_path),
+                prompt=params.prompt,
+                negative_prompt="",
+                save_result_path=str(output_path),
+            )
 
         # Load output image
         output_image = Image.open(output_path)
@@ -408,13 +410,15 @@ class LightX2VImageEditGenerator(ImageEditor):
         input_image.save(input_path, format="PNG")
 
         # Run inference using this instance's pipeline
-        instance.pipeline.generate(
-            seed=seed,
-            image_path=str(input_path),
-            prompt=params.prompt,
-            negative_prompt="",
-            save_result_path=str(output_path),
-        )
+        import torch
+        with torch.inference_mode():
+            instance.pipeline.generate(
+                seed=seed,
+                image_path=str(input_path),
+                prompt=params.prompt,
+                negative_prompt="",
+                save_result_path=str(output_path),
+            )
 
         # Load output image
         output_image = Image.open(output_path)
