@@ -263,6 +263,53 @@ The API dynamically calculates batch sizes and concurrent processing based on **
 
 ## Endpoints
 
+### Mode Management
+
+#### `GET /api/v1/mode`
+
+Get the current VRAM mode status including switching progress.
+
+**Response (Not Switching):**
+
+```json
+{
+  "mode": "video_generation",
+  "is_busy": false,
+  "active_job_id": null,
+  "loaded_models": ["ltx-2-19b"],
+  "is_switching": false,
+  "switching_target": null,
+  "switching_step": null,
+  "switching_progress": null
+}
+```
+
+**Response (Switching in Progress):**
+
+```json
+{
+  "mode": "image_generation",
+  "is_busy": false,
+  "active_job_id": null,
+  "loaded_models": [],
+  "is_switching": true,
+  "switching_target": "video_generation",
+  "switching_step": "Loading LTX-2 models (this takes 2-3 minutes)...",
+  "switching_progress": 0.2
+}
+```
+
+| Field                | Type         | Description                                                                   |
+| -------------------- | ------------ | ----------------------------------------------------------------------------- |
+| `mode`               | string       | Current mode (`image_generation`, `image_editing`, `video_generation`, `all`) |
+| `is_busy`            | bool         | Whether a job is currently running                                            |
+| `is_switching`       | bool         | Whether mode switch is in progress                                            |
+| `switching_target`   | string\|null | Target mode when switching                                                    |
+| `switching_step`     | string\|null | Current switching step description                                            |
+| `switching_progress` | float\|null  | Progress 0.0-1.0 when switching                                               |
+
+---
+
 ### Job Management
 
 All generation endpoints are **asynchronous**. They return a `job_id` which you use to poll for status.
