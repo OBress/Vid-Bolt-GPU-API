@@ -67,6 +67,34 @@ huggingface-cli download lightx2v/Qwen-Image-Edit-2511-Lightning \
 echo -e "${GREEN}  ✓ LightX2V LoRA downloaded${NC}"
 
 # =============================================================================
+# Convert Qwen-Image-Edit to FP8 (reduces VRAM from ~38GB to ~19GB)
+# =============================================================================
+FP8_DIR="$MODELS_DIR/qwen-image-edit-2511-fp8"
+if [ ! -d "$FP8_DIR" ] || [ -z "$(ls -A $FP8_DIR 2>/dev/null)" ]; then
+    echo -e "${YELLOW}[3.5/5] Converting Qwen-Image-Edit to FP8...${NC}"
+    echo -e "  This enables 2x concurrent instances with same VRAM"
+    
+    mkdir -p "$FP8_DIR"
+    
+    # Run the converter from LightX2V tools
+    python "$PROJECT_DIR/LightX2V/tools/convert/converter.py" \
+        --source "$MODELS_DIR/qwen-image-edit-2511" \
+        --output "$FP8_DIR" \
+        --output_ext .safetensors \
+        --output_name qwen_image_dit_fp8 \
+        --linear_type fp8 \
+        --non_linear_dtype torch.bfloat16 \
+        --model_type qwen_image_dit \
+        --quantized \
+        --save_by_block \
+        --copy_no_weight_files
+    
+    echo -e "${GREEN}  ✓ FP8 conversion complete${NC}"
+else
+    echo -e "${GREEN}  ✓ FP8 model already exists, skipping conversion${NC}"
+fi
+
+# =============================================================================
 # LTX-2 Components (~40GB total)
 # =============================================================================
 echo -e "${YELLOW}[4/5] Downloading LTX-2 components...${NC}"
@@ -116,7 +144,8 @@ echo ""
 echo -e "Directory structure:"
 echo -e "  models/"
 echo -e "  ├── z-image-turbo/"
-echo -e "  ├── qwen-image-edit-2511/"
+echo -e "  ├── qwen-image-edit-2511/         (BF16 base model)"
+echo -e "  ├── qwen-image-edit-2511-fp8/     (FP8 quantized - 50% less VRAM)"
 echo -e "  ├── loras/"
 echo -e "  │   ├── z-image/"
 echo -e "  │   └── qwen-image-edit-2511/"
@@ -126,4 +155,4 @@ echo -e "      ├── ltx-2-spatial-upscaler-x2-1.0.safetensors"
 echo -e "      ├── ltx-2-19b-distilled-lora-384.safetensors"
 echo -e "      └── gemma-3-12b-it-qat-q4_0-unquantized/"
 echo ""
-du -sh "$MODELS_DIR" 2>/dev/null || echo "Total size: ~80GB"
+du -sh "$MODELS_DIR" 2>/dev/null || echo "Total size: ~85GB"

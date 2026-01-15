@@ -153,7 +153,18 @@ class LightX2VInstancePool:
                 "Install with: pip install -v git+https://github.com/ModelTC/LightX2V.git"
             ) from e
         
-        model_path = Path(self.settings.lightx2v_model_path)
+        # Use FP8 model if enabled and available, otherwise fall back to BF16
+        if self.settings.lightx2v_fp8_enabled:
+            fp8_path = Path(self.settings.lightx2v_fp8_model_path)
+            if fp8_path.exists() and any(fp8_path.iterdir()):
+                model_path = fp8_path
+                logger.info(f"Using FP8 quantized model: {fp8_path}")
+            else:
+                model_path = Path(self.settings.lightx2v_model_path)
+                logger.warning(f"FP8 model not found at {fp8_path}, falling back to BF16")
+        else:
+            model_path = Path(self.settings.lightx2v_model_path)
+        
         lora_path = Path(self.settings.lightx2v_lora_path) / self.settings.lightx2v_lora_filename
         
         for i in range(self.max_instances):
@@ -168,6 +179,15 @@ class LightX2VInstancePool:
                 model_cls="qwen-image-edit-2511",
                 task="i2i",
             )
+            
+            # Enable FP8 quantization if using FP8 model
+            if self.settings.lightx2v_fp8_enabled and model_path == Path(self.settings.lightx2v_fp8_model_path):
+                pipe.enable_quantize(
+                    dit_quantized=True,
+                    dit_quantized_ckpt=str(model_path.absolute()),
+                    quant_scheme=self.settings.lightx2v_fp8_quant_scheme,
+                )
+                logger.info(f"  FP8 quantization enabled (scheme: {self.settings.lightx2v_fp8_quant_scheme})")
             
             # Enable CPU offloading if configured
             if self.settings.lightx2v_cpu_offload or self.settings.lightx2v_text_encoder_offload:

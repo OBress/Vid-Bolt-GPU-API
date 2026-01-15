@@ -32,6 +32,7 @@ class ModelPaths:
     
     # LightX2V / Qwen-Image-Edit (image editing)
     LIGHTX2V_MODEL = "models/qwen-image-edit-2511"
+    LIGHTX2V_MODEL_FP8 = "models/qwen-image-edit-2511-fp8"  # FP8 quantized (~19GB vs ~38GB)
     LIGHTX2V_LORA = "models/loras/qwen-image-edit-2511"
     LIGHTX2V_LORA_FILE = "Qwen-Image-Edit-2511-Lightning-8steps-V1.0-fp32.safetensors"
     
@@ -69,9 +70,11 @@ class InferenceConfig:
     LIGHTX2V_RESIZE_MODE = "adaptive"
     LIGHTX2V_CPU_OFFLOAD = False
     LIGHTX2V_TEXT_ENCODER_OFFLOAD = True
-    # LightX2V instance counts per mode (each instance ~20-25GB VRAM)
+    LIGHTX2V_FP8_ENABLED = True  # Use FP8 quantized model (~19GB vs ~38GB)
+    LIGHTX2V_FP8_QUANT_SCHEME = "fp8-sgl"  # FP8 single-element scaling
+    # LightX2V instance counts per mode (FP8: ~19GB per instance)
     LIGHTX2V_MAX_INSTANCES_ALL = 1       # Conservative when sharing VRAM with Z-Image + LTX-2
-    LIGHTX2V_MAX_INSTANCES_DEDICATED = 2  # 2 concurrent instances for image editing
+    LIGHTX2V_MAX_INSTANCES_DEDICATED = 2  # 2 concurrent instances (2 x ~19GB = ~38GB)
     
     # LTX-2 settings (Optimized for Distilled Model)
     # Distilled model uses 8 predefined sigmas (Stage 1: 8 steps, Stage 2: 4 steps)
@@ -245,6 +248,21 @@ class Settings(BaseSettings):
     @property
     def lightx2v_text_encoder_offload(self) -> bool:
         return InferenceConfig.LIGHTX2V_TEXT_ENCODER_OFFLOAD
+    
+    @property
+    def lightx2v_fp8_enabled(self) -> bool:
+        """Whether to use FP8 quantized model (~19GB vs ~38GB)."""
+        return InferenceConfig.LIGHTX2V_FP8_ENABLED
+    
+    @property
+    def lightx2v_fp8_model_path(self) -> str:
+        """Path to FP8 quantized model."""
+        return ModelPaths.LIGHTX2V_MODEL_FP8
+    
+    @property
+    def lightx2v_fp8_quant_scheme(self) -> str:
+        """FP8 quantization scheme."""
+        return InferenceConfig.LIGHTX2V_FP8_QUANT_SCHEME
     
     @property
     def lightx2v_dry_run(self) -> bool:
