@@ -23,6 +23,7 @@ class TestBatchModels:
         
         # Valid item
         item = BatchImageGenerateItem(
+            item_id="item-1",
             prompt="A beautiful sunset",
             save_url="https://example.com/output.png"
         )
@@ -36,6 +37,7 @@ class TestBatchModels:
         
         # Both width and height provided - valid
         item = BatchImageGenerateItem(
+            item_id="item-2",
             prompt="Test",
             width=1024,
             height=768,
@@ -51,6 +53,7 @@ class TestBatchModels:
         # Only width - invalid
         with pytest.raises(ValueError, match="Height must be provided"):
             BatchImageGenerateItem(
+                item_id="item-3",
                 prompt="Test",
                 width=1024,
                 save_url="https://example.com/output.png"
@@ -59,6 +62,7 @@ class TestBatchModels:
         # Only height - invalid
         with pytest.raises(ValueError, match="Width must be provided"):
             BatchImageGenerateItem(
+                item_id="item-4",
                 prompt="Test",
                 height=768,
                 save_url="https://example.com/output.png"
@@ -70,10 +74,10 @@ class TestBatchModels:
         
         # Create request with max items (500) - should work
         items = [
-            BatchImageGenerateItem(prompt=f"Test {i}", save_url=f"https://example.com/{i}.png")
+            BatchImageGenerateItem(item_id=f"item-{i}", prompt=f"Test {i}", save_url=f"https://example.com/{i}.png")
             for i in range(500)
         ]
-        request = BatchImageGenerateRequest(batch_id="test-batch", items=items)
+        request = BatchImageGenerateRequest(batch_id="test-batch", items=items, webhook_url="http://webhook.test")
         assert len(request.items) == 500
     
     def test_batch_request_max_items_video(self):
@@ -83,13 +87,14 @@ class TestBatchModels:
         # Create request with max items (100) - should work
         items = [
             BatchVideoGenerateItem(
+                item_id=f"video-{i}",
                 input_image_url=f"https://example.com/input{i}.png",
                 prompt=f"Test {i}",
                 save_url=f"https://example.com/{i}.mp4"
             )
             for i in range(100)
         ]
-        request = BatchVideoGenerateRequest(batch_id="test-batch", items=items)
+        request = BatchVideoGenerateRequest(batch_id="test-batch", items=items, webhook_url="http://webhook.test")
         assert len(request.items) == 100
     
     def test_batch_info_status_aggregation(self):
@@ -97,9 +102,9 @@ class TestBatchModels:
         from app.models.batch import BatchInfo, BatchItemStatus, BatchItemState, BatchStatus
         
         items = [
-            BatchItemStatus(item_index=0, job_id="batch__item_0", status=BatchItemState.COMPLETED),
-            BatchItemStatus(item_index=1, job_id="batch__item_1", status=BatchItemState.PROCESSING),
-            BatchItemStatus(item_index=2, job_id="batch__item_2", status=BatchItemState.FAILED, error_message="OOM"),
+            BatchItemStatus(item_index=0, item_id="item-0", job_id="batch__item_0", status=BatchItemState.COMPLETED),
+            BatchItemStatus(item_index=1, item_id="item-1", job_id="batch__item_1", status=BatchItemState.PROCESSING),
+            BatchItemStatus(item_index=2, item_id="item-2", job_id="batch__item_2", status=BatchItemState.FAILED, error_message="OOM"),
         ]
         
         batch = BatchInfo(
@@ -200,9 +205,10 @@ class TestBatchEndpoints:
             json={
                 "batch_id": batch_id,
                 "items": [
-                    {"prompt": "A cat", "save_url": "https://example.com/1.png"},
-                    {"prompt": "A dog", "save_url": "https://example.com/2.png"},
-                ]
+                    {"item_id": "img-1", "prompt": "A cat", "save_url": "https://example.com/1.png"},
+                    {"item_id": "img-2", "prompt": "A dog", "save_url": "https://example.com/2.png"},
+                ],
+                "webhook_url": "http://webhook.test"
             }
         )
         
@@ -219,7 +225,7 @@ class TestBatchEndpoints:
             "/api/v1/batch/image/generate",
             json={
                 "batch_id": "test",
-                "items": [{"prompt": "Test", "save_url": "https://example.com/1.png"}]
+                "items": [{"item_id": "i0", "prompt": "Test", "save_url": "https://example.com/1.png"}]
             }
         )
         
@@ -237,7 +243,8 @@ class TestBatchEndpoints:
             headers=api_key_headers,
             json={
                 "batch_id": batch_id,
-                "items": [{"prompt": "Test", "save_url": "https://example.com/1.png"}]
+                "items": [{"item_id": "i1", "prompt": "Test", "save_url": "https://example.com/1.png"}],
+                "webhook_url": "http://webhook.test"
             }
         )
         assert response1.status_code == 202
@@ -248,7 +255,8 @@ class TestBatchEndpoints:
             headers=api_key_headers,
             json={
                 "batch_id": batch_id,
-                "items": [{"prompt": "Test 2", "save_url": "https://example.com/2.png"}]
+                "items": [{"item_id": "i2", "prompt": "Test 2", "save_url": "https://example.com/2.png"}],
+                "webhook_url": "http://webhook.test"
             }
         )
         assert response2.status_code == 409
@@ -266,9 +274,10 @@ class TestBatchEndpoints:
             json={
                 "batch_id": batch_id,
                 "items": [
-                    {"prompt": "A cat", "save_url": "https://example.com/1.png"},
-                    {"prompt": "A dog", "save_url": "https://example.com/2.png"},
-                ]
+                    {"item_id": "img-1", "prompt": "A cat", "save_url": "https://example.com/1.png"},
+                    {"item_id": "img-2", "prompt": "A dog", "save_url": "https://example.com/2.png"},
+                ],
+                "webhook_url": "http://webhook.test"
             }
         )
         
@@ -307,7 +316,8 @@ class TestBatchEndpoints:
             headers=api_key_headers,
             json={
                 "batch_id": batch_id,
-                "items": [{"prompt": "Test", "save_url": "https://example.com/1.png"}]
+                "items": [{"item_id": "del", "prompt": "Test", "save_url": "https://example.com/1.png"}],
+                "webhook_url": "http://webhook.test"
             }
         )
         
@@ -341,12 +351,14 @@ class TestBatchEndpoints:
                 "batch_id": batch_id,
                 "items": [
                     {
+                        "item_id": "vid-1",
                         "input_image_url": "https://example.com/input.png",
                         "prompt": "Waves crashing",
                         "duration_seconds": 3.0,
                         "save_url": "https://example.com/1.mp4"
                     },
-                ]
+                ],
+                "webhook_url": "http://webhook.test"
             }
         )
         
@@ -372,11 +384,13 @@ class TestBatchImageEditing:
                 "batch_id": batch_id,
                 "items": [
                     {
+                        "item_id": "ed-1",
                         "input_image_url": "https://example.com/input.png",
                         "prompt": "Make it look vintage",
                         "save_url": "https://example.com/1.png"
                     },
-                ]
+                ],
+                "webhook_url": "http://webhook.test"
             }
         )
         

@@ -18,6 +18,7 @@ async def test_edit_image_success(async_client, api_key_headers, mock_storage, s
             "prompt": "Make it look vintage",
             "aspect_ratio": "16:9",
             "save_url": "https://example.com/save.png",
+            "webhook_url": "http://webhook.test",
         },
     )
 
@@ -60,6 +61,7 @@ async def test_edit_image_with_output_url(async_client, api_key_headers, mock_st
             "input_image_url": input_url,
             "prompt": "Change color to blue",
             "save_url": output_url,
+            "webhook_url": "http://webhook.test",
         },
     )
 
@@ -98,6 +100,7 @@ async def test_edit_image_inpaint_with_mask(async_client, api_key_headers, mock_
             "mask_image_url": mask_url,
             "prompt": "Fill the hole",
             "save_url": "https://example.com/save.png",
+            "webhook_url": "http://webhook.test",
         },
     )
 
@@ -125,6 +128,7 @@ async def test_edit_image_download_error(async_client, api_key_headers, mock_sto
             "input_image_url": "https://bad-url.com/img.png",
             "prompt": "edit",
             "save_url": "https://example.com/save.png",
+            "webhook_url": "http://webhook.test",
         },
     )
 

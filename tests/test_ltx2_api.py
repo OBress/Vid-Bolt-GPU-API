@@ -27,6 +27,7 @@ class TestLTX2GenerateEndpoint:
                 "duration_seconds": 3.0,
                 "frame_rate": 24.0,
                 "save_url": "https://example.com/upload/video.mp4",
+                "webhook_url": "http://webhook.test"
             },
         )
 
@@ -65,6 +66,7 @@ class TestLTX2GenerateEndpoint:
                 "prompt": "Person walking from left to right",
                 "duration_seconds": 5.0,
                 "save_url": "https://example.com/upload/video.mp4",
+                "webhook_url": "http://webhook.test"
             },
         )
 
@@ -117,6 +119,7 @@ class TestLTX2GenerateEndpoint:
                 "prompt": "Short video",
                 "duration_seconds": 0.5,  # Minimum allowed
                 "save_url": "https://example.com/upload.mp4",
+                "webhook_url": "http://webhook.test"
             },
         )
         assert response.status_code == 202
@@ -129,6 +132,7 @@ class TestLTX2GenerateEndpoint:
                 "input_image_url": "https://example.com/start.png",
                 "duration_seconds": 0.5,
                 "save_url": "https://example.com/upload.mp4",
+                "webhook_url": "http://webhook.test"
             },
         )
         assert response.status_code == 400 # Invalid duration should be 4000
@@ -156,6 +160,7 @@ class TestKeyframeInterpolateEndpoint:
                 "duration_seconds": 3.0,
                 "frame_rate": 24.0,
                 "save_url": "https://example.com/upload/video.mp4",
+                "webhook_url": "http://webhook.test"
             },
         )
 
@@ -190,6 +195,7 @@ class TestKeyframeInterpolateEndpoint:
                 ],
                 "duration_seconds": 2.0,
                 "save_url": "https://example.com/upload/video.mp4",
+                "webhook_url": "http://webhook.test"
             },
         )
 
@@ -232,6 +238,7 @@ class TestKeyframeInterpolateEndpoint:
                 "keyframes": keyframes,
                 "duration_seconds": 5.0,
                 "save_url": "https://example.com/upload/video.mp4",
+                "webhook_url": "http://webhook.test"
             },
         )
         assert response.status_code == 400
@@ -262,6 +269,7 @@ class TestKeyframeInterpolateEndpoint:
                 ],
                 "duration_seconds": 5.0,
                 "save_url": "https://example.com/upload/video.mp4",
+                "webhook_url": "http://webhook.test"
             },
         )
 
@@ -285,6 +293,7 @@ class TestKeyframeInterpolateEndpoint:
                 "duration_seconds": 2.0,
                 "aspect_ratio": "9:16",
                 "save_url": "https://example.com/upload/video.mp4",
+                "webhook_url": "http://webhook.test"
             },
         )
 

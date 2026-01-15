@@ -266,6 +266,7 @@ class TestZImageIntegration:
                 "prompt": "A beautiful mountain landscape",
                 "aspect_ratio": "16:9",
                 "save_url": "https://example.com/upload/test.png",
+                "webhook_url": "http://webhook.test"
             },
         )
         

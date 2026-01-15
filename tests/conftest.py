@@ -96,7 +96,7 @@ def sample_job_id() -> str:
 
 
 @pytest.fixture
-def mock_job_manager() -> Generator[MagicMock, None, None]:
+async def mock_job_manager() -> Generator[MagicMock, None, None]:
     """Create a fresh JobManager for each test."""
     from app.services.job_manager import JobManager
     from app.config import get_settings
@@ -107,7 +107,15 @@ def mock_job_manager() -> Generator[MagicMock, None, None]:
     manager = JobManager(settings)
     
     app.dependency_overrides[get_job_manager] = lambda: manager
+    
+    # Start the manager (activates worker loop)
+    manager.start()
+    
     yield manager
+    
+    # Stop the manager
+    manager.stop()
+    
     app.dependency_overrides.pop(get_job_manager, None)
 
 

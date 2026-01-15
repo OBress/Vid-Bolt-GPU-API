@@ -25,6 +25,7 @@ class ImageGenerationResult:
     width: int
     height: int
     seed: int
+    generation_time: float = 0.0
 
 @dataclass
 class ImageEditParams:
@@ -46,6 +47,7 @@ class ImageEditResult:
     width: int
     height: int
     seed: int
+    generation_time: float = 0.0
 
 @dataclass
 class VideoGenerationParams:
@@ -73,6 +75,7 @@ class VideoGenerationResult:
     has_audio: bool
     seed: int
     upscale_info: Optional[dict[str, Any]] = None
+    generation_time: float = 0.0
 
 @dataclass
 class KeyframeInterpolationParams:

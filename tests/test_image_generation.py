@@ -12,7 +12,8 @@ async def test_generate_image_success(async_client, api_key_headers, mock_storag
         "job_id": "test-job-1",
         "prompt": "A beautiful sunset",
         "aspect_ratio": "16:9",
-        "save_url": "https://r2.example.com/output.png"
+        "save_url": "https://r2.example.com/output.png",
+        "webhook_url": "http://webhook.test"
     }
     
     # 1. Initiate Generation
@@ -54,6 +55,7 @@ async def test_generate_image_with_output_url(async_client, api_key_headers, moc
             "job_id": sample_job_id,
             "prompt": "A beautiful sunset",
             "save_url": custom_url,
+            "webhook_url": "http://webhook.test",
         },
     )
 
@@ -90,6 +92,7 @@ async def test_generate_image_custom_dimensions(async_client, api_key_headers, m
             "width": 512,
             "height": 512,
             "save_url": "https://example.com/save.png",
+            "webhook_url": "http://webhook.test",
         },
     )
 
@@ -122,6 +125,7 @@ async def test_generate_image_custom_dimensions_validation(async_client, api_key
             "prompt": "A beautiful sunset",
             "width": 64,
             "height": 512,
+            "webhook_url": "http://webhook.test",
         },
     )
     assert response.status_code == 400
@@ -136,6 +140,7 @@ async def test_generate_image_custom_dimensions_validation(async_client, api_key
             "prompt": "test",
             "width": 512,
             "save_url": "http://save.com",
+            "webhook_url": "http://webhook.test",
         },
     )
     assert response.status_code == 400
@@ -150,6 +155,7 @@ async def test_generate_image_custom_dimensions_validation(async_client, api_key
             "width": 64,
             "height": 64,
             "save_url": "http://save.com",
+            "webhook_url": "http://webhook.test",
         },
     )
     assert response.status_code == 400
@@ -164,6 +170,7 @@ async def test_generate_image_custom_dimensions_validation(async_client, api_key
             "width": 4096,
             "height": 4096,
             "save_url": "http://save.com",
+            "webhook_url": "http://webhook.test",
         },
     )
     assert response.status_code == 400
@@ -180,6 +187,7 @@ async def test_generate_image_invalid_aspect_ratio(async_client, api_key_headers
             "prompt": "A beautiful sunset",
             "aspect_ratio": "invalid",
             "save_url": "http://save.com",
+            "webhook_url": "http://webhook.test",
         },
     )
     assert response.status_code == 400
