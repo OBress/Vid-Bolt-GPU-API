@@ -72,12 +72,19 @@ class DistilledPipeline:
 
         # Pre-load models to keep them in VRAM
         logging.info("Loading DistilledPipeline models into VRAM...")
+        logging.info("  [1/7] Loading text_encoder...")
         self.text_encoder = self.model_ledger.text_encoder()
+        logging.info("  [2/7] Loading video_encoder...")
         self.video_encoder = self.model_ledger.video_encoder()
+        logging.info("  [3/7] Loading transformer (this may take 1-2 minutes)...")
         self.transformer = self.model_ledger.transformer()
+        logging.info("  [4/7] Loading spatial_upsampler...")
         self.spatial_upsampler = self.model_ledger.spatial_upsampler()
+        logging.info("  [5/7] Loading video_decoder...")
         self.video_decoder = self.model_ledger.video_decoder()
+        logging.info("  [6/7] Loading audio_decoder...")
         self.audio_decoder = self.model_ledger.audio_decoder()
+        logging.info("  [7/7] Loading vocoder...")
         self.vocoder = self.model_ledger.vocoder()
         
         # Move models to device (if not handled by ledger builder)

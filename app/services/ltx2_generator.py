@@ -161,6 +161,7 @@ class LTX2Generator(VideoGenerator):
             device=device,
             fp8transformer=self.settings.ltx2_fp8_enabled,
         )
+        logger.info("DistilledPipeline __init__ completed successfully")
 
         self.components = LTX2Components(
             distilled_pipeline=distilled_pipeline,
