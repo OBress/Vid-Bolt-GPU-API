@@ -326,8 +326,8 @@ class LightX2VImageEditGenerator(ImageEditor):
         input_image = Image.open(io.BytesIO(params.input_image_data))
         orig_width, orig_height = input_image.size
         
-        # Cap dimensions at 2048x2048 (preserve aspect ratio)
-        max_dim = 2048
+        # Cap dimensions at 4096x4096 (preserve aspect ratio)
+        max_dim = 4096
         target_width, target_height = orig_width, orig_height
         if orig_width > max_dim or orig_height > max_dim:
             scale = min(max_dim / orig_width, max_dim / orig_height)
@@ -342,6 +342,7 @@ class LightX2VImageEditGenerator(ImageEditor):
         input_image.save(input_path, format="PNG")
 
         # Run inference using this instance's pipeline
+        # Model will generate at native resolution (or nearest 32px multiple)
         import torch
         with torch.inference_mode():
             instance.pipeline.generate(
@@ -356,13 +357,16 @@ class LightX2VImageEditGenerator(ImageEditor):
         output_image = Image.open(output_path)
         model_out_w, model_out_h = output_image.size
         
-        # Resize output to match target dimensions (original or capped)
-        if output_image.size != (target_width, target_height):
-            logger.info(f"Resizing output from {model_out_w}x{model_out_h} to {target_width}x{target_height}")
-            output_image = output_image.resize(
-                (target_width, target_height),
-                Image.Resampling.LANCZOS
-            )
+        # Center-crop output to exact target dimensions if needed (like z-image)
+        # This handles any 32px alignment padding the model may have added
+        if model_out_w != target_width or model_out_h != target_height:
+            logger.info(f"Center-cropping output from {model_out_w}x{model_out_h} to {target_width}x{target_height}")
+            # Calculate crop box (center-aligned)
+            left = (model_out_w - target_width) // 2
+            top = (model_out_h - target_height) // 2
+            right = left + target_width
+            bottom = top + target_height
+            output_image = output_image.crop((left, top, right, bottom))
 
         buffer = io.BytesIO()
         output_image.save(buffer, format="PNG")
