@@ -154,14 +154,22 @@ class LightX2VInstancePool:
             ) from e
         
         # Use FP8 model if enabled and available, otherwise fall back to BF16
+        using_fp8 = False
         if self.settings.lightx2v_fp8_enabled:
             fp8_path = Path(self.settings.lightx2v_fp8_model_path)
             if fp8_path.exists() and any(fp8_path.iterdir()):
                 model_path = fp8_path
+                using_fp8 = True
                 logger.info(f"Using FP8 quantized model: {fp8_path}")
             else:
                 model_path = Path(self.settings.lightx2v_model_path)
-                logger.warning(f"FP8 model not found at {fp8_path}, falling back to BF16")
+                # BF16 uses ~38GB per instance vs ~19GB for FP8
+                # Reduce to 1 instance to prevent OOM
+                if self.max_instances > 1:
+                    logger.warning(f"FP8 model not found at {fp8_path}, falling back to BF16")
+                    logger.warning(f"Reducing instance count from {self.max_instances} to 1 (BF16 uses ~38GB per instance)")
+                    self.max_instances = 1
+                    self._semaphore = asyncio.Semaphore(1)
         else:
             model_path = Path(self.settings.lightx2v_model_path)
         
@@ -181,7 +189,7 @@ class LightX2VInstancePool:
             )
             
             # Enable FP8 quantization if using FP8 model
-            if self.settings.lightx2v_fp8_enabled and model_path == Path(self.settings.lightx2v_fp8_model_path):
+            if using_fp8:
                 pipe.enable_quantize(
                     dit_quantized=True,
                     dit_quantized_ckpt=str(model_path.absolute()),
