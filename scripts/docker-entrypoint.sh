@@ -34,8 +34,9 @@ else
         --local-dir "/app/models/temp-fp8-download" \
         --local-dir-use-symlinks False
     
-    # Move to correct location
-    mv "/app/models/temp-fp8-download/qwen_image_edit_2511_fp8_e4m3fn_scaled_lightning_split" "$FP8_DIR"
+    # Move contents to correct location (flatten directory structure)
+    mkdir -p "$FP8_DIR"
+    mv /app/models/temp-fp8-download/qwen_image_edit_2511_fp8_e4m3fn_scaled_lightning_split/* "$FP8_DIR/"
     rm -rf "/app/models/temp-fp8-download"
     
     echo -e "${GREEN}[Startup] FP8 model downloaded successfully!${NC}"

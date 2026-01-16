@@ -68,8 +68,9 @@ if [ ! -d "$FP8_DIR" ] || [ -z "$(ls -A $FP8_DIR 2>/dev/null)" ]; then
         --local-dir "$MODELS_DIR/temp-fp8-download" \
         --local-dir-use-symlinks False
     
-    # Move to correct location
-    mv "$MODELS_DIR/temp-fp8-download/qwen_image_edit_2511_fp8_e4m3fn_scaled_lightning_split" "$FP8_DIR"
+    # Move contents to correct location (flatten directory structure)
+    mkdir -p "$FP8_DIR"
+    mv "$MODELS_DIR/temp-fp8-download/qwen_image_edit_2511_fp8_e4m3fn_scaled_lightning_split"/* "$FP8_DIR/"
     rm -rf "$MODELS_DIR/temp-fp8-download"
     
     echo -e "${GREEN}  ✓ FP8 model downloaded (~20.5GB)${NC}"
