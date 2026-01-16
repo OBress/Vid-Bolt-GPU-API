@@ -227,6 +227,10 @@ class LightX2VInstancePool:
                 guidance_scale=self.settings.lightx2v_guidance_scale,
             )
             
+            # Increase max_custom_size to support up to 4K resolution
+            # Default is 1664 which caps 1920x1088 to ~1376x768
+            pipe.runner.set_config({"max_custom_size": 4096})
+            
             instance = PooledInstance(
                 pipeline=pipe,
                 instance_id=i,
