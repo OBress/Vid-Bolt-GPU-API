@@ -251,7 +251,7 @@ def module_ops_from_gemma_root(gemma_root: str) -> tuple[ModuleOps, ...]:
         return module
 
     def load_tokenizer(module: GemmaTextEncoderModelBase) -> GemmaTextEncoderModelBase:
-        module.tokenizer = LTXVGemmaTokenizer(tokenizer_path, 49)
+        module.tokenizer = LTXVGemmaTokenizer(tokenizer_path, 1024)
         module._gemma_root = module._gemma_root or gemma_root
         return module
 

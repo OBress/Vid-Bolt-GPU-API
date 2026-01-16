@@ -1,4 +1,5 @@
 import logging
+import threading
 from collections.abc import Iterator
 
 import torch
@@ -90,6 +91,9 @@ class DistilledPipeline:
         # Move models to device (if not handled by ledger builder)
         # Ledger returns models already on device, so this is just a sanity check/comment.
         logging.info("DistilledPipeline models loaded.")
+        
+        # Thread lock for text encoder (not thread-safe due to HuggingFace tokenizer)
+        self._text_encoder_lock = threading.Lock()
 
     def __call__(
         self,
@@ -111,9 +115,12 @@ class DistilledPipeline:
         dtype = torch.bfloat16
 
         text_encoder = self.text_encoder
-        if enhance_prompt:
-            prompt = generate_enhanced_prompt(text_encoder, prompt, images[0][0] if len(images) > 0 else None)
-        context_p = encode_text(text_encoder, prompts=[prompt])[0]
+        
+        # Serialize text encoder access (tokenizer/Gemma not thread-safe)
+        with self._text_encoder_lock:
+            if enhance_prompt:
+                prompt = generate_enhanced_prompt(text_encoder, prompt, images[0][0] if len(images) > 0 else None)
+            context_p = encode_text(text_encoder, prompts=[prompt])[0]
         video_context, audio_context = context_p
 
         # Stage 1: Initial low resolution video generation.
