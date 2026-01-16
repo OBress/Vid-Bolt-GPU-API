@@ -67,31 +67,27 @@ huggingface-cli download lightx2v/Qwen-Image-Edit-2511-Lightning \
 echo -e "${GREEN}  ✓ LightX2V LoRA downloaded${NC}"
 
 # =============================================================================
-# Convert Qwen-Image-Edit to FP8 (reduces VRAM from ~38GB to ~19GB)
+# Download Pre-converted FP8 Model (reduces VRAM from ~38GB to ~19GB)
+# This model has the Lightning 8-step LoRA already baked in!
 # =============================================================================
 FP8_DIR="$MODELS_DIR/qwen-image-edit-2511-fp8"
 if [ ! -d "$FP8_DIR" ] || [ -z "$(ls -A $FP8_DIR 2>/dev/null)" ]; then
-    echo -e "${YELLOW}[3.5/5] Converting Qwen-Image-Edit to FP8...${NC}"
+    echo -e "${YELLOW}[3.5/5] Downloading pre-converted FP8 model...${NC}"
     echo -e "  This enables 2x concurrent instances with same VRAM"
     
-    mkdir -p "$FP8_DIR"
+    # Download the pre-converted FP8 model with 8-step Lightning LoRA baked in
+    huggingface-cli download lightx2v/Qwen-Image-Edit-2511-Lightning \
+        --include "qwen_image_edit_2511_fp8_e4m3fn_scaled_lightning_split/*" \
+        --local-dir "$MODELS_DIR/temp-fp8-download" \
+        --local-dir-use-symlinks False
     
-    # Run the converter from LightX2V tools
-    python "$PROJECT_DIR/LightX2V/tools/convert/converter.py" \
-        --source "$MODELS_DIR/qwen-image-edit-2511" \
-        --output "$FP8_DIR" \
-        --output_ext .safetensors \
-        --output_name qwen_image_dit_fp8 \
-        --linear_type fp8 \
-        --non_linear_dtype torch.bfloat16 \
-        --model_type qwen_image_dit \
-        --quantized \
-        --save_by_block \
-        --copy_no_weight_files
+    # Move to correct location
+    mv "$MODELS_DIR/temp-fp8-download/qwen_image_edit_2511_fp8_e4m3fn_scaled_lightning_split" "$FP8_DIR"
+    rm -rf "$MODELS_DIR/temp-fp8-download"
     
-    echo -e "${GREEN}  ✓ FP8 conversion complete${NC}"
+    echo -e "${GREEN}  ✓ FP8 model downloaded (~20.5GB)${NC}"
 else
-    echo -e "${GREEN}  ✓ FP8 model already exists, skipping conversion${NC}"
+    echo -e "${GREEN}  ✓ FP8 model already exists, skipping download${NC}"
 fi
 
 # =============================================================================

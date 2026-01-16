@@ -206,11 +206,14 @@ class LightX2VInstancePool:
                     vae_offload=False,
                 )
             
-            # Enable LoRA
-            pipe.enable_lora([{
-                "path": str(lora_path.absolute()),
-                "strength": self.settings.lightx2v_lora_strength
-            }])
+            # Enable LoRA - but skip for FP8 since it has Lightning LoRA baked in
+            if not using_fp8:
+                pipe.enable_lora([{
+                    "path": str(lora_path.absolute()),
+                    "strength": self.settings.lightx2v_lora_strength
+                }])
+            else:
+                logger.info(f"  Skipping LoRA loading (FP8 model has Lightning LoRA baked in)")
             
             # Resolution is controlled via custom_shape at generate() time 
             # (see lightx2v_generator.py). This forces exact input dimensions
