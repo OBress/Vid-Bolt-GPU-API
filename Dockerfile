@@ -85,6 +85,9 @@ RUN pip install --no-cache-dir git+https://github.com/huggingface/diffusers
 # The final PyTorch reinstall step below will fix any version downgrades
 RUN pip install --no-cache-dir git+https://github.com/ModelTC/LightX2V.git || echo "LightX2V installation skipped"
 
+# qtorch for FP8 quantization (required for FP8 inference)
+RUN pip install --no-cache-dir qtorch || echo "qtorch installation skipped"
+
 # =============================================================================
 # Copy Application Code
 # =============================================================================
