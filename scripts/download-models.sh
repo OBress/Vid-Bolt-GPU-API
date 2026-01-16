@@ -44,27 +44,14 @@ fi
 # =============================================================================
 # Z-Image Turbo (~12GB)
 # =============================================================================
-echo -e "${YELLOW}[1/5] Downloading Z-Image Turbo...${NC}"
+echo -e "${YELLOW}[1/4] Downloading Z-Image Turbo...${NC}"
 huggingface-cli download Tongyi-MAI/Z-Image-Turbo \
     --local-dir "$MODELS_DIR/z-image-turbo" \
     --local-dir-use-symlinks False
 echo -e "${GREEN}  ✓ Z-Image Turbo downloaded${NC}"
 
-# =============================================================================
-# Qwen-Image-Edit-2511 + Lightning LoRA (~14GB + ~500MB)
-# =============================================================================
-echo -e "${YELLOW}[2/5] Downloading Qwen-Image-Edit-2511...${NC}"
-huggingface-cli download Qwen/Qwen-Image-Edit-2511 \
-    --local-dir "$MODELS_DIR/qwen-image-edit-2511" \
-    --local-dir-use-symlinks False
-echo -e "${GREEN}  ✓ Qwen-Image-Edit-2511 downloaded${NC}"
-
-echo -e "${YELLOW}[3/5] Downloading LightX2V LoRA (8-step distilled)...${NC}"
-huggingface-cli download lightx2v/Qwen-Image-Edit-2511-Lightning \
-    Qwen-Image-Edit-2511-Lightning-8steps-V1.0-fp32.safetensors \
-    --local-dir "$MODELS_DIR/loras/qwen-image-edit-2511" \
-    --local-dir-use-symlinks False
-echo -e "${GREEN}  ✓ LightX2V LoRA downloaded${NC}"
+# Note: We skip Qwen-Image-Edit-2511 BF16 (~14GB) and separate LoRA (~500MB)
+# because the FP8 model below has Lightning LoRA baked in and uses less VRAM
 
 # =============================================================================
 # Download Pre-converted FP8 Model (reduces VRAM from ~38GB to ~19GB)
@@ -72,7 +59,7 @@ echo -e "${GREEN}  ✓ LightX2V LoRA downloaded${NC}"
 # =============================================================================
 FP8_DIR="$MODELS_DIR/qwen-image-edit-2511-fp8"
 if [ ! -d "$FP8_DIR" ] || [ -z "$(ls -A $FP8_DIR 2>/dev/null)" ]; then
-    echo -e "${YELLOW}[3.5/5] Downloading pre-converted FP8 model...${NC}"
+    echo -e "${YELLOW}[2/4] Downloading pre-converted FP8 model...${NC}"
     echo -e "  This enables 2x concurrent instances with same VRAM"
     
     # Download the pre-converted FP8 model with 8-step Lightning LoRA baked in
@@ -93,7 +80,7 @@ fi
 # =============================================================================
 # LTX-2 Components (~40GB total)
 # =============================================================================
-echo -e "${YELLOW}[4/5] Downloading LTX-2 components...${NC}"
+echo -e "${YELLOW}[3/4] Downloading LTX-2 components...${NC}"
 
 # Main checkpoint (Distilled FP8 for 8-step inference)
 echo -e "  Downloading ltx-2-19b-distilled-fp8.safetensors..."
@@ -121,7 +108,7 @@ echo -e "${GREEN}  ✓ LTX-2 components downloaded${NC}"
 # =============================================================================
 # Gemma Text Encoder (~12GB)
 # =============================================================================
-echo -e "${YELLOW}[5/5] Downloading Gemma-3-12B text encoder...${NC}"
+echo -e "${YELLOW}[4/4] Downloading Gemma-3-12B text encoder...${NC}"
 huggingface-cli download google/gemma-3-12b-it-qat-q4_0-unquantized \
     --local-dir "$MODELS_DIR/ltx-2/gemma-3-12b-it-qat-q4_0-unquantized" \
     --local-dir-use-symlinks False
@@ -139,16 +126,12 @@ echo -e "Models directory: ${BLUE}$MODELS_DIR${NC}"
 echo ""
 echo -e "Directory structure:"
 echo -e "  models/"
-echo -e "  ├── z-image-turbo/"
-echo -e "  ├── qwen-image-edit-2511/         (BF16 base model)"
-echo -e "  ├── qwen-image-edit-2511-fp8/     (FP8 quantized - 50% less VRAM)"
-echo -e "  ├── loras/"
-echo -e "  │   ├── z-image/"
-echo -e "  │   └── qwen-image-edit-2511/"
+echo -e "  ├── z-image-turbo/                 (~12GB)"
+echo -e "  ├── qwen-image-edit-2511-fp8/      (~20GB, has Lightning LoRA baked in)"
 echo -e "  └── ltx-2/"
 echo -e "      ├── ltx-2-19b-distilled-fp8.safetensors"
 echo -e "      ├── ltx-2-spatial-upscaler-x2-1.0.safetensors"
 echo -e "      ├── ltx-2-19b-distilled-lora-384.safetensors"
 echo -e "      └── gemma-3-12b-it-qat-q4_0-unquantized/"
 echo ""
-du -sh "$MODELS_DIR" 2>/dev/null || echo "Total size: ~85GB"
+du -sh "$MODELS_DIR" 2>/dev/null || echo "Total size: ~70GB"
