@@ -301,9 +301,7 @@ class Settings(BaseSettings):
     def ltx2_default_frame_rate(self) -> float:
         return InferenceConfig.LTX2_DEFAULT_FRAME_RATE
     
-    @property
-    def ltx2_use_fp8_text_encoder(self) -> bool:
-        return self.ltx2_use_fp8_text_encoder
+
     
     @property
     def ltx2_dry_run(self) -> bool:
