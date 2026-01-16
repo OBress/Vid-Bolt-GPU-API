@@ -240,7 +240,10 @@ def _find_matching_dir(root_path: str, pattern: str) -> str:
 
 
 def module_ops_from_gemma_root(gemma_root: str) -> tuple[ModuleOps, ...]:
-    gemma_path = _find_matching_dir(gemma_root, "model*.safetensors")
+    try:
+        gemma_path = _find_matching_dir(gemma_root, "model*.safetensors")
+    except FileNotFoundError:
+        gemma_path = _find_matching_dir(gemma_root, "pytorch_model*.bin")
     tokenizer_path = _find_matching_dir(gemma_root, "tokenizer.model")
 
     def load_gemma(module: GemmaTextEncoderModelBase) -> GemmaTextEncoderModelBase:

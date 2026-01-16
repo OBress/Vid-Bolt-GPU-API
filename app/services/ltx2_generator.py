@@ -153,14 +153,18 @@ class LTX2Generator(VideoGenerator):
         # DistilledPipeline for I2V generation
         # Supports 1 start frame with optional end frame (1-2 keyframes total)
         logger.info("Loading DistilledPipeline for I2V generation (~40GB VRAM)...")
-        distilled_pipeline = DistilledPipeline(
-            checkpoint_path=str(checkpoint_path.absolute()),
-            spatial_upsampler_path=str(spatial_upsampler_path.absolute()),
-            gemma_root=str(gemma_root.absolute()),
-            loras=[],  # No extra LoRAs
-            device=device,
-            fp8transformer=self.settings.ltx2_fp8_enabled,
-        )
+        try:
+            distilled_pipeline = DistilledPipeline(
+                checkpoint_path=str(checkpoint_path.absolute()),
+                spatial_upsampler_path=str(spatial_upsampler_path.absolute()),
+                gemma_root=str(gemma_root.absolute()),
+                loras=[],  # No extra LoRAs
+                device=device,
+                fp8transformer=self.settings.ltx2_fp8_enabled,
+            )
+        except Exception:
+            logger.exception("Failed to initialize DistilledPipeline")
+            raise
         logger.info("DistilledPipeline __init__ completed successfully")
 
         self.components = LTX2Components(
