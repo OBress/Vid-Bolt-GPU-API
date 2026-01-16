@@ -56,13 +56,13 @@ echo -e "${GREEN}  ✓ Z-Image Turbo downloaded${NC}"
 # =============================================================================
 # Download Pre-converted FP8 Model (reduces VRAM from ~38GB to ~19GB)
 # This model has the Lightning 8-step LoRA already baked in!
-# We also need config files (scheduler, etc.) from the original model
+# We also need text_encoder, vae, and config files from the original model
 # =============================================================================
 FP8_DIR="$MODELS_DIR/qwen-image-edit-2511-fp8"
-CONFIG_CHECK="$FP8_DIR/scheduler/scheduler_config.json"
+ENCODER_CHECK="$FP8_DIR/text_encoder/model-00001-of-00004.safetensors"
 
-if [ ! -f "$CONFIG_CHECK" ]; then
-    echo -e "${YELLOW}[2/4] Downloading pre-converted FP8 model + config files...${NC}"
+if [ ! -f "$ENCODER_CHECK" ]; then
+    echo -e "${YELLOW}[2/4] Downloading pre-converted FP8 model + required components...${NC}"
     echo -e "  This enables 2x concurrent instances with same VRAM"
     
     # Download the pre-converted FP8 model with 8-step Lightning LoRA baked in
@@ -76,20 +76,20 @@ if [ ! -f "$CONFIG_CHECK" ]; then
     mv "$MODELS_DIR/temp-fp8-download/qwen_image_edit_2511_fp8_e4m3fn_scaled_lightning_split"/* "$FP8_DIR/"
     rm -rf "$MODELS_DIR/temp-fp8-download"
     
-    # Download config files from original Qwen model (scheduler, tokenizer, etc.)
-    # These are required but only ~1MB total
-    echo -e "  Downloading config files from original Qwen model..."
+    # Download text_encoder, vae, scheduler, tokenizer from original Qwen model
+    # text_encoder is ~7GB (BF16, still needed for FP8), vae is small
+    echo -e "  Downloading text_encoder, vae, and configs from original Qwen model (~7GB)..."
     huggingface-cli download Qwen/Qwen-Image-Edit-2511 \
-        --include "scheduler/*" "tokenizer/*" "*.json" "*.txt" \
-        --exclude "*.safetensors" "*.bin" "*.ckpt" "*.pth" "*.pt" \
-        --local-dir "$MODELS_DIR/temp-config-download" \
+        --include "text_encoder/*" "vae/*" "scheduler/*" "tokenizer/*" "*.json" "*.txt" \
+        --exclude "transformer/*" \
+        --local-dir "$MODELS_DIR/temp-components" \
         --local-dir-use-symlinks False
     
-    # Copy config files to FP8 directory (don't overwrite existing files)
-    cp -rn "$MODELS_DIR/temp-config-download"/* "$FP8_DIR/" 2>/dev/null || true
-    rm -rf "$MODELS_DIR/temp-config-download"
+    # Copy components to FP8 directory
+    cp -r "$MODELS_DIR/temp-components"/* "$FP8_DIR/"
+    rm -rf "$MODELS_DIR/temp-components"
     
-    echo -e "${GREEN}  ✓ FP8 model + config files downloaded${NC}"
+    echo -e "${GREEN}  ✓ FP8 model + all components downloaded (~27GB total)${NC}"
 else
     echo -e "${GREEN}  ✓ FP8 model already exists, skipping download${NC}"
 fi

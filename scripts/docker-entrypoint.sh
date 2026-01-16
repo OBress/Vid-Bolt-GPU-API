@@ -16,14 +16,14 @@ NC='\033[0m'
 # Auto-download FP8 Model if Missing
 # =============================================================================
 FP8_DIR="/app/models/qwen-image-edit-2511-fp8"
-CONFIG_CHECK="$FP8_DIR/scheduler/scheduler_config.json"
+ENCODER_CHECK="$FP8_DIR/text_encoder/model-00001-of-00004.safetensors"
 
-# Check if FP8 model AND config files exist
-if [ -f "$CONFIG_CHECK" ]; then
+# Check if FP8 model AND text_encoder exist
+if [ -f "$ENCODER_CHECK" ]; then
     echo -e "${GREEN}[Startup] FP8 model found - using optimized inference (~19GB VRAM)${NC}"
 else
     echo -e "${YELLOW}[Startup] FP8 model not found - downloading from HuggingFace...${NC}"
-    echo -e "  This is a one-time download (~20.5GB, ~5-10 minutes)"
+    echo -e "  This is a one-time download (~27GB, ~10-15 minutes)"
     
     # Install huggingface-cli if not available
     if ! command -v huggingface-cli &> /dev/null; then
@@ -41,19 +41,19 @@ else
     mv /app/models/temp-fp8-download/qwen_image_edit_2511_fp8_e4m3fn_scaled_lightning_split/* "$FP8_DIR/"
     rm -rf "/app/models/temp-fp8-download"
     
-    # Download config files from original Qwen model (scheduler, tokenizer, etc.)
-    echo -e "${YELLOW}[Startup] Downloading config files from original Qwen model...${NC}"
+    # Download text_encoder, vae, scheduler, tokenizer from original Qwen model
+    echo -e "${YELLOW}[Startup] Downloading text_encoder, vae, and configs (~7GB)...${NC}"
     huggingface-cli download Qwen/Qwen-Image-Edit-2511 \
-        --include "scheduler/*" "tokenizer/*" "*.json" "*.txt" \
-        --exclude "*.safetensors" "*.bin" "*.ckpt" "*.pth" "*.pt" \
-        --local-dir "/app/models/temp-config-download" \
+        --include "text_encoder/*" "vae/*" "scheduler/*" "tokenizer/*" "*.json" "*.txt" \
+        --exclude "transformer/*" \
+        --local-dir "/app/models/temp-components" \
         --local-dir-use-symlinks False
     
-    # Copy config files to FP8 directory
-    cp -rn /app/models/temp-config-download/* "$FP8_DIR/" 2>/dev/null || true
-    rm -rf "/app/models/temp-config-download"
+    # Copy components to FP8 directory
+    cp -r /app/models/temp-components/* "$FP8_DIR/"
+    rm -rf "/app/models/temp-components"
     
-    echo -e "${GREEN}[Startup] FP8 model + config files downloaded successfully!${NC}"
+    echo -e "${GREEN}[Startup] FP8 model + all components downloaded successfully!${NC}"
 fi
 
 # =============================================================================
