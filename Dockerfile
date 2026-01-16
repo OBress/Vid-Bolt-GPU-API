@@ -81,9 +81,10 @@ RUN cat /tmp/requirements.txt | tr -d '\r' | \
 # Diffusers from source (for ZImagePipeline support)
 RUN pip install --no-cache-dir git+https://github.com/huggingface/diffusers
 
-# LightX2V - install with all dependencies
-# The final PyTorch reinstall step below will fix any version downgrades
-RUN pip install --no-cache-dir git+https://github.com/ModelTC/LightX2V.git || echo "LightX2V installation skipped"
+# LightX2V - install from local vendored copy (has custom fixes for native resolution)
+# Copy and install from local directory instead of GitHub
+COPY LightX2V /app/LightX2V
+RUN pip install --no-cache-dir -e /app/LightX2V || echo "LightX2V installation skipped"
 
 # sgl-kernel for FP8 quantized inference (provides sgl_per_token_quant_fp8, fp8_scaled_mm)
 RUN pip install --no-cache-dir sgl-kernel || echo "sgl-kernel installation skipped"
