@@ -225,13 +225,16 @@ def set_input_info(args):
             save_result_path=args.save_result_path,
         )
     elif args.task == "i2i":
+        # Debug: trace custom_shape value
+        _custom_shape = getattr(args, 'custom_shape', [])
+        logger.info(f"set_input_info: custom_shape from args = {_custom_shape}")
         input_info = I2IInputInfo(
             seed=args.seed,
             prompt=args.prompt,
             negative_prompt=args.negative_prompt,
             image_path=args.image_path,
             save_result_path=args.save_result_path,
-            custom_shape=getattr(args, 'custom_shape', []),
+            custom_shape=_custom_shape,
         )
     else:
         raise ValueError(f"Unsupported task: {args.task}")
