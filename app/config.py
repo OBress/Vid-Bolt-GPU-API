@@ -39,7 +39,7 @@ class ModelPaths:
     # LTX-2 (video generation)
     LTX2_CHECKPOINT = "models/ltx-2/ltx-2-19b-distilled-fp8.safetensors"
     LTX2_SPATIAL_UPSAMPLER = "models/ltx-2/ltx-2-spatial-upscaler-x2-1.0.safetensors"
-    LTX2_GEMMA_ROOT = "models/ltx-2/gemma-3-12b-it-qat-q4_0-unquantized"
+    LTX2_GEMMA_ROOT = "models/ltx-2/gemma-3-12b-it-fp8"
     LTX2_DISTILLED_LORA = "models/ltx-2/ltx-2-19b-distilled-lora-384.safetensors"
     
     # Stream-DiffVSR (video upscaling)
@@ -55,7 +55,7 @@ class InferenceConfig:
     
     # Concurrency limits
     MAX_CONCURRENT_IMAGE_GENERATIONS = 2  # Across Z-Image + Qwen-Image-Edit
-    MAX_CONCURRENT_VIDEO_GENERATIONS = 1  # LTX-2 in ALL mode (conservative)
+    MAX_CONCURRENT_VIDEO_GENERATIONS = 2  # LTX-2 (FP8 text encoder allows 2 concurrent)
     
     # Z-Image settings (uses Diffusers ZImagePipeline)
     ZIMAGE_COMPILE = False  # Disabled: torch.compile inductor fails with dynamic shapes
@@ -87,7 +87,7 @@ class InferenceConfig:
     # LTX-2 Concurrent Generation Settings
     # Enables parallel video generation using shared pipeline (stateless architecture)
     LTX2_CONCURRENT_ENABLED = True  # Enable concurrent video generation
-    LTX2_MAX_CONCURRENT_VIDEOS = 3  # Max concurrent in VIDEO_GENERATION mode (FP8)
+    LTX2_MAX_CONCURRENT_VIDEOS = 2  # 2 concurrent videos (FP8 text encoder)
     LTX2_CONCURRENT_VRAM_BUDGET_GB = 72.0  # VRAM available for activations (after base model)
     
     # Job timeouts (seconds)
@@ -136,6 +136,9 @@ class Settings(BaseSettings):
     zimage_dry_run_override: Optional[bool] = None
     lightx2v_dry_run_override: Optional[bool] = None
     ltx2_dry_run_override: Optional[bool] = None
+
+    # Optimization settings
+    ltx2_use_fp8_text_encoder: bool = True  # Use FP8 quantized text encoder
 
     # ==========================================================================
     # Computed properties exposing hardcoded config
@@ -297,6 +300,10 @@ class Settings(BaseSettings):
     @property
     def ltx2_default_frame_rate(self) -> float:
         return InferenceConfig.LTX2_DEFAULT_FRAME_RATE
+    
+    @property
+    def ltx2_use_fp8_text_encoder(self) -> bool:
+        return self.ltx2_use_fp8_text_encoder
     
     @property
     def ltx2_dry_run(self) -> bool:
