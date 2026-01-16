@@ -356,6 +356,7 @@ class LightX2VImageEditGenerator(ImageEditor):
         with torch.inference_mode():
             # Set custom_shape on pipeline before generate to force native resolution
             instance.pipeline.custom_shape = [target_h_32, target_w_32]
+            logger.info(f"Setting custom_shape on pipeline: {instance.pipeline.custom_shape} (target: {target_w_32}x{target_h_32})")
             instance.pipeline.generate(
                 seed=seed,
                 image_path=str(input_path),
