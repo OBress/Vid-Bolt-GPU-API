@@ -56,10 +56,13 @@ echo -e "${GREEN}  ✓ Z-Image Turbo downloaded${NC}"
 # =============================================================================
 # Download Pre-converted FP8 Model (reduces VRAM from ~38GB to ~19GB)
 # This model has the Lightning 8-step LoRA already baked in!
+# We also need config files (scheduler, etc.) from the original model
 # =============================================================================
 FP8_DIR="$MODELS_DIR/qwen-image-edit-2511-fp8"
-if [ ! -d "$FP8_DIR" ] || [ -z "$(ls -A $FP8_DIR 2>/dev/null)" ]; then
-    echo -e "${YELLOW}[2/4] Downloading pre-converted FP8 model...${NC}"
+CONFIG_CHECK="$FP8_DIR/scheduler/scheduler_config.json"
+
+if [ ! -f "$CONFIG_CHECK" ]; then
+    echo -e "${YELLOW}[2/4] Downloading pre-converted FP8 model + config files...${NC}"
     echo -e "  This enables 2x concurrent instances with same VRAM"
     
     # Download the pre-converted FP8 model with 8-step Lightning LoRA baked in
@@ -73,7 +76,20 @@ if [ ! -d "$FP8_DIR" ] || [ -z "$(ls -A $FP8_DIR 2>/dev/null)" ]; then
     mv "$MODELS_DIR/temp-fp8-download/qwen_image_edit_2511_fp8_e4m3fn_scaled_lightning_split"/* "$FP8_DIR/"
     rm -rf "$MODELS_DIR/temp-fp8-download"
     
-    echo -e "${GREEN}  ✓ FP8 model downloaded (~20.5GB)${NC}"
+    # Download config files from original Qwen model (scheduler, tokenizer, etc.)
+    # These are required but only ~1MB total
+    echo -e "  Downloading config files from original Qwen model..."
+    huggingface-cli download Qwen/Qwen-Image-Edit-2511 \
+        --include "scheduler/*" "tokenizer/*" "*.json" "*.txt" \
+        --exclude "*.safetensors" "*.bin" "*.ckpt" "*.pth" "*.pt" \
+        --local-dir "$MODELS_DIR/temp-config-download" \
+        --local-dir-use-symlinks False
+    
+    # Copy config files to FP8 directory (don't overwrite existing files)
+    cp -rn "$MODELS_DIR/temp-config-download"/* "$FP8_DIR/" 2>/dev/null || true
+    rm -rf "$MODELS_DIR/temp-config-download"
+    
+    echo -e "${GREEN}  ✓ FP8 model + config files downloaded${NC}"
 else
     echo -e "${GREEN}  ✓ FP8 model already exists, skipping download${NC}"
 fi

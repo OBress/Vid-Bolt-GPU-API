@@ -16,8 +16,10 @@ NC='\033[0m'
 # Auto-download FP8 Model if Missing
 # =============================================================================
 FP8_DIR="/app/models/qwen-image-edit-2511-fp8"
+CONFIG_CHECK="$FP8_DIR/scheduler/scheduler_config.json"
 
-if [ -d "$FP8_DIR" ] && [ -n "$(ls -A $FP8_DIR 2>/dev/null)" ]; then
+# Check if FP8 model AND config files exist
+if [ -f "$CONFIG_CHECK" ]; then
     echo -e "${GREEN}[Startup] FP8 model found - using optimized inference (~19GB VRAM)${NC}"
 else
     echo -e "${YELLOW}[Startup] FP8 model not found - downloading from HuggingFace...${NC}"
@@ -39,7 +41,19 @@ else
     mv /app/models/temp-fp8-download/qwen_image_edit_2511_fp8_e4m3fn_scaled_lightning_split/* "$FP8_DIR/"
     rm -rf "/app/models/temp-fp8-download"
     
-    echo -e "${GREEN}[Startup] FP8 model downloaded successfully!${NC}"
+    # Download config files from original Qwen model (scheduler, tokenizer, etc.)
+    echo -e "${YELLOW}[Startup] Downloading config files from original Qwen model...${NC}"
+    huggingface-cli download Qwen/Qwen-Image-Edit-2511 \
+        --include "scheduler/*" "tokenizer/*" "*.json" "*.txt" \
+        --exclude "*.safetensors" "*.bin" "*.ckpt" "*.pth" "*.pt" \
+        --local-dir "/app/models/temp-config-download" \
+        --local-dir-use-symlinks False
+    
+    # Copy config files to FP8 directory
+    cp -rn /app/models/temp-config-download/* "$FP8_DIR/" 2>/dev/null || true
+    rm -rf "/app/models/temp-config-download"
+    
+    echo -e "${GREEN}[Startup] FP8 model + config files downloaded successfully!${NC}"
 fi
 
 # =============================================================================
