@@ -74,7 +74,7 @@ COPY requirements.txt /tmp/requirements.txt
 # Filter out torch/torchvision (already installed with CUDA) and install rest
 # Also handle Windows line endings with tr -d '\r'
 RUN cat /tmp/requirements.txt | tr -d '\r' | \
-    grep -v "^torch" | grep -v "^#" | grep -v "^$" | \
+    grep -v "^torch==" | grep -v "^torchvision" | grep -v "^torchaudio" | grep -v "^#" | grep -v "^$" | \
     grep -v "xformers" | grep -v "triton" | grep -v "win32" > /tmp/filtered_requirements.txt \
     && pip install --no-cache-dir -r /tmp/filtered_requirements.txt
 
