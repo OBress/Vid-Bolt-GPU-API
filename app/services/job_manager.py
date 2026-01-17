@@ -426,9 +426,18 @@ class JobManager:
                 other_models_loaded=other_models_loaded
             )
         elif job_type == JobType.VIDEO_GENERATION:
-            # LTX-2: sequential batching with warm model
-            # Return all pending jobs - they will be processed sequentially
-            max_batch = len(job_ids)  # Process all pending (sequential anyway)
+            # LTX-2: Mode-aware concurrency limits
+            # In ALL mode, limit to 1 video to preserve VRAM headroom
+            # In dedicated VIDEO mode, allow up to 3 concurrent
+            if self._model_manager:
+                from app.services.model_manager import VRAMLoadMode
+                from app.config import InferenceConfig
+                if self._model_manager.current_mode == VRAMLoadMode.ALL:
+                    max_batch = 1  # ALL mode: limited VRAM headroom
+                else:
+                    max_batch = InferenceConfig.LTX2_MAX_CONCURRENT_VIDEOS  # Video-only: 3 concurrent
+            else:
+                max_batch = 1  # Fallback to safe default
         else:
             # Unknown job type - return single job as fallback
             logger.warning(f"Unknown job type {job_type}, processing single job")
