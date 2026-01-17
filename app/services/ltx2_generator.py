@@ -320,8 +320,12 @@ class LTX2Generator(VideoGenerator):
         ]
         
         # Add end frame if provided
+        # Add end frame if provided
         if params.end_frame_data is not None:
-            keyframes.append((params.end_frame_data, num_frames - 1, 1.0))
+            # LTX-2 uses 8x temporal compression (8k+1 frames)
+            # The pipeline expects latent indices, not pixel indices
+            latent_idx = (num_frames - 1) // 8
+            keyframes.append((params.end_frame_data, latent_idx, 1.0))
 
         # Convert to keyframe params
         keyframe_params = KeyframeInterpolationParams(
