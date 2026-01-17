@@ -382,8 +382,16 @@ class ModelManager:
         self._force_gc()
         logger.info("Cleared GPU cache before loading models")
         
-        # Skip Z-Image - it will load dynamically on first image gen request
-        # This saves ~20GB VRAM for video generation headroom
+        # CRITICAL: Unload Z-Image if it was already loaded from a previous mode
+        # This frees ~20GB VRAM for video generation headroom
+        self._set_switching_progress("Unloading Z-Image for VRAM headroom...", 0.1)
+        if self._zimage_generator is not None and self._zimage_generator._loaded:
+            logger.info("Unloading Z-Image to free VRAM for video generation headroom...")
+            await self._unload_zimage()
+            self._force_gc()  # Force cleanup after unload
+            logger.info("Z-Image unloaded successfully")
+        
+        # Mark Z-Image as dynamically managed (will load on-demand for image gen)
         self._zimage_dynamic_loaded = False
         logger.info("Z-Image will load dynamically on demand (saves ~20GB VRAM)")
         

@@ -648,9 +648,14 @@ class JobManager:
                 self._handle_job_error(job, f"Batch timed out after {timeout_seconds}s", "JOB_TIMEOUT")
                 await self._send_webhook(job)
         except Exception as e:
+            is_oom = False
             for job in jobs:
-                self._handle_job_error(job, str(e), "GENERATION_FAILED")
+                was_oom = self._handle_job_error(job, str(e), "GENERATION_FAILED")
+                is_oom = is_oom or was_oom
                 await self._send_webhook(job)
+            # If OOM, do aggressive cleanup
+            if is_oom:
+                self._cleanup_gpu_memory(is_oom_recovery=True)
         finally:
             self._cleanup_gpu_memory()
 
@@ -703,27 +708,38 @@ class JobManager:
             self._handle_job_error(job, f"Job timed out after {timeout_seconds} seconds", "JOB_TIMEOUT")
             await self._send_webhook(job)
         except Exception as e:
-            self._handle_job_error(job, str(e), "GENERATION_FAILED")
+            is_oom = self._handle_job_error(job, str(e), "GENERATION_FAILED")
             await self._send_webhook(job)
+            # If OOM, do aggressive cleanup
+            if is_oom:
+                self._cleanup_gpu_memory(is_oom_recovery=True)
         finally:
             # Cleanup GPU memory after every job
             self._cleanup_gpu_memory()
 
-    def _handle_job_error(self, job: JobInfo, error_msg: str, error_code: str):
-        """Handle job failure."""
+    def _handle_job_error(self, job: JobInfo, error_msg: str, error_code: str) -> bool:
+        """Handle job failure.
+        
+        Returns:
+            True if this was an OOM error (for triggering aggressive cleanup)
+        """
         logger.error(f"Job {job.job_id} failed: {error_msg}")
         
         # Check for OOM
+        is_oom = False
         if "out of memory" in error_msg.lower() or "cuda" in error_msg.lower():
              if self._check_oom_error(None, error_msg):
                  error_msg = "GPU out of memory. Try reducing resolution or duration."
                  error_code = "GPU_OUT_OF_MEMORY"
+                 is_oom = True
 
         job.status = JobStatus.FAILED
         job.completed_at = time.time()
         job.error_message = error_msg
         job.error_code = error_code
         job.progress_stage = "failed"
+        
+        return is_oom
 
     def _check_oom_error(self, exception: Optional[Exception], error_message: str) -> bool:
         """Check if an error is OOM."""
@@ -735,11 +751,14 @@ class JobManager:
         ]
         return any(indicator.lower() in error_message.lower() for indicator in oom_indicators)
 
-    def _cleanup_gpu_memory(self) -> None:
+    def _cleanup_gpu_memory(self, is_oom_recovery: bool = False) -> None:
         """Clean up GPU memory aggressively after job completion.
         
         CRITICAL: This must fully release VRAM before returning, otherwise
         the next job will OOM due to tensors from the thread pool.
+        
+        Args:
+            is_oom_recovery: If True, perform more aggressive cleanup for OOM recovery
         """
         try:
             import torch
@@ -755,6 +774,14 @@ class JobManager:
                 torch.cuda.empty_cache()
                 torch.cuda.ipc_collect()
                 
+                # Step 3.5: On OOM recovery, reset the memory allocator to clear fragmentation
+                if is_oom_recovery:
+                    logger.info("OOM recovery: Resetting CUDA memory allocator...")
+                    # This forces PyTorch to release ALL cached memory blocks
+                    torch.cuda.reset_peak_memory_stats()
+                    gc.collect()
+                    torch.cuda.empty_cache()
+                
                 # Step 4: Verify cleanup worked
                 allocated = torch.cuda.memory_allocated() / (1024**3)
                 reserved = torch.cuda.memory_reserved() / (1024**3)
@@ -766,9 +793,9 @@ class JobManager:
                     if mode == VRAMLoadMode.IMAGE_EDITING:
                         expected_limit = 45.0  # 5 instances * ~7-8GB
                     elif mode == VRAMLoadMode.VIDEO_GENERATION:
-                        expected_limit = 35.0  # LTX-2
+                        expected_limit = 55.0  # LTX-2 with QAT text encoder
                     elif mode == VRAMLoadMode.ALL:
-                        expected_limit = 60.0  # Everything loaded
+                        expected_limit = 75.0  # LightX2V + LTX-2 (no Z-Image)
 
                 # Model weights should be within expected limit. If higher, something's leaking.
                 if allocated > expected_limit:
