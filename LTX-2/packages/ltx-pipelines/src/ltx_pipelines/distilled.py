@@ -201,7 +201,18 @@ class DistilledPipeline:
             initial_audio_latent=audio_state.latent,
         )
 
+        logging.info(f"DEBUG: video_state.latent (FP8 check): shape={video_state.latent.shape}, dtype={video_state.latent.dtype}, min={video_state.latent.min()}, max={video_state.latent.max()}, mean={video_state.latent.float().mean()}")
+        
+        # Check if latent is all zeros or NaNs
+        if torch.all(video_state.latent == 0):
+            logging.error("DEBUG CRITICAL: Video latent is ALL ZEROS before VAE decode!")
+        if torch.isnan(video_state.latent).any():
+            logging.error("DEBUG CRITICAL: Video latent contains NaNs before VAE decode!")
+
         decoded_video = vae_decode_video(video_state.latent, self.video_decoder, tiling_config)
+        
+        logging.info(f"DEBUG: decoded_video stats: shape={decoded_video.shape}, dtype={decoded_video.dtype}, min={decoded_video.min()}, max={decoded_video.max()}, mean={decoded_video.float().mean()}")
+        
         decoded_audio = vae_decode_audio(
             audio_state.latent, self.audio_decoder, self.vocoder
         )
