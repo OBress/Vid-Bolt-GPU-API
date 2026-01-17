@@ -256,34 +256,33 @@ class LTX2Generator(VideoGenerator):
         """Patch model_ledger to cache and reuse model instances.
         
         The upstream LTX-2 model_ledger creates new model instances on each call.
-        This patches the text_encoder() method to cache and return the same instance,
-        preventing race conditions during concurrent video generation.
+        This patches the text_encoder() method to return the already-loaded instance
+        from DistilledPipeline, preventing race conditions during concurrent video
+        generation AND avoiding loading the text encoder twice.
         """
-        import torch
-        
         distilled = self.components.distilled_pipeline
         
-        # Cache text encoder by calling once (triggers full load if not done yet)
-        logger.info("Caching text encoder for thread-safe concurrent access...")
+        # Use the already-loaded text encoder from DistilledPipeline.__init__
+        # This avoids loading it twice (which wastes ~18GB VRAM!)
+        logger.info("Patching text encoder for thread-safe concurrent access...")
         
         try:
-            with torch.no_grad():
-                distilled_text_encoder = distilled.model_ledger.text_encoder()
+            # The text encoder is already loaded at distilled.text_encoder
+            # We just patch model_ledger to return it instead of loading a new one
+            cached_text_encoder = distilled.text_encoder
             
-            # Patch the method to return cached instance
-            distilled.model_ledger._cached_text_encoder = distilled_text_encoder
+            def cached_text_encoder_fn():
+                return cached_text_encoder
             
-            def cached_distilled_text_encoder():
-                return distilled.model_ledger._cached_text_encoder
-            
-            distilled.model_ledger.text_encoder = cached_distilled_text_encoder
-            logger.info("  Patched DistilledPipeline.model_ledger.text_encoder() to use cached instance")
+            distilled.model_ledger.text_encoder = cached_text_encoder_fn
+            logger.info("  Patched model_ledger.text_encoder() to reuse existing instance")
             logger.info("Text encoder caching enabled - concurrent generation is now thread-safe")
             
         except Exception as e:
             logger.warning(f"Failed to patch model_ledger caching (non-fatal): {e}")
             # If patching fails, concurrent generation may still have race conditions
             # but single-threaded generation will still work
+
 
 
     # ========================================================================
