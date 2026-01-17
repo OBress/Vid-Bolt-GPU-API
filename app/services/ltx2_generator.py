@@ -348,12 +348,11 @@ class LTX2Generator(VideoGenerator):
         ]
         
         # Add end frame if provided
-        # Add end frame if provided
         if params.end_frame_data is not None:
-            # LTX-2 uses 8x temporal compression (8k+1 frames)
-            # The pipeline expects latent indices, not pixel indices
-            latent_idx = (num_frames - 1) // 8
-            keyframes.append((params.end_frame_data, latent_idx, 1.0))
+            # KeyframeInterpolationPipeline uses pixel indices (not latent indices)
+            # The end frame should be at the last generated frame
+            pixel_idx = num_frames - 1
+            keyframes.append((params.end_frame_data, pixel_idx, 1.0))
 
         # Convert to keyframe params
         keyframe_params = KeyframeInterpolationParams(
@@ -799,11 +798,15 @@ class LTX2Generator(VideoGenerator):
         logger.info("Applying in-memory cropping and trimming...")
         
         # Calculate target frames based on exact duration
-        # +1 frame because start frame is included (e.g. 24fps * 5s = 120 frames, but we might have generated 121 or 129)
-        # Actually video_processing logic used exact duration.
-        # params.duration_seconds * params.frame_rate gives float.
-        # We ceil-ed it for generation. Now we floor/exact it for trim.
-        target_frames_exact = int(params.duration_seconds * params.frame_rate)
+        # For single-keyframe (I2V): trim to exact duration (e.g., 120 frames for 5s @ 24fps)
+        # For multi-keyframe (interpolation): preserve all frames to include the end keyframe
+        num_keyframes = len(params.keyframes)
+        if num_keyframes > 1:
+            # Preserve all generated frames to include the end keyframe
+            target_frames_exact = num_frames
+        else:
+            # Standard I2V: trim to exact requested duration
+            target_frames_exact = int(params.duration_seconds * params.frame_rate)
         
         # Ensure we have at least 1 frame (sanity check)
         target_frames_exact = max(1, target_frames_exact)
