@@ -26,6 +26,29 @@ router = APIRouter(
 settings = get_settings()
 
 
+def _sanitize_lora_name(name: str) -> str:
+    """Sanitize LoRA name to prevent path traversal.
+    
+    Args:
+        name: The raw LoRA name from user input.
+        
+    Returns:
+        Sanitized name with only the basename.
+        
+    Raises:
+        HTTPException: If the name contains path traversal characters.
+    """
+    # Use basename to strip any directory components
+    sanitized = Path(name).name
+    # Reject if it still contains traversal patterns
+    if ".." in sanitized or "/" in sanitized or "\\" in sanitized:
+        raise HTTPException(status_code=400, detail="Invalid LoRA name")
+    # Reject empty names
+    if not sanitized or sanitized == ".safetensors":
+        raise HTTPException(status_code=400, detail="Invalid LoRA name")
+    return sanitized
+
+
 class LoraInfo(BaseModel):
     """Information about a LoRA model."""
     name: str
@@ -88,6 +111,13 @@ async def upload_lora(
     filename = Path(file.filename).name
     file_path = lora_dir / filename
     
+    # Check if file already exists
+    if file_path.exists():
+        raise HTTPException(
+            status_code=409,
+            detail=f"LoRA '{filename}' already exists. Delete it first or use a different name.",
+        )
+    
     try:
         with open(file_path, "wb") as buffer:
             shutil.copyfileobj(file.file, buffer)
@@ -113,10 +143,14 @@ async def rename_lora(
     api_key: APIKeyDep,
 ) -> JSONResponse:
     """Rename a LoRA model."""
+    # Sanitize inputs to prevent path traversal
+    safe_lora_name = _sanitize_lora_name(lora_name)
+    safe_new_name = _sanitize_lora_name(new_name)
+    
     lora_dir = Path(settings.zimage_lora_path)
     
-    src_path = lora_dir / f"{lora_name}.safetensors"
-    dst_path = lora_dir / f"{new_name}.safetensors"
+    src_path = lora_dir / f"{safe_lora_name}.safetensors"
+    dst_path = lora_dir / f"{safe_new_name}.safetensors"
     
     if not src_path.exists():
         raise HTTPException(status_code=404, detail=f"LoRA '{lora_name}' not found")
@@ -146,8 +180,11 @@ async def delete_lora(
     api_key: APIKeyDep,
 ) -> JSONResponse:
     """Delete a LoRA model."""
+    # Sanitize input to prevent path traversal
+    safe_lora_name = _sanitize_lora_name(lora_name)
+    
     lora_dir = Path(settings.zimage_lora_path)
-    file_path = lora_dir / f"{lora_name}.safetensors"
+    file_path = lora_dir / f"{safe_lora_name}.safetensors"
     
     if not file_path.exists():
         raise HTTPException(status_code=404, detail=f"LoRA '{lora_name}' not found")

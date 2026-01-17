@@ -1,7 +1,9 @@
 """Storage service for downloading and uploading via presigned URLs."""
 
 import asyncio
+import ipaddress
 import logging
+from urllib.parse import urlparse
 
 import httpx
 
@@ -9,6 +11,34 @@ from app.config import Settings, get_settings
 from app.exceptions import UploadError, ValidationError
 
 logger = logging.getLogger(__name__)
+
+
+def _validate_external_url(url: str) -> None:
+    """Validate that a URL is safe to request (not internal).
+    
+    Args:
+        url: The URL to validate.
+        
+    Raises:
+        ValidationError: If the URL points to an internal resource.
+    """
+    parsed = urlparse(url)
+    hostname = parsed.hostname
+    
+    if not hostname:
+        raise ValidationError("Invalid URL: missing hostname")
+    
+    # Block cloud metadata endpoints
+    if hostname in ("169.254.169.254", "metadata.google.internal"):
+        raise ValidationError("Access to metadata endpoint is not allowed")
+    
+    # Block private IP ranges
+    try:
+        ip = ipaddress.ip_address(hostname)
+        if ip.is_private or ip.is_loopback or ip.is_link_local:
+            raise ValidationError("Access to internal IPs is not allowed")
+    except ValueError:
+        pass  # Not an IP, it's a hostname - allow it
 
 
 class StorageService:
@@ -39,6 +69,10 @@ class StorageService:
             ValidationError: If download fails or content is too large
         """
         logger.info(f"Downloading from URL: {url.split('?')[0]}")
+        
+        # Validate URL to prevent SSRF
+        _validate_external_url(url)
+        
         try:
             async with httpx.AsyncClient(timeout=30.0) as client:
                 response = await client.get(url, follow_redirects=True)
@@ -81,6 +115,9 @@ class StorageService:
         Raises:
             UploadError: If upload fails after retries
         """
+        # Validate URL to prevent SSRF
+        _validate_external_url(url)
+        
         max_retries = 3
 
         for attempt in range(max_retries):
