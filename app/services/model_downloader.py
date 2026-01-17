@@ -104,8 +104,8 @@ class ModelDownloader:
         },
         {
             "name": "gemma-text-encoder",
-            "repo": "pytorch/gemma-3-12b-it-FP8",
-            "local_dir": "models/ltx-2/gemma-3-12b-it-fp8",
+            "repo": "google/gemma-3-12b-it-qat-q4_0-unquantized",
+            "local_dir": "models/ltx-2/gemma-3-12b-it-qat",
             "type": "full",
             "indicator_file": "config.json",
         },

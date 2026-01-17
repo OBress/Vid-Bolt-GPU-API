@@ -263,16 +263,17 @@ def module_ops_from_gemma_root(gemma_root: str) -> tuple[ModuleOps, ...]:
     tokenizer_path = _find_matching_dir(gemma_root, "tokenizer.model")
 
     def load_gemma(module: GemmaTextEncoderModelBase) -> GemmaTextEncoderModelBase:
-        # FP8 models require device_map="auto" for proper layer distribution
-        # See: https://huggingface.co/pytorch/gemma-3-12b-it-FP8#inference-with-transformers
+        # Load QAT BF16 model with standard bfloat16 dtype
+        # Note: device_map="auto" handles multi-GPU distribution if needed
         module.model = Gemma3ForConditionalGeneration.from_pretrained(
             gemma_path, 
             local_files_only=True, 
-            torch_dtype="auto",
+            torch_dtype=torch.bfloat16,
             device_map="auto",
         )
         module._gemma_root = module._gemma_root or gemma_root
         return module
+
 
 
     def load_tokenizer(module: GemmaTextEncoderModelBase) -> GemmaTextEncoderModelBase:
