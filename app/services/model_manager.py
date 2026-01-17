@@ -111,6 +111,11 @@ class ModelManager:
         # Track loaded state
         self._loaded = False
         
+        # Dynamic Z-Image loading in ALL mode
+        # In ALL mode, Z-Image starts unloaded to provide VRAM headroom for video gen
+        # It gets loaded on-demand when image gen is requested
+        self._zimage_dynamic_loaded = False
+        
         logger.info("ModelManager initialized")
 
     @property
@@ -225,7 +230,7 @@ class ModelManager:
         """Ensure the system can handle the given job type.
         
         This handles automatic mode switching logic:
-        - If in ALL mode: Always ready
+        - If in ALL mode: Handle dynamic Z-Image loading/unloading
         - If in matching mode: Ready
         - If in different mode and busy: Return False
         - If in different mode and idle: Switch and return True
@@ -239,9 +244,27 @@ class ModelManager:
         # Map job type to required mode
         required_mode = VRAMLoadMode(job_type.value)
         
-        # ALL mode can handle any job
+        # ALL mode: Handle dynamic Z-Image loading/unloading
         if self._mode == VRAMLoadMode.ALL:
-            return True
+            if job_type == JobType.IMAGE_GENERATION:
+                # Load Z-Image if not loaded (fast operation ~2-3s)
+                if not self._zimage_dynamic_loaded:
+                    logger.info("ALL mode: Dynamically loading Z-Image for image generation...")
+                    await self._load_zimage(target_mode=VRAMLoadMode.ALL)
+                    self._zimage_dynamic_loaded = True
+                    logger.info("ALL mode: Z-Image loaded dynamically")
+                return True
+            elif job_type == JobType.VIDEO_GENERATION:
+                # Unload Z-Image if loaded to free VRAM for video gen
+                if self._zimage_dynamic_loaded:
+                    logger.info("ALL mode: Unloading Z-Image to free VRAM for video generation...")
+                    await self._unload_zimage()
+                    self._zimage_dynamic_loaded = False
+                    logger.info("ALL mode: Z-Image unloaded, VRAM freed for video generation")
+                return True
+            else:
+                # Image editing uses LightX2V which is always loaded in ALL mode
+                return True
         
         # Already in the right mode
         if self._mode == required_mode:
@@ -346,24 +369,31 @@ class ModelManager:
 
 
     async def _load_all_models(self) -> None:
-        """Load all models into VRAM (ALL mode)."""
-        logger.info("Loading ALL models into VRAM...")
+        """Load all models into VRAM (ALL mode).
+        
+        Note: Z-Image is NOT loaded initially to provide VRAM headroom for video generation.
+        Z-Image loads dynamically when an image generation request comes in (~2-3s).
+        This allows video generation to have enough VRAM (~20GB freed).
+        """
+        logger.info("Loading ALL models into VRAM (Z-Image will load dynamically)...")
         
         # Clear any stale GPU memory before loading (helps with container restarts)
         self._set_switching_progress("Clearing GPU cache...", 0.05)
         self._force_gc()
         logger.info("Cleared GPU cache before loading models")
         
-        # Pass ALL mode explicitly so Z-Image uses 1 instance, not 8
-        self._set_switching_progress("Loading Z-Image Turbo...", 0.1)
-        await self._load_zimage(target_mode=VRAMLoadMode.ALL)
-        self._set_switching_progress("Loading LightX2V...", 0.3)
+        # Skip Z-Image - it will load dynamically on first image gen request
+        # This saves ~20GB VRAM for video generation headroom
+        self._zimage_dynamic_loaded = False
+        logger.info("Z-Image will load dynamically on demand (saves ~20GB VRAM)")
+        
+        self._set_switching_progress("Loading LightX2V (1 instance for ALL mode)...", 0.2)
         await self._load_lightx2v()
         self._set_switching_progress("Loading LTX-2 (this takes 2-3 minutes)...", 0.5)
         await self._load_ltx2()
         
         self._set_switching_progress("Finalizing...", 1.0)
-        logger.info("All models loaded successfully")
+        logger.info("ALL mode loaded: LightX2V + LTX-2 ready, Z-Image loads on demand")
 
     # Legacy compatibility
     async def load_all_models(self) -> None:
