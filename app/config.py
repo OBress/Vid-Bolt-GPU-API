@@ -87,7 +87,7 @@ class InferenceConfig:
     # LTX-2 Concurrent Generation Settings
     # Enables parallel video generation using shared pipeline (stateless architecture)
     LTX2_CONCURRENT_ENABLED = True  # Enable concurrent video generation
-    LTX2_MAX_CONCURRENT_VIDEOS = 2  # 2 concurrent videos (FP8 text encoder)
+    LTX2_MAX_CONCURRENT_VIDEOS = 3  # 3 concurrent videos in video-only mode (QAT text encoder)
     LTX2_CONCURRENT_VRAM_BUDGET_GB = 72.0  # VRAM available for activations (after base model)
     
     # Job timeouts (seconds)
