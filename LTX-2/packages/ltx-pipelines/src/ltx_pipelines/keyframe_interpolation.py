@@ -56,45 +56,71 @@ class KeyframeInterpolationPipeline:
         loras: list[LoraPathStrengthAndSDOps],
         device: torch.device = device,
         fp8transformer: bool = False,
+        # Pre-loaded components for weight sharing (optional)
+        # When provided, these are reused instead of loading new instances
+        shared_text_encoder=None,
+        shared_video_encoder=None,
+        shared_transformer=None,
+        shared_spatial_upsampler=None,
+        shared_video_decoder=None,
+        shared_audio_decoder=None,
+        shared_vocoder=None,
     ):
         self.device = device
         self.dtype = torch.bfloat16
-        self.stage_1_model_ledger = ModelLedger(
-            dtype=self.dtype,
-            device=device,
-            checkpoint_path=checkpoint_path,
-            spatial_upsampler_path=spatial_upsampler_path,
-            gemma_root_path=gemma_root,
-            loras=loras,
-            fp8transformer=fp8transformer,
-        )
-        self.stage_2_model_ledger = self.stage_1_model_ledger.with_loras(
-            loras=distilled_lora,
-        )
+        
+        # Check if we're using shared components (VRAM optimization)
+        using_shared = shared_transformer is not None
+        
+        if not using_shared:
+            # No shared components - create model ledgers for loading
+            self.stage_1_model_ledger = ModelLedger(
+                dtype=self.dtype,
+                device=device,
+                checkpoint_path=checkpoint_path,
+                spatial_upsampler_path=spatial_upsampler_path,
+                gemma_root_path=gemma_root,
+                loras=loras,
+                fp8transformer=fp8transformer,
+            )
+            self.stage_2_model_ledger = self.stage_1_model_ledger.with_loras(
+                loras=distilled_lora,
+            )
+        
         self.pipeline_components = PipelineComponents(
             dtype=self.dtype,
             device=device,
         )
         
-        # Pre-load models to keep them in VRAM
-        logging.info("Loading KeyframeInterpolationPipeline models into VRAM...")
-        
-        # Stage 1 Models
-        self.text_encoder = self.stage_1_model_ledger.text_encoder()
-        self.video_encoder = self.stage_1_model_ledger.video_encoder()
-        self.transformer_stage_1 = self.stage_1_model_ledger.transformer()
-        
-        # Stage 2 Models
-        # Note: If stage 2 uses the same transformer instance as stage 1 (just with different LoRAs potentially applied during build),
-        # we might need separate instances if the build process bakes LoRAs into the model.
-        # The ModelLedger builds new instances each time, so we will store both.
-        self.spatial_upsampler = self.stage_2_model_ledger.spatial_upsampler()
-        self.transformer_stage_2 = self.stage_2_model_ledger.transformer()
-        self.video_decoder = self.stage_2_model_ledger.video_decoder()
-        self.audio_decoder = self.stage_2_model_ledger.audio_decoder()
-        self.vocoder = self.stage_2_model_ledger.vocoder()
-        
-        logging.info("KeyframeInterpolationPipeline models loaded.")
+        if using_shared:
+            # Use shared components from DistilledPipeline (saves ~60% VRAM)
+            logging.info("Using shared components from DistilledPipeline (VRAM optimization)")
+            self.text_encoder = shared_text_encoder
+            self.video_encoder = shared_video_encoder
+            self.transformer_stage_1 = shared_transformer
+            self.spatial_upsampler = shared_spatial_upsampler
+            self.transformer_stage_2 = shared_transformer  # Same transformer for both stages
+            self.video_decoder = shared_video_decoder
+            self.audio_decoder = shared_audio_decoder
+            self.vocoder = shared_vocoder
+            logging.info("KeyframeInterpolationPipeline initialized with shared components.")
+        else:
+            # Pre-load models to keep them in VRAM (original behavior)
+            logging.info("Loading KeyframeInterpolationPipeline models into VRAM...")
+            
+            # Stage 1 Models
+            self.text_encoder = self.stage_1_model_ledger.text_encoder()
+            self.video_encoder = self.stage_1_model_ledger.video_encoder()
+            self.transformer_stage_1 = self.stage_1_model_ledger.transformer()
+            
+            # Stage 2 Models
+            self.spatial_upsampler = self.stage_2_model_ledger.spatial_upsampler()
+            self.transformer_stage_2 = self.stage_2_model_ledger.transformer()
+            self.video_decoder = self.stage_2_model_ledger.video_decoder()
+            self.audio_decoder = self.stage_2_model_ledger.audio_decoder()
+            self.vocoder = self.stage_2_model_ledger.vocoder()
+            
+            logging.info("KeyframeInterpolationPipeline models loaded.")
 
     @torch.inference_mode()
     def __call__(  # noqa: PLR0913

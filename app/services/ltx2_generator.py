@@ -171,8 +171,8 @@ class LTX2Generator(VideoGenerator):
         
         # KeyframeInterpolationPipeline for 2-keyframe requests
         # Uses guiding latents conditioning - smoother transitions between keyframes
-        # We use distilled_lora=[] since we're using the distilled checkpoint directly
-        logger.info("Loading KeyframeInterpolationPipeline for 2-keyframe interpolation...")
+        # Share all components from DistilledPipeline to save ~60% VRAM
+        logger.info("Initializing KeyframeInterpolationPipeline with shared components...")
         try:
             keyframe_pipeline = KeyframeInterpolationPipeline(
                 checkpoint_path=str(checkpoint_path.absolute()),
@@ -182,11 +182,19 @@ class LTX2Generator(VideoGenerator):
                 loras=[],  # No extra LoRAs
                 device=device,
                 fp8transformer=self.settings.ltx2_fp8_enabled,
+                # Share all components from DistilledPipeline (VRAM optimization)
+                shared_text_encoder=distilled_pipeline.text_encoder,
+                shared_video_encoder=distilled_pipeline.video_encoder,
+                shared_transformer=distilled_pipeline.transformer,
+                shared_spatial_upsampler=distilled_pipeline.spatial_upsampler,
+                shared_video_decoder=distilled_pipeline.video_decoder,
+                shared_audio_decoder=distilled_pipeline.audio_decoder,
+                shared_vocoder=distilled_pipeline.vocoder,
             )
         except Exception:
             logger.exception("Failed to initialize KeyframeInterpolationPipeline")
             raise
-        logger.info("KeyframeInterpolationPipeline loaded successfully")
+        logger.info("KeyframeInterpolationPipeline initialized with shared components")
 
         self.components = LTX2Components(
             distilled_pipeline=distilled_pipeline,
