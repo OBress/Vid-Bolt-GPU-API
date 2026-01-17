@@ -323,17 +323,17 @@ class BatchManager:
         for idx, item in enumerate(items):
             job_id = f"{batch_id}__item_{idx}"
             
-            # Pre-download and validate input image
-            input_image_data = await storage.download_from_url(item.input_image_url)
-            if not _validate_image_magic_bytes(input_image_data):
-                raise ValueError(f"Item {idx}: input_image_url is not a valid image")
+            # Pre-download and validate start frame
+            start_frame_data = await storage.download_from_url(item.start_frame_url)
+            if not _validate_image_magic_bytes(start_frame_data):
+                raise ValueError(f"Item {idx}: start_frame_url is not a valid image")
             
-            # Download end image if provided
-            end_image_data = None
-            if item.end_image_url:
-                end_image_data = await storage.download_from_url(item.end_image_url)
-                if not _validate_image_magic_bytes(end_image_data):
-                    raise ValueError(f"Item {idx}: end_image_url is not a valid image")
+            # Download end frame if provided
+            end_frame_data = None
+            if item.end_frame_url:
+                end_frame_data = await storage.download_from_url(item.end_frame_url)
+                if not _validate_image_magic_bytes(end_frame_data):
+                    raise ValueError(f"Item {idx}: end_frame_url is not a valid image")
             
             # Resolve dimensions
             width, height = get_dimensions(item.aspect_ratio)
@@ -345,8 +345,8 @@ class BatchManager:
                 job_id=job_id,
                 prompt=item.prompt,
                 negative_prompt=item.negative_prompt,
-                input_image_data=input_image_data,
-                end_image_data=end_image_data,
+                start_frame_data=start_frame_data,
+                end_frame_data=end_frame_data,
                 duration_seconds=item.duration_seconds,
                 frame_rate=item.frame_rate,
                 width=width,

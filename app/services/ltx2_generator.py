@@ -316,12 +316,12 @@ class LTX2Generator(VideoGenerator):
         
         # Build keyframes list: start frame at index 0
         keyframes: list[tuple[bytes, int, float]] = [
-            (params.input_image_data, 0, 1.0)
+            (params.start_frame_data, 0, 1.0)
         ]
         
         # Add end frame if provided
-        if params.end_image_data is not None:
-            keyframes.append((params.end_image_data, num_frames - 1, 1.0))
+        if params.end_frame_data is not None:
+            keyframes.append((params.end_frame_data, num_frames - 1, 1.0))
 
         # Convert to keyframe params
         keyframe_params = KeyframeInterpolationParams(

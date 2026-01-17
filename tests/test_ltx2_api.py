@@ -22,7 +22,7 @@ class TestLTX2GenerateEndpoint:
             headers=api_key_headers,
             json={
                 "job_id": "test-i2v-001",
-                "input_image_url": "https://example.com/start.png",
+                "start_frame_url": "https://example.com/start.png",
                 "prompt": "Gentle waves on the ocean, cinematic",
                 "duration_seconds": 3.0,
                 "frame_rate": 24.0,
@@ -61,8 +61,8 @@ class TestLTX2GenerateEndpoint:
             headers=api_key_headers,
             json={
                 "job_id": "test-i2v-002",
-                "input_image_url": "https://example.com/start.png",
-                "end_image_url": "https://example.com/end.png",
+                "start_frame_url": "https://example.com/start.png",
+                "end_frame_url": "https://example.com/end.png",
                 "prompt": "Person walking from left to right",
                 "duration_seconds": 5.0,
                 "save_url": "https://example.com/upload/video.mp4",
@@ -84,7 +84,7 @@ class TestLTX2GenerateEndpoint:
             headers=api_key_headers,
             json={
                 "job_id": "test-missing",
-                # Missing input_image_url
+                # Missing start_frame_url
                 "prompt": "Fail",
                 "save_url": "https://example.com/upload.mp4",
             },
@@ -115,7 +115,7 @@ class TestLTX2GenerateEndpoint:
             headers=api_key_headers,
             json={
                 "job_id": "test-min-duration",
-                "input_image_url": "https://example.com/image.png",
+                "start_frame_url": "https://example.com/image.png",
                 "prompt": "Short video",
                 "duration_seconds": 0.5,  # Minimum allowed
                 "save_url": "https://example.com/upload.mp4",
@@ -129,7 +129,7 @@ class TestLTX2GenerateEndpoint:
             headers=api_key_headers,
             json={
                 "job_id": "test-duration-min",
-                "input_image_url": "https://example.com/start.png",
+                "start_frame_url": "https://example.com/start.png",
                 "duration_seconds": 0.5,
                 "save_url": "https://example.com/upload.mp4",
                 "webhook_url": "http://webhook.test"

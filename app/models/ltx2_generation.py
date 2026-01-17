@@ -39,7 +39,7 @@ class LTX2GenerateRequest(BaseModel):
     """Request body for standard LTX-2 image-to-video generation."""
 
     job_id: str = Field(..., description="Unique job identifier")
-    input_image_url: str = Field(..., description="URL of the start frame image")
+    start_frame_url: str = Field(..., description="URL of the start frame image")
     prompt: str = Field(
         ..., 
         description="Description of the video content/motion", 
@@ -78,7 +78,7 @@ class LTX2GenerateRequest(BaseModel):
         le=1920,
         description="Target height (overrides aspect_ratio default). Use 1080 for 1080p."
     )
-    end_image_url: str | None = Field(
+    end_frame_url: str | None = Field(
         default=None,
         description="Optional URL of the end frame image for interpolation"
     )
@@ -106,7 +106,7 @@ class LTX2GenerateRequest(BaseModel):
             "examples": [
                 {
                     "job_id": "550e8400-e29b-41d4-a716-446655440003",
-                    "input_image_url": "https://example.com/start.png",
+                    "start_frame_url": "https://example.com/start.png",
                     "prompt": "Gentle waves on the beach, cinematic motion",
                     "duration_seconds": 5.0,
                     "frame_rate": 24.0,

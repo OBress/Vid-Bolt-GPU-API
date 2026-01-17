@@ -24,7 +24,7 @@ from app import __version__
 from app.config import get_settings
 from app.exceptions import APIError
 from app.models.common import ErrorResponse
-from app.routers import health, image_generation, image_editing, video_generation, ltx2_generation, mode, system, lora_management, jobs, gpu, download_status, settings as settings_router_module, batch as batch_router
+from app.routers import health, image_generation, image_editing, ltx2_generation, mode, system, lora_management, jobs, gpu, download_status, settings as settings_router_module, batch as batch_router
 from app.utils.logging import setup_logging
 
 # Initialize settings
@@ -330,7 +330,6 @@ app.include_router(mode.router)
 app.include_router(system.router)
 app.include_router(image_generation.router)
 app.include_router(image_editing.router)
-app.include_router(video_generation.router)
 app.include_router(ltx2_generation.router)
 app.include_router(lora_management.router)
 app.include_router(jobs.router)

@@ -95,15 +95,15 @@ async def generate_video(
 
     # 3. Pre-download checks
     try:
-        input_image_data = await storage.download_from_url(body.input_image_url)
-        if not _validate_image_magic_bytes(input_image_data):
-            raise ValidationError("Invalid input image")
+        start_frame_data = await storage.download_from_url(body.start_frame_url)
+        if not _validate_image_magic_bytes(start_frame_data):
+            raise ValidationError("Invalid start frame image")
 
-        end_image_data = None
-        if body.end_image_url:
-            end_image_data = await storage.download_from_url(body.end_image_url)
-            if not _validate_image_magic_bytes(end_image_data):
-                raise ValidationError("Invalid end image")
+        end_frame_data = None
+        if body.end_frame_url:
+            end_frame_data = await storage.download_from_url(body.end_frame_url)
+            if not _validate_image_magic_bytes(end_frame_data):
+                raise ValidationError("Invalid end frame image")
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
 
@@ -116,8 +116,8 @@ async def generate_video(
         job_id=body.job_id,
         prompt=body.prompt,
         negative_prompt=body.negative_prompt,
-        input_image_data=input_image_data,
-        end_image_data=end_image_data,
+        start_frame_data=start_frame_data,
+        end_frame_data=end_frame_data,
         duration_seconds=body.duration_seconds,
         frame_rate=body.frame_rate,
         width=width,

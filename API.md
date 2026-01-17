@@ -193,19 +193,16 @@ Configurable via `/api/v1/settings/vram-mode`:
 #### Mode Behavior
 
 1. **image_generation** (Default):
-
    - Loads **Z-Image Turbo** for text-to-image generation
    - Scheduling: Grouped by job type to minimize switching
    - Switching time: ~15-30s
 
 2. **image_editing**:
-
    - Loads **LightX2V (Qwen-Image-Edit)** for image editing
    - Scheduling: Grouped by job type to minimize switching
    - Switching time: ~15-30s
 
 3. **video_generation**:
-
    - Loads **LTX-2 19B** for video generation
    - Scheduling: Grouped by job type to minimize switching
    - Switching time: ~30-60s
@@ -433,9 +430,17 @@ Check the status of a specific job.
 | Field | Type | Required | Description | Default |
 |-------|------|----------|-------------|---------|
 | `job_id` | string | ✅ | Unique job identifier | - |
-| `input_image_url` | string | ✅ | URL of starting frame | - |
+| `start_frame_url` | string | ✅ | URL of starting frame image | - |
 | `prompt` | string | ✅ | Motion description | - |
-| `duration_seconds` | float | ❌ | Video length (1.0-8.0) | `4.0` |
+| `end_frame_url` | string | ❌ | Optional URL of end frame for interpolation | - |
+| `duration_seconds` | float | ❌ | Video length (0.5-10.0) | `5.0` |
+| `frame_rate` | float | ❌ | Frame rate (8.0-60.0) | `24.0` |
+| `aspect_ratio` | string | ❌ | `16:9`, `9:16`, `1:1`, `4:3`, `3:4` | `16:9` |
+| `width` | int | ❌ | Target width (512-1920, overrides aspect_ratio) | - |
+| `height` | int | ❌ | Target height (512-1920, overrides aspect_ratio) | - |
+| `negative_prompt` | string | ❌ | What should not appear in the video | `""` |
+| `seed` | int | ❌ | Random seed for reproducibility | - |
+| `enhance_prompt` | bool | ❌ | Auto-enhance prompt | `false` |
 | `save_url` | string | ✅ | Presigned PUT URL | - |
 | `webhook_url` | string | ✅ | **REQUIRED:** URL to POST when complete | - |
 | `item_id` | string | ❌ | Client identifier (returned in webhook) | `job_id` |
@@ -537,7 +542,7 @@ Submit a batch of image editing requests (max 500 items).
 
 Submit a batch of video generation requests (max 100 items).
 
-**Item Fields:** Same as individual `/api/v1/ltx2/generate`.
+**Item Fields:** Same as individual `/api/v1/ltx2/generate` (including `start_frame_url`, optional `end_frame_url`).
 
 ---
 

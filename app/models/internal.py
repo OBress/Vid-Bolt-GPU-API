@@ -53,8 +53,8 @@ class VideoGenerationParams:
     job_id: str
     prompt: str
     negative_prompt: str
-    input_image_data: bytes
-    end_image_data: Optional[bytes]
+    start_frame_data: bytes
+    end_frame_data: Optional[bytes]
     duration_seconds: float
     frame_rate: float
     width: int

@@ -23,7 +23,7 @@ def test_generate_video_success(client, api_key_headers, mock_storage, sample_jo
             headers=api_key_headers,
             json={
                 "job_id": sample_job_id,
-                "input_image_url": input_url,
+                "start_frame_url": input_url,
                 "prompt": "Zoom in slowly",
                 "duration_seconds": 4.0,
                 "fps": 24,
@@ -59,8 +59,8 @@ def test_generate_video_with_end_frame(client, api_key_headers, mock_storage, sa
         headers=api_key_headers,
         json={
             "job_id": sample_job_id,
-            "input_image_url": input_url,
-            "end_image_url": end_url,
+            "start_frame_url": input_url,
+            "end_frame_url": end_url,
             "prompt": "Morph start into end",
             "save_url": "https://example.com/save.mp4",
         },
@@ -82,7 +82,7 @@ def test_generate_video_with_output_url(client, api_key_headers, mock_storage, s
         headers=api_key_headers,
         json={
             "job_id": sample_job_id,
-            "input_image_url": input_url,
+            "start_frame_url": input_url,
             "prompt": "Action sequence",
             "save_url": output_url,
         },
@@ -106,7 +106,7 @@ def test_generate_video_validation_error(client, api_key_headers, sample_job_id,
         headers=api_key_headers,
         json={
             "job_id": sample_job_id,
-            "input_image_url": "https://example.com/start.png",
+            "start_frame_url": "https://example.com/start.png",
             "prompt": "Action",
             "fps": 60,  # Invalid FPS
             "save_url": "https://example.com/save.mp4",

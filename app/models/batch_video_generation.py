@@ -18,7 +18,7 @@ class BatchVideoGenerateItem(BaseModel):
         min_length=1,
         max_length=100,
     )
-    input_image_url: str = Field(
+    start_frame_url: str = Field(
         ...,
         description="URL of the start frame image",
     )
@@ -60,7 +60,7 @@ class BatchVideoGenerateItem(BaseModel):
         le=1920,
         description="Target height (overrides aspect_ratio default)",
     )
-    end_image_url: Optional[str] = Field(
+    end_frame_url: Optional[str] = Field(
         default=None,
         description="Optional URL of the end frame image for interpolation",
     )
@@ -109,14 +109,14 @@ class BatchVideoGenerateRequest(BaseModel):
                     "items": [
                         {
                             "item_id": "video_scene_001",
-                            "input_image_url": "https://example.com/start1.png",
+                            "start_frame_url": "https://example.com/start1.png",
                             "prompt": "Gentle waves on the beach, cinematic motion",
                             "duration_seconds": 5.0,
                             "save_url": "https://example.com/upload/1.mp4"
                         },
                         {
                             "item_id": "video_scene_002",
-                            "input_image_url": "https://example.com/start2.png",
+                            "start_frame_url": "https://example.com/start2.png",
                             "prompt": "Clouds moving across the sky, timelapse",
                             "duration_seconds": 3.0,
                             "save_url": "https://example.com/upload/2.mp4"
