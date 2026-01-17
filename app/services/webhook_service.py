@@ -13,7 +13,9 @@ from typing import Any, Callable, Coroutine, Dict, Optional
 import httpx
 
 from app.config import Settings
+from app.exceptions import ValidationError
 from app.models.webhook import WebhookPayload
+from app.utils.url_validator import validate_external_url
 
 logger = logging.getLogger(__name__)
 
@@ -145,6 +147,13 @@ class WebhookService:
         payload: WebhookPayload = item["payload"]
         webhook_url: str = item["url"]
         secret: Optional[str] = item.get("secret")
+        
+        # Validate URL to prevent SSRF attacks
+        try:
+            validate_external_url(webhook_url)
+        except ValidationError as e:
+            logger.error(f"Webhook URL validation failed: {e}")
+            return False
         
         headers = {
             "Content-Type": "application/json",
