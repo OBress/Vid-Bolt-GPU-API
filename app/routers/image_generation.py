@@ -50,14 +50,7 @@ async def generate_image(
 
     Returns 202 Accepted if job is queued, or 429/503 if busy.
     """
-    # 1. Determine active generator (if not mock)
-    active_generator = generator
-    
-    if not settings.mock_mode:
-        # Note: Worker will handle mode switching automatically
-        active_generator = model_manager.get_image_generator()
-
-    # 2. Prepare parameters
+    # 1. Prepare parameters (generator is fetched at task execution time, not here)
     if body.width and body.height:
         width, height = body.width, body.height
     else:
@@ -73,7 +66,8 @@ async def generate_image(
         lora_name=body.lora_name if body.lora_name and body.lora_name.lower() != "none" else None,
     )
 
-    # 3. Try to submit job
+    # 2. Try to submit job (generator will be fetched at task execution time)
+    # This allows dynamic Z-Image loading in ALL mode via ensure_mode_for_job()
     submitted = await job_manager.try_submit_job(
         job_id=body.job_id,
         job_type=JobType.IMAGE_GENERATION,
@@ -82,10 +76,12 @@ async def generate_image(
         item_id=body.item_id,
         webhook_secret=body.webhook_secret,
         # Args for task_func:
-        generator=active_generator,
+        model_manager=model_manager,
         storage=storage,
         params=params,
         save_url=body.save_url,
+        is_mock=settings.mock_mode,
+        mock_generator=generator if settings.mock_mode else None,
     )
 
     if not submitted:
@@ -102,13 +98,25 @@ async def generate_image(
 
 
 async def _run_image_generation(
-    generator: GeneratorDep,
+    model_manager: ModelManagerDep,
     storage: StorageDep,
     params: ImageGenerationParams,
     save_url: str,
+    is_mock: bool = False,
+    mock_generator = None,
 ) -> JobResult:
-    """Background task for image generation."""
+    """Background task for image generation.
+    
+    Generator is fetched at execution time (not at request time) to support
+    dynamic Z-Image loading in ALL mode via ensure_mode_for_job().
+    """
     start_time = time.time()
+    
+    # Get generator at execution time (after ensure_mode_for_job() has run)
+    if is_mock:
+        generator = mock_generator
+    else:
+        generator = model_manager.get_image_generator()
     
     # Generate
     result = await generator.generate_image(params)
@@ -129,4 +137,3 @@ async def _run_image_generation(
             "height": result.height,
         }
     )
-
