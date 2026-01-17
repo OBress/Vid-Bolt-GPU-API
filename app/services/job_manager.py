@@ -412,19 +412,32 @@ class JobManager:
         # Calculate max batch size based on job type and VRAM
         if job_type == JobType.IMAGE_GENERATION:
             # Z-Image: true vectorized batching
-            max_batch = vram_estimator.calculate_max_batch_size(width, height)
-        elif job_type == JobType.IMAGE_EDITING:
-            # LightX2V: sequential batching with shared model state
-            # Check if other models are loaded (ALL mode)
-            other_models_loaded = False
+            # In ALL mode, limit to 1 to share VRAM with other models
             if self._model_manager:
                 from app.services.model_manager import VRAMLoadMode
-                other_models_loaded = self._model_manager.current_mode == VRAMLoadMode.ALL
-            
-            max_batch = vram_estimator.calculate_lightx2v_max_batch_size(
-                width, height,
-                other_models_loaded=other_models_loaded
-            )
+                if self._model_manager.current_mode == VRAMLoadMode.ALL:
+                    max_batch = 1  # ALL mode: strict limit
+                else:
+                    max_batch = vram_estimator.calculate_max_batch_size(width, height)
+            else:
+                max_batch = vram_estimator.calculate_max_batch_size(width, height)
+        elif job_type == JobType.IMAGE_EDITING:
+            # LightX2V: sequential batching with shared model state
+            # In ALL mode, limit to 1 to share VRAM with other models
+            if self._model_manager:
+                from app.services.model_manager import VRAMLoadMode
+                if self._model_manager.current_mode == VRAMLoadMode.ALL:
+                    max_batch = 1  # ALL mode: strict limit
+                else:
+                    max_batch = vram_estimator.calculate_lightx2v_max_batch_size(
+                        width, height,
+                        other_models_loaded=False  # Dedicated mode
+                    )
+            else:
+                max_batch = vram_estimator.calculate_lightx2v_max_batch_size(
+                    width, height,
+                    other_models_loaded=False
+                )
         elif job_type == JobType.VIDEO_GENERATION:
             # LTX-2: Mode-aware concurrency limits
             # In ALL mode, limit to 1 video to preserve VRAM headroom
