@@ -212,7 +212,7 @@ class LTX2Generator(VideoGenerator):
             
             # Run warmup with DistilledPipeline
             # This forces all model weights to GPU and compiles CUDA kernels
-            with torch.inference_mode():
+            with torch.no_grad():
                 tiling_config = TilingConfig.default()
                 
                 # Warmup DistilledPipeline
@@ -267,7 +267,7 @@ class LTX2Generator(VideoGenerator):
         logger.info("Caching text encoder for thread-safe concurrent access...")
         
         try:
-            with torch.inference_mode():
+            with torch.no_grad():
                 distilled_text_encoder = distilled.model_ledger.text_encoder()
             
             # Patch the method to return cached instance
@@ -637,7 +637,7 @@ class LTX2Generator(VideoGenerator):
 
         # Wrap entire generation in inference_mode to match official LTX-2 CLI pattern
         # This ensures encode_video (which iterates the video generator) runs in the same context
-        with torch.inference_mode():
+        with torch.no_grad():
             return self._generate_sync_inner(
                 params, num_frames, seed, target_width, target_height,
                 TilingConfig, get_video_chunks_number, encode_video, AUDIO_SAMPLE_RATE
@@ -1057,60 +1057,7 @@ class LTX2Generator(VideoGenerator):
             seed=seed,
         )
 
-    def _run_warmup(self, device) -> None:
-        """Run a minimal warmup inference to move tensors to GPU and JIT compile kernels.
-        
-        This is called once after loading to eliminate first-inference latency.
-        Uses the smallest possible parameters to minimize warmup time.
-        """
-        import torch
-        from PIL import Image
-        from ltx_core.model.video_vae import TilingConfig
-        
-        logger.info("Running LTX-2 warmup inference...")
-        
-        try:
-            # Create minimal 64x64 black image (smallest valid size for LTX-2 is 64)
-            warmup_image = Image.new('RGB', (256, 256), color='black')
-            warmup_path = Path(self._temp_dir.name) / "warmup_frame.png"
-            warmup_image.save(warmup_path, format="PNG")
-            
-            # Minimal generation parameters
-            # Use 9 frames (minimum valid count: 1 + 8*n) and shortest duration
-            with torch.inference_mode():
-                tiling_config = TilingConfig.default()
-                
-                # Run warmup with DistilledPipeline (fastest)
-                # This forces all model weights to GPU and compiles CUDA kernels
-                video_chunks, audio = self.components.distilled_pipeline(
-                    prompt="warmup",
-                    seed=42,
-                    height=256,  # Small but divisible by 64
-                    width=256,
-                    num_frames=9,  # Minimum valid: 1 + 8*1 = 9
-                    frame_rate=24.0,
-                    images=[(str(warmup_path), 0, 1.0)],
-                    tiling_config=tiling_config,
-                    enhance_prompt=False,
-                )
-                
-                # Consume the generator to ensure all ops run
-                if hasattr(video_chunks, '__iter__') and not isinstance(video_chunks, torch.Tensor):
-                    for _ in video_chunks:
-                        pass
-            
-            # Cleanup warmup file
-            warmup_path.unlink(missing_ok=True)
-            
-            # Clear CUDA cache to free warmup memory
-            if torch.cuda.is_available():
-                torch.cuda.empty_cache()
-            
-            logger.info("LTX-2 warmup complete - GPU tensors loaded and kernels compiled")
-            
-        except Exception as e:
-            logger.warning(f"LTX-2 warmup failed (non-fatal): {e}")
-            # Warmup failure is non-fatal - first real inference will just be slow
+
 
     def __del__(self):
         """Cleanup temporary directory on deletion."""
