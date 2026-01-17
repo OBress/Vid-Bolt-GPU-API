@@ -832,14 +832,21 @@ class JobManager:
             logger.warning(f"Failed to clean up GPU memory: {e}")
 
     async def _send_webhook(self, job: JobInfo) -> None:
-        """Send webhook for a completed/failed job and schedule deletion."""
+        """Send webhook for a completed/failed job.
+        
+        Note: Jobs are NOT deleted after webhook delivery. They remain in memory
+        until they expire (24h for completed, 48h for failed) or the 1000-job
+        FIFO limit is reached. This allows reliable polling even when webhooks
+        are configured.
+        """
         if not self._webhook_service:
             logger.warning(f"WebhookService not available, skipping webhook for {job.job_id}")
             return
         
         webhook_url = getattr(job, '_webhook_url', None)
         if not webhook_url:
-            logger.warning(f"No webhook URL for job {job.job_id}")
+            # No webhook URL is now a valid use case (polling-only mode)
+            logger.debug(f"No webhook URL for job {job.job_id}, skipping webhook (polling mode)")
             return
         
         # Convert internal dataclass result to JobResult Pydantic model
@@ -918,14 +925,10 @@ class JobManager:
             retry_count=0,  # TBD: integrate with BatchManager retry count
         )
         
-        # Callback to delete job after successful delivery
-        async def cleanup_job():
-            self._jobs.pop(job.job_id, None)
-            logger.debug(f"Deleted job {job.job_id} after webhook delivery")
-        
+        # Deliver webhook (no auto-deletion - job persists for polling)
         await self._webhook_service.deliver(
             webhook_url=webhook_url,
             payload=payload,
             secret=getattr(job, '_webhook_secret', None),
-            on_success=cleanup_job,
         )
+

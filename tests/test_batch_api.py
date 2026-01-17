@@ -77,24 +77,23 @@ class TestBatchModels:
             BatchImageGenerateItem(item_id=f"item-{i}", prompt=f"Test {i}", save_url=f"https://example.com/{i}.png")
             for i in range(500)
         ]
-        request = BatchImageGenerateRequest(batch_id="test-batch", items=items)
+        request = BatchImageGenerateRequest(batch_id="test-batch", items=items, webhook_url="http://test.webhook")
         assert len(request.items) == 500
     
     def test_batch_request_max_items_video(self):
         """Test max items validation for video batches (100)."""
         from app.models.batch_video_generation import BatchVideoGenerateRequest, BatchVideoGenerateItem
         
-        # Create request with max items (100) - should work
         items = [
             BatchVideoGenerateItem(
                 item_id=f"video-{i}",
-                input_image_url=f"https://example.com/input{i}.png",
+                start_frame_url=f"https://example.com/input{i}.png",
                 prompt=f"Test {i}",
                 save_url=f"https://example.com/{i}.mp4"
             )
             for i in range(100)
         ]
-        request = BatchVideoGenerateRequest(batch_id="test-batch", items=items)
+        request = BatchVideoGenerateRequest(batch_id="test-batch", items=items, webhook_url="http://test.webhook")
         assert len(request.items) == 100
     
     def test_batch_info_status_aggregation(self):
@@ -316,7 +315,7 @@ class TestBatchEndpoints:
             headers=api_key_headers,
             json={
                 "batch_id": batch_id,
-                "items": [{"prompt": "Test", "save_url": "https://example.com/1.png"}],
+                "items": [{"item_id": "test-item", "prompt": "Test", "save_url": "https://example.com/1.png"}],
                 "webhook_url": "http://webhook.test"
             }
         )
@@ -352,7 +351,7 @@ class TestBatchEndpoints:
                 "items": [
                     {
                         "item_id": "vid-1",
-                        "input_image_url": "https://example.com/input.png",
+                        "start_frame_url": "https://example.com/input.png",
                         "prompt": "Waves crashing",
                         "duration_seconds": 3.0,
                         "save_url": "https://example.com/1.mp4"

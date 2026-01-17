@@ -55,9 +55,9 @@ class ImageGenerateRequest(BaseModel):
         ...,
         description="Presigned URL (PUT) for direct storage upload",
     )
-    webhook_url: str = Field(
-        ...,
-        description="REQUIRED: URL to POST when generation completes (success or failure)",
+    webhook_url: Optional[str] = Field(
+        default=None,
+        description="Optional: URL to POST when generation completes (success or failure). If not provided, use polling.",
     )
     item_id: Optional[str] = Field(
         default=None,

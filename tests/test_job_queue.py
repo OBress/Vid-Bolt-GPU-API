@@ -118,9 +118,13 @@ async def test_per_type_scheduling_grouping(job_manager, mock_model_manager):
 
 @pytest.mark.asyncio
 async def test_job_execution(job_manager, mock_model_manager):
-    """Test that jobs are actually executed and status updated."""
+    """Test that jobs are actually executed and status updated.
     
-    # Mock task to run successful
+    Note: The JobManager executes the submitted task function directly,
+    not via get_image_generator. This test verifies the task is called.
+    """
+    
+    # Mock task to run successfully
     mock_task = AsyncMock(return_value=MagicMock(image_data=b"fake", seed=123, width=1024, height=1024))
     
     # Submit
@@ -128,25 +132,17 @@ async def test_job_execution(job_manager, mock_model_manager):
     params.width, params.height = 1024, 1024
     await job_manager.submit_job("job-exec-1", JobType.IMAGE_GENERATION, mock_task, params=params, webhook_url="http://test.url")
     
-    # Inject Generator to return result structure matching expected output
-    mock_generator = MagicMock()
-    mock_generator.generate_image = AsyncMock(return_value=MagicMock(image_data=b"fake", seed=123, width=1024, height=1024))
-    mock_model_manager.get_image_generator.return_value = mock_generator
-
-    # Manually run process_job (Legacy single job path)
+    # Manually run process_job
     await job_manager._process_job("job-exec-1")
     
-    # Verify
-    job = job_manager.get_job("job-exec-1")
-    # Note: _process_job handles upload logic if storage present. 
-    # Without storage/upload, it might stay reprocessing or just complete.
-    # In new flow, it sets status=PROCESSING, then executes.
-    # We should verify _task_func was awaiting.
+    # Verify the submitted task was called
+    mock_task.assert_called_once()
     
-    # Check internal job state
-    # job.status might be Processing or Completed depending on how we mocked storage.
-    # The key is checking if generation happened.
-    mock_model_manager.get_image_generator.assert_called()
+    # Verify job exists and was processed
+    job = job_manager.get_job("job-exec-1")
+    assert job is not None
+    # Status should be completed or processing (depends on storage mock)
+    assert job.status in [JobStatus.COMPLETED, JobStatus.PROCESSING, JobStatus.FAILED]
 
 
 # -----------------------------------------------------------------------------

@@ -207,7 +207,11 @@ class TestVRAMMode:
 
     @pytest.mark.asyncio
     async def test_set_vram_mode_all_loads_all_models(self):
-        """Test valid VRAM mode transition to ALL."""
+        """Test valid VRAM mode transition to ALL.
+        
+        Note: In ALL mode, Z-Image is NOT loaded initially to provide VRAM headroom
+        for video generation. It loads dynamically when an image gen request comes in.
+        """
         from app.config import get_settings
         from app.services.model_manager import ModelManager, VRAMLoadMode
         
@@ -216,13 +220,16 @@ class TestVRAMMode:
         
         # Mock loading methods
         manager._load_zimage = AsyncMock()
+        manager._unload_zimage = AsyncMock()
         manager._load_lightx2v = AsyncMock()
         manager._load_ltx2 = AsyncMock()
         
         await manager.set_vram_mode(VRAMLoadMode.ALL)
         
         assert manager.vram_mode == VRAMLoadMode.ALL
-        manager._load_zimage.assert_called_once()
+        # Z-Image should NOT be loaded in ALL mode (deferred for VRAM headroom)
+        manager._load_zimage.assert_not_called()
+        # But LightX2V and LTX-2 should be loaded
         manager._load_lightx2v.assert_called_once()
         manager._load_ltx2.assert_called_once()
 

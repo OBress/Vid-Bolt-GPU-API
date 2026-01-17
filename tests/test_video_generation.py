@@ -97,18 +97,19 @@ def test_generate_video_with_output_url(client, api_key_headers, mock_storage, s
 
 
 def test_generate_video_validation_error(client, api_key_headers, sample_job_id, mock_model_manager):
-    """Test validation error for invalid FPS."""
+    """Test validation error for missing required fields on LTX2 endpoint."""
     from app.services.model_manager import ModelMode
     mock_model_manager._mode = ModelMode.VIDEO
     
+    # The old /api/v1/video/generate endpoint was replaced by /api/v1/ltx2/generate
+    # Test that the ltx2 endpoint validates required fields
     response = client.post(
-        "/api/v1/video/generate",
+        "/api/v1/ltx2/generate",
         headers=api_key_headers,
         json={
             "job_id": sample_job_id,
-            "start_frame_url": "https://example.com/start.png",
+            # Missing start_frame_url which is required
             "prompt": "Action",
-            "fps": 60,  # Invalid FPS
             "save_url": "https://example.com/save.mp4",
         },
     )
@@ -118,7 +119,7 @@ def test_generate_video_validation_error(client, api_key_headers, sample_job_id,
 
 
 def test_generate_video_unauthorized(client):
-    """Test unauthorized access."""
-    response = client.post("/api/v1/video/generate", json={"job_id": "test", "save_url": "https://example.com/save.mp4"})
+    """Test unauthorized access to LTX2 endpoint."""
+    response = client.post("/api/v1/ltx2/generate", json={"job_id": "test", "save_url": "https://example.com/save.mp4"})
     assert response.status_code == 401
 

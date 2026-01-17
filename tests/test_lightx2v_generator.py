@@ -42,7 +42,7 @@ class TestLightX2VImageEditGenerator:
         generator = LightX2VImageEditGenerator(settings)
         
         assert generator.settings == settings
-        assert generator.components is None
+        assert generator._pool is None  # Uses instance pool, not components
         assert generator.is_loaded is False
         assert generator.dry_run is True
 
@@ -54,8 +54,8 @@ class TestLightX2VImageEditGenerator:
         generator.load_models()
         
         assert generator.is_loaded is True
-        # In dry-run mode, components should remain None
-        assert generator.components is None
+        # In dry-run mode, pool should be initialized but pipelines are mocked
+        assert generator._pool is not None
 
     def test_get_status(self, settings):
         """Test getting generator status."""

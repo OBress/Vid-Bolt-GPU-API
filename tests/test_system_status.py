@@ -39,7 +39,7 @@ class TestSystemStatusEndpoint:
         assert "max_concurrent_image_generations" in limits
         assert "max_concurrent_video_generations" in limits
         assert limits["max_concurrent_image_generations"] == 2
-        assert limits["max_concurrent_video_generations"] == 1
+        assert limits["max_concurrent_video_generations"] == 3  # Updated: LTX-2 supports 3 concurrent in video mode
 
     def test_system_status_mock_mode_flag(
         self, client: TestClient, api_key_headers: dict
@@ -84,10 +84,10 @@ class TestConcurrencyLimitsConfig:
         """Test that video concurrency limit is correctly configured."""
         from app.config import InferenceConfig, get_settings
         
-        assert InferenceConfig.MAX_CONCURRENT_VIDEO_GENERATIONS == 1
+        assert InferenceConfig.MAX_CONCURRENT_VIDEO_GENERATIONS == 3  # Updated: LTX-2 supports 3 concurrent
         
         settings = get_settings()
-        assert settings.max_concurrent_video_generations == 1
+        assert settings.max_concurrent_video_generations == 3
 
     def test_concurrency_limits_are_positive(self):
         """Test that concurrency limits are positive integers."""

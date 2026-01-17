@@ -31,9 +31,9 @@ class ImageEditRequest(BaseModel):
     mask_image_url: str | None = Field(default=None, description="URL of the mask image for inpainting")
     seed: int | None = Field(default=None, description="Random seed for reproducibility")
     save_url: str = Field(..., description="Presigned URL (PUT) for direct storage upload")
-    webhook_url: str = Field(
-        ...,
-        description="REQUIRED: URL to POST when editing completes (success or failure)",
+    webhook_url: str | None = Field(
+        default=None,
+        description="Optional: URL to POST when editing completes (success or failure). If not provided, use polling.",
     )
     item_id: str | None = Field(
         default=None,
