@@ -262,8 +262,16 @@ class ModelManager:
                     self._zimage_dynamic_loaded = False
                     logger.info("ALL mode: Z-Image unloaded, VRAM freed for video generation")
                 return True
+            elif job_type == JobType.IMAGE_EDITING:
+                # Unload Z-Image if loaded to free VRAM for image editing (LightX2V)
+                if self._zimage_dynamic_loaded:
+                    logger.info("ALL mode: Unloading Z-Image to free VRAM for image editing...")
+                    await self._unload_zimage()
+                    self._zimage_dynamic_loaded = False
+                    logger.info("ALL mode: Z-Image unloaded, VRAM freed for image editing")
+                return True
             else:
-                # Image editing uses LightX2V which is always loaded in ALL mode
+                # Unknown job type - just return True
                 return True
         
         # Already in the right mode
