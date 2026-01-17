@@ -55,7 +55,7 @@ class InferenceConfig:
     
     # Concurrency limits
     MAX_CONCURRENT_IMAGE_GENERATIONS = 2  # Across Z-Image + Qwen-Image-Edit
-    MAX_CONCURRENT_VIDEO_GENERATIONS = 2  # LTX-2 (FP8 text encoder allows 2 concurrent)
+    MAX_CONCURRENT_VIDEO_GENERATIONS = 3  # LTX-2 (QAT text encoder allows 3 concurrent in video-only mode)
     
     # Z-Image settings (uses Diffusers ZImagePipeline)
     ZIMAGE_COMPILE = False  # Disabled: torch.compile inductor fails with dynamic shapes
