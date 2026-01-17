@@ -68,9 +68,25 @@ class GemmaTextEncoderModelBase(torch.nn.Module):
         input_ids = torch.tensor([[t[0] for t in token_pairs]], device=self.model.device)
         attention_mask = torch.tensor([[w[1] for w in token_pairs]], device=self.model.device)
         outputs = self.model(input_ids=input_ids, attention_mask=attention_mask, output_hidden_states=True)
+        
+        # DEBUG: Check hidden states for NaNs
+        hidden_state = outputs.hidden_states[-1]
+        if torch.isnan(hidden_state).any():
+            import logging
+            logging.error(f"DEBUG CRITICAL: Gemma 3 output hidden_states[-1] contains NaNs! dtype={hidden_state.dtype}, min={hidden_state.min()}, max={hidden_state.max()}")
+        else:
+            import logging
+            logging.info(f"DEBUG: Gemma 3 hidden_states valid. dtype={hidden_state.dtype}, mean={hidden_state.float().mean()}")
+
         projected = self._run_feature_extractor(
             hidden_states=outputs.hidden_states, attention_mask=attention_mask, padding_side=padding_side
         )
+
+        # DEBUG: Check projection for NaNs
+        if torch.isnan(projected).any():
+            import logging
+            logging.error(f"DEBUG CRITICAL: Feature Extractor output contains NaNs! dtype={projected.dtype}, min={projected.min()}, max={projected.max()}")
+
         return projected, attention_mask
 
     def _init_image_processor(self) -> None:

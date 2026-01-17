@@ -122,6 +122,11 @@ class DistilledPipeline:
                 prompt = generate_enhanced_prompt(text_encoder, prompt, images[0][0] if len(images) > 0 else None)
             context_p = encode_text(text_encoder, prompts=[prompt])[0]
         video_context, audio_context = context_p
+        
+        logging.info(f"DEBUG: Text Encoder Output (video_context): shape={video_context.shape}, dtype={video_context.dtype}, min={video_context.min()}, max={video_context.max()}, mean={video_context.float().mean()}")
+        if torch.isnan(video_context).any():
+             logging.error("DEBUG CRITICAL: Text Encoder Output contains NaNs!")
+
 
         # Stage 1: Initial low resolution video generation.
         video_encoder = self.video_encoder
@@ -211,7 +216,7 @@ class DistilledPipeline:
 
         decoded_video = vae_decode_video(video_state.latent, self.video_decoder, tiling_config)
         
-        logging.info(f"DEBUG: decoded_video stats: shape={decoded_video.shape}, dtype={decoded_video.dtype}, min={decoded_video.min()}, max={decoded_video.max()}, mean={decoded_video.float().mean()}")
+        logging.info("DEBUG: decoded_video is a generator (skipping stats to avoid consuming)")
         
         decoded_audio = vae_decode_audio(
             audio_state.latent, self.audio_decoder, self.vocoder
