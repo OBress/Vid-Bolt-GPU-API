@@ -19,6 +19,7 @@ from ltx_pipelines.utils import ModelLedger
 from ltx_pipelines.utils.args import default_2_stage_arg_parser
 from ltx_pipelines.utils.constants import (
     AUDIO_SAMPLE_RATE,
+    DISTILLED_SIGMA_VALUES,
     STAGE_2_DISTILLED_SIGMA_VALUES,
 )
 from ltx_pipelines.utils.helpers import (
@@ -110,7 +111,30 @@ class KeyframeInterpolationPipeline:
         images: list[tuple[str, int, float]],
         tiling_config: TilingConfig | None = None,
         enhance_prompt: bool = False,
+        use_distilled_schedule: bool = False,
     ) -> tuple[Iterator[torch.Tensor], torch.Tensor]:
+        """
+        Generate a video by interpolating between keyframe images.
+
+        Args:
+            prompt: Text prompt describing the desired video content.
+            negative_prompt: Text prompt describing what to avoid (ignored if use_distilled_schedule=True).
+            seed: Random seed for reproducibility.
+            height: Output video height in pixels (must be divisible by 64).
+            width: Output video width in pixels (must be divisible by 64).
+            num_frames: Number of frames to generate (should follow 8k+1 rule).
+            frame_rate: Frames per second for the output video.
+            num_inference_steps: Number of denoising steps (ignored if use_distilled_schedule=True).
+            cfg_guidance_scale: CFG guidance scale (ignored if use_distilled_schedule=True).
+            images: List of (image_path, frame_idx, strength) tuples for keyframe conditioning.
+            tiling_config: Optional tiling configuration for VAE decoding.
+            enhance_prompt: Whether to enhance the prompt using Gemma.
+            use_distilled_schedule: If True, use 8-step distilled schedule for Stage 1 (faster).
+                                    This disables CFG guidance and uses simple denoising.
+
+        Returns:
+            Tuple of (video_chunks_iterator, audio_tensor).
+        """
         assert_resolution(height=height, width=width, is_two_stage=True)
 
         generator = torch.Generator(device=self.device).manual_seed(seed)
@@ -131,24 +155,43 @@ class KeyframeInterpolationPipeline:
         # Stage 1: Initial low resolution video generation.
         video_encoder = self.video_encoder
         transformer = self.transformer_stage_1
-        sigmas = LTX2Scheduler().execute(steps=num_inference_steps).to(dtype=torch.float32, device=self.device)
+        
+        # Use distilled schedule (8 steps) or dynamic scheduler
+        if use_distilled_schedule:
+            sigmas = torch.Tensor(DISTILLED_SIGMA_VALUES).to(self.device)
+            logging.info("Using distilled 8-step schedule for Stage 1 (fast mode)")
+        else:
+            sigmas = LTX2Scheduler().execute(steps=num_inference_steps).to(dtype=torch.float32, device=self.device)
+            logging.info(f"Using standard scheduler with {num_inference_steps} steps for Stage 1")
 
         def first_stage_denoising_loop(
             sigmas: torch.Tensor, video_state: LatentState, audio_state: LatentState, stepper: DiffusionStepProtocol
         ) -> tuple[LatentState, LatentState]:
-            return euler_denoising_loop(
-                sigmas=sigmas,
-                video_state=video_state,
-                audio_state=audio_state,
-                stepper=stepper,
-                denoise_fn=guider_denoising_func(
+            # Choose denoising function based on schedule type
+            # Distilled schedule: simple denoising (no CFG overhead)
+            # Standard schedule: CFG-guided denoising for quality
+            if use_distilled_schedule:
+                denoise_fn = simple_denoising_func(
+                    video_context=v_context_p,
+                    audio_context=a_context_p,
+                    transformer=transformer,  # noqa: F821
+                )
+            else:
+                denoise_fn = guider_denoising_func(
                     cfg_guider,
                     v_context_p,
                     v_context_n,
                     a_context_p,
                     a_context_n,
                     transformer=transformer,  # noqa: F821
-                ),
+                )
+            
+            return euler_denoising_loop(
+                sigmas=sigmas,
+                video_state=video_state,
+                audio_state=audio_state,
+                stepper=stepper,
+                denoise_fn=denoise_fn,
             )
 
         stage_1_output_shape = VideoPixelShape(

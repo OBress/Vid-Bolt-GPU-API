@@ -61,13 +61,15 @@ class LTX2Components:
 class LTX2Generator(VideoGenerator):
     """LTX-2 video generation service.
 
-    Uses the DistilledPipeline for Image-to-Video generation:
-    - Fast 8+4 step inference schedule
-    - Supports 1 start frame with optional end frame (1-2 keyframes)
-    - Exact keyframe preservation via latent replacement
-    - ~40GB VRAM usage
+    Uses two pipelines for optimal quality and speed:
+    - DistilledPipeline: For I2V with single keyframe (fast 8+4 step schedule)
+    - KeyframeInterpolationPipeline: For 2-keyframe requests using guiding latents
+      for smoother transitions (uses 8-step distilled schedule for speed)
     
-    The pipeline generates synchronized audio alongside video.
+    Key features:
+    - Automatic pipeline selection based on keyframe count
+    - ~40GB VRAM usage (both pipelines share model weights)
+    - Synchronized audio generation alongside video
     """
 
     def __init__(self, settings: Settings):
@@ -147,12 +149,12 @@ class LTX2Generator(VideoGenerator):
                 "pip install -e path/to/LTX-2/packages/ltx-pipelines"
             ) from e
 
-        # Initialize DistilledPipeline (only pipeline we use)
+        # Initialize device for all pipelines
         device = torch.device(self.settings.ltx2_device)
-        
-        # DistilledPipeline for I2V generation
-        # Supports 1 start frame with optional end frame (1-2 keyframes total)
-        logger.info("Loading DistilledPipeline for I2V generation (~40GB VRAM)...")
+
+        # DistilledPipeline for I2V generation (1 keyframe)
+        # Uses latent replacement conditioning - exact keyframe preservation
+        logger.info("Loading DistilledPipeline for single-keyframe I2V generation...")
         try:
             distilled_pipeline = DistilledPipeline(
                 checkpoint_path=str(checkpoint_path.absolute()),
@@ -165,14 +167,32 @@ class LTX2Generator(VideoGenerator):
         except Exception:
             logger.exception("Failed to initialize DistilledPipeline")
             raise
-        logger.info("DistilledPipeline __init__ completed successfully")
+        logger.info("DistilledPipeline loaded successfully")
+        
+        # KeyframeInterpolationPipeline for 2-keyframe requests
+        # Uses guiding latents conditioning - smoother transitions between keyframes
+        # We use distilled_lora=[] since we're using the distilled checkpoint directly
+        logger.info("Loading KeyframeInterpolationPipeline for 2-keyframe interpolation...")
+        try:
+            keyframe_pipeline = KeyframeInterpolationPipeline(
+                checkpoint_path=str(checkpoint_path.absolute()),
+                distilled_lora=[],  # Already using distilled checkpoint
+                spatial_upsampler_path=str(spatial_upsampler_path.absolute()),
+                gemma_root=str(gemma_root.absolute()),
+                loras=[],  # No extra LoRAs
+                device=device,
+                fp8transformer=self.settings.ltx2_fp8_enabled,
+            )
+        except Exception:
+            logger.exception("Failed to initialize KeyframeInterpolationPipeline")
+            raise
+        logger.info("KeyframeInterpolationPipeline loaded successfully")
 
         self.components = LTX2Components(
             distilled_pipeline=distilled_pipeline,
-            keyframe_pipeline=None,  # Not used - we only support 1-2 keyframes
+            keyframe_pipeline=keyframe_pipeline,
         )
         self.is_loaded = True
-
 
         # Create temp directory for intermediate files
         self._temp_dir = tempfile.TemporaryDirectory(prefix="ltx2_")
@@ -708,7 +728,7 @@ class LTX2Generator(VideoGenerator):
         # Configure tiling for video decoding
         tiling_config = TilingConfig.default()
 
-        # Validate keyframe count (DistilledPipeline only supports 1-2 keyframes)
+        # Validate keyframe count
         num_keyframes = len(params.keyframes)
         if num_keyframes > 2:
             raise ValueError(
@@ -719,11 +739,15 @@ class LTX2Generator(VideoGenerator):
         if num_keyframes < 1:
             raise ValueError("At least 1 keyframe (start frame) is required for video generation.")
         
-        # Use DistilledPipeline for I2V generation
-        logger.info(f"Using DistilledPipeline for I2V ({num_keyframes} keyframe(s))")
-        video_chunks, audio = self.components.distilled_pipeline(
-            prompt=params.prompt,
-            seed=seed,
+        # Select pipeline based on keyframe count:
+        # - 1 keyframe: DistilledPipeline (latent replacement for exact preservation)
+        # - 2 keyframes: KeyframeInterpolationPipeline (guiding latents for smooth transitions)
+        if num_keyframes == 1:
+            # Single keyframe: use DistilledPipeline (fastest, exact preservation)
+            logger.info("Using DistilledPipeline for single-keyframe I2V")
+            video_chunks, audio = self.components.distilled_pipeline(
+                prompt=params.prompt,
+                seed=seed,
                 height=params.height,
                 width=params.width,
                 num_frames=num_frames,
@@ -731,6 +755,25 @@ class LTX2Generator(VideoGenerator):
                 images=images,
                 tiling_config=tiling_config,
                 enhance_prompt=params.enhance_prompt,
+            )
+        else:
+            # Two keyframes: use KeyframeInterpolationPipeline with distilled schedule
+            # This uses guiding latents for smoother transitions between start/end frames
+            logger.info("Using KeyframeInterpolationPipeline for 2-keyframe interpolation (8-step distilled mode)")
+            video_chunks, audio = self.components.keyframe_pipeline(
+                prompt=params.prompt,
+                negative_prompt=params.negative_prompt or "",
+                seed=seed,
+                height=params.height,
+                width=params.width,
+                num_frames=num_frames,
+                frame_rate=params.frame_rate,
+                num_inference_steps=8,  # Placeholder, ignored when use_distilled_schedule=True
+                cfg_guidance_scale=1.0,  # Placeholder, ignored when use_distilled_schedule=True
+                images=images,
+                tiling_config=tiling_config,
+                enhance_prompt=params.enhance_prompt,
+                use_distilled_schedule=True,  # Enable 8-step fast mode
             )
 
         # Consolidate video chunks into a single tensor for cropping/trimming
