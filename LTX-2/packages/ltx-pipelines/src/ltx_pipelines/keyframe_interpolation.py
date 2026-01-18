@@ -1,4 +1,5 @@
 import logging
+import threading
 from collections.abc import Iterator
 
 import torch
@@ -121,6 +122,9 @@ class KeyframeInterpolationPipeline:
             self.vocoder = self.stage_2_model_ledger.vocoder()
             
             logging.info("KeyframeInterpolationPipeline models loaded.")
+        
+        # Thread lock for text encoder (not thread-safe due to HuggingFace tokenizer)
+        self._text_encoder_lock = threading.Lock()
 
     @torch.inference_mode()
     def __call__(  # noqa: PLR0913
@@ -170,11 +174,14 @@ class KeyframeInterpolationPipeline:
         dtype = torch.bfloat16
 
         text_encoder = self.text_encoder
-        if enhance_prompt:
-            prompt = generate_enhanced_prompt(
-                text_encoder, prompt, images[0][0] if len(images) > 0 else None, seed=seed
-            )
-        context_p, context_n = encode_text(text_encoder, prompts=[prompt, negative_prompt])
+        
+        # Serialize text encoder access (tokenizer/Gemma not thread-safe)
+        with self._text_encoder_lock:
+            if enhance_prompt:
+                prompt = generate_enhanced_prompt(
+                    text_encoder, prompt, images[0][0] if len(images) > 0 else None, seed=seed
+                )
+            context_p, context_n = encode_text(text_encoder, prompts=[prompt, negative_prompt])
         v_context_p, a_context_p = context_p
         v_context_n, a_context_n = context_n
 
