@@ -154,15 +154,21 @@ class LightX2VInstancePool:
             ) from e
         
         # Use FP8 model if enabled and available, otherwise fall back to BF16
+        # IMPORTANT: Always use the original model path for pipeline init (has config.json)
+        # The FP8 path is only used for quantized weights via enable_quantize()
         using_fp8 = False
+        fp8_ckpt_path = None
+        base_model_path = Path(self.settings.lightx2v_model_path)
+        
         if self.settings.lightx2v_fp8_enabled:
             fp8_path = Path(self.settings.lightx2v_fp8_model_path)
             if fp8_path.exists() and any(fp8_path.iterdir()):
-                model_path = fp8_path
+                # FP8 available: use base model for config, FP8 for weights
                 using_fp8 = True
+                fp8_ckpt_path = fp8_path
                 logger.info(f"Using FP8 quantized model: {fp8_path}")
+                logger.info(f"  Base model (for config): {base_model_path}")
             else:
-                model_path = Path(self.settings.lightx2v_model_path)
                 # BF16 uses ~38GB per instance vs ~19GB for FP8
                 # Reduce to 1 instance to prevent OOM
                 if self.max_instances > 1:
@@ -170,8 +176,6 @@ class LightX2VInstancePool:
                     logger.warning(f"Reducing instance count from {self.max_instances} to 1 (BF16 uses ~38GB per instance)")
                     self.max_instances = 1
                     self._semaphore = asyncio.Semaphore(1)
-        else:
-            model_path = Path(self.settings.lightx2v_model_path)
         
         lora_path = Path(self.settings.lightx2v_lora_path) / self.settings.lightx2v_lora_filename
         
@@ -181,18 +185,19 @@ class LightX2VInstancePool:
             # Create temp directory for this instance
             temp_dir = tempfile.TemporaryDirectory(prefix=f"lightx2v_pool_{i}_")
             
-            # Initialize pipeline
+            # Initialize pipeline with BASE model path (contains config.json with in_channels etc)
             pipe = LightX2VPipeline(
-                model_path=str(model_path.absolute()),
+                model_path=str(base_model_path.absolute()),
                 model_cls="qwen-image-edit-2511",
                 task="i2i",
             )
             
             # Enable FP8 quantization if using FP8 model
-            if using_fp8:
+            # This loads quantized weights from the FP8 checkpoint
+            if using_fp8 and fp8_ckpt_path:
                 pipe.enable_quantize(
                     dit_quantized=True,
-                    dit_quantized_ckpt=str(model_path.absolute()),
+                    dit_quantized_ckpt=str(fp8_ckpt_path.absolute()),
                     quant_scheme=self.settings.lightx2v_fp8_quant_scheme,
                 )
                 logger.info(f"  FP8 quantization enabled (scheme: {self.settings.lightx2v_fp8_quant_scheme})")
