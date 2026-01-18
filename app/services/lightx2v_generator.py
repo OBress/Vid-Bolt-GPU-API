@@ -82,13 +82,32 @@ class LightX2VImageEditGenerator(ImageEditor):
             self.is_loaded = True
             return
 
-        # Validate model path exists
+        # Validate model path exists and has weights
         model_path = Path(self.settings.lightx2v_model_path)
+        transformer_path = model_path / "transformer"
+        
+        # Check both paths exist
         if not model_path.exists():
-            raise FileNotFoundError(
+             raise FileNotFoundError(
                 f"Qwen-Image-Edit-2511 model not found at {model_path.absolute()}. "
                 f"Download with: huggingface-cli download Qwen/Qwen-Image-Edit-2511 "
                 f"--local-dir {model_path}"
+            )
+
+        # Check for safetensors in transformer dir (critical for weights)
+        has_weights = False
+        if transformer_path.exists():
+            has_weights = any(transformer_path.glob("*.safetensors"))
+        
+        # Also check root level for single-file ckpts if transformer dir empty/missing
+        if not has_weights:
+             has_weights = any(model_path.glob("*.safetensors"))
+
+        if not has_weights:
+            raise FileNotFoundError(
+                f"Qwen-Image-Edit-2511 weights (.safetensors) not found in {model_path.absolute()} "
+                f"or {transformer_path.absolute()}. "
+                f"Please download the model files."
             )
 
         # Validate LORA path exists

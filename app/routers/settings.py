@@ -88,6 +88,10 @@ async def set_vram_mode(
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
+        import traceback
+        import logging
+        logger = logging.getLogger(__name__)
+        logger.error(f"Failed to set VRAM mode: {e}\n{traceback.format_exc()}")
         raise HTTPException(
             status_code=500,
             detail=f"Failed to set VRAM mode: {str(e)}"
