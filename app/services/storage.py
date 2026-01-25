@@ -46,7 +46,8 @@ class StorageService:
         
         try:
             async with httpx.AsyncClient(timeout=30.0) as client:
-                response = await client.get(url, follow_redirects=True)
+                # Security: Disable redirects to prevent SSRF bypass
+                response = await client.get(url, follow_redirects=False)
                 response.raise_for_status()
 
                 content = response.content
@@ -98,6 +99,7 @@ class StorageService:
                         url,
                         content=data,
                         headers={"Content-Type": content_type},
+                        follow_redirects=False,  # Explicitly disable redirects
                     )
                     response.raise_for_status()
 
