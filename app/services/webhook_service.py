@@ -46,7 +46,8 @@ class WebhookService:
         self._running = True
         self._http_client = httpx.AsyncClient(
             timeout=httpx.Timeout(self.TIMEOUT_SECONDS),
-            follow_redirects=True,
+            # Security: Disable redirects to prevent SSRF bypass
+            follow_redirects=False,
         )
         self._worker_task = asyncio.create_task(self._worker_loop())
         logger.info("WebhookService started (1 retry, 30s delay)")
