@@ -41,24 +41,48 @@ class StorageService:
         """
         logger.info(f"Downloading from URL: {url.split('?')[0]}")
         
-        # Validate URL to prevent SSRF
+        # Validate initial URL to prevent SSRF
         validate_external_url(url)
         
+        max_redirects = 5
+        current_url = url
+
         try:
             async with httpx.AsyncClient(timeout=30.0) as client:
-                response = await client.get(url, follow_redirects=True)
-                response.raise_for_status()
+                for _ in range(max_redirects + 1):
+                    # Disable automatic redirects to validate each step
+                    response = await client.get(current_url, follow_redirects=False)
 
-                content = response.content
-                settings = get_settings()
+                    # Handle redirects manually
+                    if response.status_code in (301, 302, 303, 307, 308):
+                        location = response.headers.get("Location")
+                        if not location:
+                            raise ValidationError("Redirect response missing Location header")
 
-                if len(content) > settings.max_image_size_bytes:
-                    from app.exceptions import FileTooLargeError
-                    raise FileTooLargeError(
-                        f"Downloaded content exceeds maximum size of {settings.max_image_size_mb}MB"
-                    )
+                        # Handle relative URLs
+                        from urllib.parse import urljoin
+                        current_url = urljoin(current_url, location)
 
-                return content
+                        # Validate the redirect target
+                        logger.info(f"Following redirect to: {current_url.split('?')[0]}")
+                        validate_external_url(current_url)
+                        continue
+
+                    response.raise_for_status()
+
+                    content = response.content
+                    settings = get_settings()
+
+                    if len(content) > settings.max_image_size_bytes:
+                        from app.exceptions import FileTooLargeError
+                        raise FileTooLargeError(
+                            f"Downloaded content exceeds maximum size of {settings.max_image_size_mb}MB"
+                        )
+
+                    return content
+
+                raise ValidationError(f"Too many redirects (max {max_redirects})")
+
         except httpx.HTTPError as e:
             logger.error(f"Failed to download asset: {e}")
             raise ValidationError(f"Failed to download image from URL: {e}")
