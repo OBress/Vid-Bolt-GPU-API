@@ -45,8 +45,35 @@ class StorageService:
         validate_external_url(url)
         
         try:
-            async with httpx.AsyncClient(timeout=30.0) as client:
-                response = await client.get(url, follow_redirects=True)
+            async with httpx.AsyncClient(timeout=30.0, follow_redirects=False) as client:
+                current_url = url
+                response = None
+
+                # Manual redirect handling with validation (limit 5 redirects)
+                for _ in range(5):
+                    response = await client.get(current_url)
+
+                    if response.is_redirect:
+                        location = response.headers.get("Location")
+                        if not location:
+                            break
+
+                        # Handle relative URLs
+                        from urllib.parse import urljoin
+                        current_url = urljoin(current_url, location)
+
+                        # Validate the new URL (SSRF protection)
+                        validate_external_url(current_url)
+                        continue
+
+                    # Not a redirect
+                    break
+                else:
+                    raise ValidationError("Too many redirects")
+
+                if response is None:
+                    raise ValidationError("Failed to fetch URL")
+
                 response.raise_for_status()
 
                 content = response.content
