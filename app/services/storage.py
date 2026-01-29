@@ -41,13 +41,35 @@ class StorageService:
         """
         logger.info(f"Downloading from URL: {url.split('?')[0]}")
         
-        # Validate URL to prevent SSRF
+        # Validate initial URL to prevent SSRF
         validate_external_url(url)
         
         try:
             async with httpx.AsyncClient(timeout=30.0) as client:
-                response = await client.get(url, follow_redirects=True)
-                response.raise_for_status()
+                # Manual redirect handling to validate intermediate URLs
+                current_url = url
+                max_redirects = 5
+
+                for _ in range(max_redirects + 1):
+                    response = await client.get(current_url, follow_redirects=False)
+
+                    if response.is_redirect:
+                        location = response.headers.get("Location")
+                        if not location:
+                            raise ValidationError("Redirect without Location header")
+
+                        # Resolve relative URLs
+                        current_url = str(httpx.URL(current_url).join(location))
+
+                        # Validate the new URL
+                        logger.debug(f"Following redirect to: {current_url.split('?')[0]}")
+                        validate_external_url(current_url)
+                        continue
+
+                    response.raise_for_status()
+                    break
+                else:
+                    raise ValidationError(f"Too many redirects (max {max_redirects})")
 
                 content = response.content
                 settings = get_settings()
