@@ -3,6 +3,7 @@
 import asyncio
 import logging
 
+from urllib.parse import urljoin
 import httpx
 
 from app.config import Settings, get_settings
@@ -41,12 +42,40 @@ class StorageService:
         """
         logger.info(f"Downloading from URL: {url.split('?')[0]}")
         
-        # Validate URL to prevent SSRF
+        # Validate URL to prevent SSRF (initial check)
         validate_external_url(url)
         
         try:
             async with httpx.AsyncClient(timeout=30.0) as client:
-                response = await client.get(url, follow_redirects=True)
+                # Manual redirect handling to prevent SSRF in redirects
+                current_url = url
+                max_redirects = 5
+                response = None
+
+                for _ in range(max_redirects + 1):
+                    # Validate URL before request (critical for redirects)
+                    if current_url != url:
+                        validate_external_url(current_url)
+
+                    response = await client.get(current_url, follow_redirects=False)
+
+                    if response.is_redirect:
+                        location = response.headers.get("Location")
+                        if not location:
+                            break  # Treat as final response if no Location header
+
+                        # Resolve relative URLs
+                        current_url = urljoin(current_url, location)
+                        continue
+
+                    # Not a redirect, we are done
+                    break
+                else:
+                    raise ValidationError(f"Too many redirects (max {max_redirects})")
+
+                if response is None:
+                    raise ValidationError("Failed to download: internal error")
+
                 response.raise_for_status()
 
                 content = response.content
