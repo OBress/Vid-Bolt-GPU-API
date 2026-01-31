@@ -2,6 +2,7 @@
 
 import asyncio
 import logging
+from urllib.parse import urljoin
 
 import httpx
 
@@ -41,13 +42,38 @@ class StorageService:
         """
         logger.info(f"Downloading from URL: {url.split('?')[0]}")
         
-        # Validate URL to prevent SSRF
+        # Validate initial URL to prevent SSRF
         validate_external_url(url)
         
         try:
             async with httpx.AsyncClient(timeout=30.0) as client:
-                response = await client.get(url, follow_redirects=True)
-                response.raise_for_status()
+                # Manual redirect handling to validate each hop
+                current_url = url
+                max_redirects = 10
+
+                for _ in range(max_redirects):
+                    response = await client.get(current_url, follow_redirects=False)
+
+                    if response.is_redirect:
+                        next_url = response.headers.get("Location")
+                        if not next_url:
+                            raise ValidationError("Redirect response missing Location header")
+
+                        # Handle relative redirects
+                        next_url = urljoin(current_url, next_url)
+
+                        logger.info(f"Following redirect to: {next_url.split('?')[0]}")
+
+                        # Validate the new target
+                        validate_external_url(next_url)
+
+                        current_url = next_url
+                        continue
+
+                    response.raise_for_status()
+                    break
+                else:
+                    raise ValidationError(f"Too many redirects (max {max_redirects})")
 
                 content = response.content
                 settings = get_settings()
