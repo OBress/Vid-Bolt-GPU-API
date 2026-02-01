@@ -46,8 +46,36 @@ class StorageService:
         
         try:
             async with httpx.AsyncClient(timeout=30.0) as client:
-                response = await client.get(url, follow_redirects=True)
-                response.raise_for_status()
+                # Manually handle redirects to validate each hop against SSRF rules
+                current_url = url
+                max_redirects = 5
+                response = None
+
+                for _ in range(max_redirects + 1):
+                    response = await client.get(current_url, follow_redirects=False)
+
+                    if response.is_redirect:
+                        location = response.headers.get("Location")
+                        if not location:
+                            await response.aclose()
+                            raise ValidationError("Redirect response missing Location header")
+
+                        # Resolve relative URLs
+                        next_url = str(httpx.URL(current_url).join(location))
+
+                        # Validate the redirect target
+                        validate_external_url(next_url)
+
+                        current_url = next_url
+                        await response.aclose()
+                        continue
+
+                    response.raise_for_status()
+                    break
+                else:
+                    if response:
+                        await response.aclose()
+                    raise ValidationError(f"Too many redirects (max {max_redirects})")
 
                 content = response.content
                 settings = get_settings()
