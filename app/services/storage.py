@@ -2,6 +2,7 @@
 
 import asyncio
 import logging
+from urllib.parse import urljoin
 
 import httpx
 
@@ -45,8 +46,38 @@ class StorageService:
         validate_external_url(url)
         
         try:
-            async with httpx.AsyncClient(timeout=30.0) as client:
-                response = await client.get(url, follow_redirects=True)
+            async with httpx.AsyncClient(timeout=30.0, follow_redirects=False) as client:
+                # Manually handle redirects to validate each step
+                current_url = url
+                response = None
+
+                # Allow up to 5 redirects
+                for _ in range(5):
+                    response = await client.get(current_url)
+
+                    if response.is_redirect:
+                        location = response.headers.get("Location")
+                        if not location:
+                            raise ValidationError("Redirect without Location header")
+
+                        # Handle relative redirects
+                        next_url = urljoin(current_url, location)
+
+                        # Validate the next URL to prevent SSRF
+                        validate_external_url(next_url)
+
+                        current_url = next_url
+                        continue
+
+                    # Not a redirect, we are done
+                    break
+
+                if response is None:
+                    raise ValidationError("Failed to make request")
+
+                if response.is_redirect:
+                    raise ValidationError("Too many redirects")
+
                 response.raise_for_status()
 
                 content = response.content
