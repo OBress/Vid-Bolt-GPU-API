@@ -44,9 +44,39 @@ logger = logging.getLogger(__name__)
 
 
 # ============================================================================
+# SageAttention: ~2x faster attention on Blackwell GPUs
+# Patches PyTorch SDPA globally - same approach used by ComfyUI
+# Must use CUDA backend (sageattn_qk_int8_pv_fp16_cuda) to avoid Triton JIT
+# issues that cause black output artifacts on Blackwell (sm_120) architecture
+# ============================================================================
+try:
+    from sageattention import sageattn_qk_int8_pv_fp16_cuda as _sage_attn
+    import torch.nn.functional as F
+
+    _original_sdpa = F.scaled_dot_product_attention
+
+    def _patched_sdpa(
+        query, key, value, attn_mask=None, dropout_p=0.0, is_causal=False, scale=None
+    ):
+        # Fall back to original SDPA when masks are used
+        # (SageAttention CUDA backend doesn't support attention masks)
+        if attn_mask is not None:
+            return _original_sdpa(query, key, value, attn_mask, dropout_p, is_causal, scale)
+
+        # SageAttention expects tensor_layout="HND" which matches LTX-2's
+        # [Batch, Heads, SeqLen, Dim] layout after PytorchAttention reshape
+        return _sage_attn(query, key, value, tensor_layout="HND", is_causal=is_causal)
+
+    F.scaled_dot_product_attention = _patched_sdpa
+    logger.info("SageAttention 2.2.0 enabled (CUDA backend, ~2x faster than SDPA)")
+except ImportError:
+    # SageAttention not installed - use default PyTorch SDPA
+    pass
+
+
+# ============================================================================
 # Parameter and Result Dataclasses
 # ============================================================================
-
 
 
 

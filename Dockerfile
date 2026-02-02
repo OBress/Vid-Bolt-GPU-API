@@ -63,8 +63,8 @@ RUN pip install --no-cache-dir \
 # NOTE: xformers is NOT installed because it doesn't support Blackwell GPUs (compute capability 12.0)
 # All libraries (LTX-2, LightX2V, etc.) automatically fall back to PyTorch native SDPA
 
-# Triton for torch.compile
-RUN pip install --no-cache-dir "triton>=3.3.0"
+# Triton - MUST be pinned to 3.5.0 for PyTorch 2.9.1 + SageAttention compatibility
+RUN pip install --no-cache-dir triton==3.5.0
 
 # =============================================================================
 # Core Dependencies
@@ -88,6 +88,11 @@ RUN pip install --no-cache-dir -e /app/LightX2V || echo "LightX2V installation s
 
 # sgl-kernel for FP8 quantized inference (provides sgl_per_token_quant_fp8, fp8_scaled_mm)
 RUN pip install --no-cache-dir sgl-kernel || echo "sgl-kernel installation skipped"
+
+# SageAttention 2.2.0 for ~2x faster attention on Blackwell GPUs
+# Uses CUDA backend (not Triton) to avoid black output artifacts on sm_120
+# Requires --no-build-isolation for proper CUDA kernel compilation
+RUN pip install --no-cache-dir sageattention==2.2.0 --no-build-isolation
 
 # =============================================================================
 # Copy Application Code
