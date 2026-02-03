@@ -2,6 +2,7 @@
 
 import asyncio
 import logging
+from urllib.parse import urljoin
 
 import httpx
 
@@ -46,19 +47,43 @@ class StorageService:
         
         try:
             async with httpx.AsyncClient(timeout=30.0) as client:
-                response = await client.get(url, follow_redirects=True)
-                response.raise_for_status()
+                # Manual redirect handling to prevent SSRF bypass
+                current_url = url
+                max_redirects = 5
 
-                content = response.content
-                settings = get_settings()
+                for _ in range(max_redirects + 1):
+                    response = await client.get(current_url, follow_redirects=False)
 
-                if len(content) > settings.max_image_size_bytes:
-                    from app.exceptions import FileTooLargeError
-                    raise FileTooLargeError(
-                        f"Downloaded content exceeds maximum size of {settings.max_image_size_mb}MB"
-                    )
+                    if response.is_redirect:
+                        location = response.headers.get("Location")
+                        if not location:
+                            response.raise_for_status()
+                            break
 
-                return content
+                        # Resolve relative URLs
+                        current_url = urljoin(current_url, location)
+
+                        # Validate the NEW url (Critical SSRF protection)
+                        validate_external_url(current_url)
+
+                        logger.info(f"Following redirect to: {current_url.split('?')[0]}")
+                        continue
+
+                    response.raise_for_status()
+
+                    content = response.content
+                    settings = get_settings()
+
+                    if len(content) > settings.max_image_size_bytes:
+                        from app.exceptions import FileTooLargeError
+                        raise FileTooLargeError(
+                            f"Downloaded content exceeds maximum size of {settings.max_image_size_mb}MB"
+                        )
+
+                    return content
+
+                raise ValidationError("Too many redirects")
+
         except httpx.HTTPError as e:
             logger.error(f"Failed to download asset: {e}")
             raise ValidationError(f"Failed to download image from URL: {e}")
