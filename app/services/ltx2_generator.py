@@ -44,13 +44,12 @@ logger = logging.getLogger(__name__)
 
 
 # ============================================================================
-# SageAttention: ~2x faster attention on Blackwell GPUs
+# SageAttention 2.2.0: Blackwell-optimized FP8 attention
 # Patches PyTorch SDPA globally - same approach used by ComfyUI
-# Must use CUDA backend (sageattn_qk_int8_pv_fp16_cuda) to avoid Triton JIT
-# issues that cause black output artifacts on Blackwell (sm_120) architecture
+# Uses FP8 CUDA backend with per-warp quantization for optimal Blackwell (sm120) performance
 # ============================================================================
 try:
-    from sageattention import sageattn_qk_int8_pv_fp16_cuda as _sage_attn
+    from sageattention import sageattn_qk_int8_pv_fp8_cuda as _sage_attn
     import torch.nn.functional as F
 
     _original_sdpa = F.scaled_dot_product_attention
@@ -69,7 +68,18 @@ try:
         # [Batch, Heads, SeqLen, Dim] layout after PytorchAttention reshape
         _sage_call_count += 1
         is_causal = kwargs.get('is_causal', False)
-        return _sage_attn(query, key, value, tensor_layout="HND", is_causal=is_causal)
+        # Blackwell-optimized parameters (sm120/sm121):
+        # - qk_quant_gran="per_warp": Faster quantization granularity on Blackwell
+        # - pv_accum_dtype="fp32+fp16": SageAttention2++ mode for speed/accuracy balance
+        # - smooth_k=True: Improves accuracy with minimal overhead
+        return _sage_attn(
+            query, key, value,
+            tensor_layout="HND",
+            is_causal=is_causal,
+            qk_quant_gran="per_warp",
+            pv_accum_dtype="fp32+fp16",
+            smooth_k=True,
+        )
 
     def log_sage_stats():
         logger.info(f"SageAttention stats: {_sage_call_count} SageAttn calls, {_fallback_call_count} fallback calls")
@@ -79,7 +89,7 @@ try:
     # Also patch torch.nn.functional directly since LTX-2 uses torch.nn.functional.scaled_dot_product_attention
     import torch.nn.functional
     torch.nn.functional.scaled_dot_product_attention = _patched_sdpa
-    logger.info("SageAttention 2.2.0 enabled (CUDA backend, ~2x faster than SDPA)")
+    logger.info("SageAttention 2.2.0 enabled (FP8 CUDA backend, Blackwell-optimized)")
 except ImportError:
     # SageAttention not installed - use default PyTorch SDPA
     def log_sage_stats():
