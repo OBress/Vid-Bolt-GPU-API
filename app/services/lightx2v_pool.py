@@ -153,7 +153,7 @@ class LightX2VInstancePool:
                 "Install with: pip install -v git+https://github.com/ModelTC/LightX2V.git"
             ) from e
         
-        # Use FP8 model if enabled and available, otherwise fall back to BF16
+        # Use FP8 model (REQUIRED - no BF16 fallback)
         # IMPORTANT: Always use the original model path for pipeline init (has config.json)
         # The FP8 path is only used for quantized weights via enable_quantize()
         using_fp8 = False
@@ -162,20 +162,21 @@ class LightX2VInstancePool:
         
         if self.settings.lightx2v_fp8_enabled:
             fp8_path = Path(self.settings.lightx2v_fp8_model_path)
-            if fp8_path.exists() and any(fp8_path.iterdir()):
-                # FP8 available: use base model for config, FP8 for weights
-                using_fp8 = True
-                fp8_ckpt_path = fp8_path
-                logger.info(f"Using FP8 quantized model: {fp8_path}")
-                logger.info(f"  Base model (for config): {base_model_path}")
-            else:
-                # BF16 uses ~38GB per instance vs ~19GB for FP8
-                # Reduce to 1 instance to prevent OOM
-                if self.max_instances > 1:
-                    logger.warning(f"FP8 model not found at {fp8_path}, falling back to BF16")
-                    logger.warning(f"Reducing instance count from {self.max_instances} to 1 (BF16 uses ~38GB per instance)")
-                    self.max_instances = 1
-                    self._semaphore = asyncio.Semaphore(1)
+            # Look for the single-file 8-step FP8 checkpoint
+            fp8_single_file = fp8_path / "qwen_image_edit_2511_fp8_e4m3fn_scaled_lightning_8steps_v1.0.safetensors"
+            
+            if not fp8_single_file.exists():
+                raise FileNotFoundError(
+                    f"FP8 model required but not found at {fp8_single_file}. "
+                    f"Download with: huggingface-cli download lightx2v/Qwen-Image-Edit-2511-Lightning "
+                    f"qwen_image_edit_2511_fp8_e4m3fn_scaled_lightning_8steps_v1.0.safetensors "
+                    f"--local-dir {fp8_path}"
+                )
+            
+            using_fp8 = True
+            fp8_ckpt_path = fp8_single_file  # Pass file path, not directory
+            logger.info(f"Using FP8 quantized model: {fp8_single_file}")
+            logger.info(f"  Base model (for config): {base_model_path}")
         
         lora_path = Path(self.settings.lightx2v_lora_path) / self.settings.lightx2v_lora_filename
         

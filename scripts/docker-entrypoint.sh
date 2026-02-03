@@ -16,10 +16,11 @@ NC='\033[0m'
 # Auto-download FP8 Model if Missing
 # =============================================================================
 FP8_DIR="/app/models/qwen-image-edit-2511-fp8"
+FP8_CKPT="$FP8_DIR/qwen_image_edit_2511_fp8_e4m3fn_scaled_lightning_8steps_v1.0.safetensors"
 ENCODER_CHECK="$FP8_DIR/text_encoder/model-00001-of-00004.safetensors"
 
-# Check if FP8 model AND text_encoder exist
-if [ -f "$ENCODER_CHECK" ]; then
+# Check if FP8 checkpoint AND text_encoder exist
+if [ -f "$FP8_CKPT" ] && [ -f "$ENCODER_CHECK" ]; then
     echo -e "${GREEN}[Startup] FP8 model found - using optimized inference (~19GB VRAM)${NC}"
 else
     echo -e "${YELLOW}[Startup] FP8 model not found - downloading from HuggingFace...${NC}"
@@ -30,16 +31,13 @@ else
         pip install -q huggingface-hub
     fi
     
-    # Download pre-converted FP8 model with Lightning LoRA baked in
-    huggingface-cli download lightx2v/Qwen-Image-Edit-2511-Lightning \
-        --include "qwen_image_edit_2511_fp8_e4m3fn_scaled_lightning_split/*" \
-        --local-dir "/app/models/temp-fp8-download" \
-        --local-dir-use-symlinks False
-    
-    # Move contents to correct location (flatten directory structure)
     mkdir -p "$FP8_DIR"
-    mv /app/models/temp-fp8-download/qwen_image_edit_2511_fp8_e4m3fn_scaled_lightning_split/* "$FP8_DIR/"
-    rm -rf "/app/models/temp-fp8-download"
+    
+    # Download the single-file 8-step FP8 checkpoint (~20.5GB)
+    huggingface-cli download lightx2v/Qwen-Image-Edit-2511-Lightning \
+        qwen_image_edit_2511_fp8_e4m3fn_scaled_lightning_8steps_v1.0.safetensors \
+        --local-dir "$FP8_DIR" \
+        --local-dir-use-symlinks False
     
     # Download text_encoder, vae, scheduler, tokenizer from original Qwen model
     echo -e "${YELLOW}[Startup] Downloading text_encoder, vae, and configs (~7GB)...${NC}"

@@ -55,30 +55,26 @@ echo -e "${GREEN}  ✓ Z-Image Turbo downloaded${NC}"
 
 # =============================================================================
 # Download Pre-converted FP8 Model (reduces VRAM from ~38GB to ~19GB)
-# This model has the Lightning 8-step LoRA already baked in!
-# We also need text_encoder, vae, and config files from the original model
+# Uses single-file 8-step checkpoint with Lightning LoRA baked in
 # =============================================================================
 FP8_DIR="$MODELS_DIR/qwen-image-edit-2511-fp8"
+FP8_CKPT="$FP8_DIR/qwen_image_edit_2511_fp8_e4m3fn_scaled_lightning_8steps_v1.0.safetensors"
 ENCODER_CHECK="$FP8_DIR/text_encoder/model-00001-of-00004.safetensors"
 
-if [ ! -f "$ENCODER_CHECK" ]; then
-    echo -e "${YELLOW}[2/4] Downloading pre-converted FP8 model + required components...${NC}"
+if [ ! -f "$FP8_CKPT" ] || [ ! -f "$ENCODER_CHECK" ]; then
+    echo -e "${YELLOW}[2/4] Downloading FP8 8-step model + required components...${NC}"
     echo -e "  This enables 2x concurrent instances with same VRAM"
     
-    # Download the pre-converted FP8 model with 8-step Lightning LoRA baked in
+    mkdir -p "$FP8_DIR"
+    
+    # Download the single-file 8-step FP8 checkpoint (~20.5GB)
     huggingface-cli download lightx2v/Qwen-Image-Edit-2511-Lightning \
-        --include "qwen_image_edit_2511_fp8_e4m3fn_scaled_lightning_split/*" \
-        --local-dir "$MODELS_DIR/temp-fp8-download" \
+        qwen_image_edit_2511_fp8_e4m3fn_scaled_lightning_8steps_v1.0.safetensors \
+        --local-dir "$FP8_DIR" \
         --local-dir-use-symlinks False
     
-    # Move contents to correct location (flatten directory structure)
-    mkdir -p "$FP8_DIR"
-    mv "$MODELS_DIR/temp-fp8-download/qwen_image_edit_2511_fp8_e4m3fn_scaled_lightning_split"/* "$FP8_DIR/"
-    rm -rf "$MODELS_DIR/temp-fp8-download"
-    
-    # Download text_encoder, vae, scheduler, tokenizer from original Qwen model
-    # text_encoder is ~7GB (BF16, still needed for FP8), vae is small
-    echo -e "  Downloading text_encoder, vae, and configs from original Qwen model (~7GB)..."
+    # Download text_encoder, vae, scheduler, tokenizer from original Qwen model (~7GB)
+    echo -e "  Downloading text_encoder, vae, and configs from original Qwen model..."
     huggingface-cli download Qwen/Qwen-Image-Edit-2511 \
         --include "text_encoder/*" "vae/*" "scheduler/*" "tokenizer/*" "*.json" "*.txt" \
         --exclude "transformer/*" \
