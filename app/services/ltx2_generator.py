@@ -245,7 +245,7 @@ class teacache_context:
             # ===== TeaCache Decision Logic =====
             # Compute modulated input from first transformer block
             hidden_states = video_args.x
-            timestep = video_args.timestep  # This is the embedded timestep
+            timestep = video_args.timesteps  # This is the embedded timestep (TransformerArgs.timesteps)
             batch_size = hidden_states.shape[0]
             
             # Get first block for modulation calculation
