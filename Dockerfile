@@ -35,6 +35,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     curl \
     wget \
     cuda-nvcc-12-8 \
+    cuda-cudart-dev-12-8 \
     && rm -rf /var/lib/apt/lists/* \
     && apt-get clean
 
@@ -94,7 +95,7 @@ RUN pip install --no-cache-dir sgl-kernel || echo "sgl-kernel installation skipp
 # Must install from GitHub - version 2.x not available on PyPI (only 1.0.x)
 # Uses CUDA backend (not Triton) to avoid black output artifacts on sm_120
 # --no-build-isolation: SageAttention setup.py imports torch, so use system torch
-RUN pip install --no-cache-dir --no-build-isolation git+https://github.com/thu-ml/SageAttention.git || echo "SageAttention installation skipped - will use PyTorch SDPA"
+RUN pip install --no-cache-dir --no-build-isolation git+https://github.com/thu-ml/SageAttention.git
 
 # =============================================================================
 # Copy Application Code
