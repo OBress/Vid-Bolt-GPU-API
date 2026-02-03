@@ -89,10 +89,10 @@ RUN pip install --no-cache-dir -e /app/LightX2V || echo "LightX2V installation s
 # sgl-kernel for FP8 quantized inference (provides sgl_per_token_quant_fp8, fp8_scaled_mm)
 RUN pip install --no-cache-dir sgl-kernel || echo "sgl-kernel installation skipped"
 
-# SageAttention 2.2.0 for ~2x faster attention on Blackwell GPUs
+# SageAttention 2.x for ~2x faster attention on Blackwell GPUs
+# Must install from GitHub - version 2.x not available on PyPI (only 1.0.x)
 # Uses CUDA backend (not Triton) to avoid black output artifacts on sm_120
-# Requires --no-build-isolation for proper CUDA kernel compilation
-RUN pip install --no-cache-dir sageattention==2.2.0 --no-build-isolation
+RUN pip install --no-cache-dir git+https://github.com/thu-ml/SageAttention.git
 
 # =============================================================================
 # Copy Application Code
