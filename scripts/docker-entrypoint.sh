@@ -26,22 +26,20 @@ else
     echo -e "${YELLOW}[Startup] FP8 model not found - downloading from HuggingFace...${NC}"
     echo -e "  This is a one-time download (~27GB, ~10-15 minutes)"
     
-    # Install huggingface-cli if not available
-    if ! command -v huggingface-cli &> /dev/null; then
-        pip install -q huggingface-hub
-    fi
-    
     mkdir -p "$FP8_DIR"
     
     # Download the single-file 8-step FP8 checkpoint (~20.5GB)
-    huggingface-cli download lightx2v/Qwen-Image-Edit-2511-Lightning \
+    # Use Python module execution (more reliable than huggingface-cli in PATH)
+    python -m huggingface_hub.commands.huggingface_cli download \
+        lightx2v/Qwen-Image-Edit-2511-Lightning \
         qwen_image_edit_2511_fp8_e4m3fn_scaled_lightning_8steps_v1.0.safetensors \
         --local-dir "$FP8_DIR" \
         --local-dir-use-symlinks False
     
     # Download text_encoder, vae, scheduler, tokenizer from original Qwen model
     echo -e "${YELLOW}[Startup] Downloading text_encoder, vae, and configs (~7GB)...${NC}"
-    huggingface-cli download Qwen/Qwen-Image-Edit-2511 \
+    python -m huggingface_hub.commands.huggingface_cli download \
+        Qwen/Qwen-Image-Edit-2511 \
         --include "text_encoder/*" "vae/*" "scheduler/*" "tokenizer/*" "*.json" "*.txt" \
         --exclude "transformer/*" \
         --local-dir "/app/models/temp-components" \
