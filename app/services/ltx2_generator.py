@@ -54,22 +54,36 @@ try:
     import torch.nn.functional as F
 
     _original_sdpa = F.scaled_dot_product_attention
+    _sage_call_count = 0
+    _fallback_call_count = 0
 
     def _patched_sdpa(query, key, value, attn_mask=None, *args, **kwargs):
+        global _sage_call_count, _fallback_call_count
         # Fall back to original SDPA when masks are used
         # (SageAttention CUDA backend doesn't support attention masks)
         if attn_mask is not None:
+            _fallback_call_count += 1
             return _original_sdpa(query, key, value, attn_mask, *args, **kwargs)
 
         # SageAttention expects tensor_layout="HND" which matches LTX-2's
         # [Batch, Heads, SeqLen, Dim] layout after PytorchAttention reshape
+        _sage_call_count += 1
         is_causal = kwargs.get('is_causal', False)
         return _sage_attn(query, key, value, tensor_layout="HND", is_causal=is_causal)
 
+    def log_sage_stats():
+        logger.info(f"SageAttention stats: {_sage_call_count} SageAttn calls, {_fallback_call_count} fallback calls")
+        return {"sage_calls": _sage_call_count, "fallback_calls": _fallback_call_count}
+
     F.scaled_dot_product_attention = _patched_sdpa
+    # Also patch torch.nn.functional directly since LTX-2 uses torch.nn.functional.scaled_dot_product_attention
+    import torch.nn.functional
+    torch.nn.functional.scaled_dot_product_attention = _patched_sdpa
     logger.info("SageAttention 2.2.0 enabled (CUDA backend, ~2x faster than SDPA)")
 except ImportError:
     # SageAttention not installed - use default PyTorch SDPA
+    def log_sage_stats():
+        return {"sage_calls": 0, "fallback_calls": 0, "disabled": True}
     pass
 
 
@@ -240,6 +254,9 @@ class LTX2Generator(VideoGenerator):
         self._run_warmup(device)
         
         logger.info("LTX-2 pipelines loaded and warmed up successfully")
+        
+        # Log SageAttention usage stats from warmup
+        log_sage_stats()
 
     def _run_warmup(self, device: "torch.device") -> None:
         """Force models to materialize on GPU and patch model_ledger for caching.
