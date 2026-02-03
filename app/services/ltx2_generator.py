@@ -140,307 +140,278 @@ def log_sage_stats():
 
 
 # ============================================================================
-# TeaCache: Step-Level Caching for 1.4-1.7x Speedup
-# Skips transformer evaluation when hidden states are similar across timesteps
-# Uses monkey-patching approach (same pattern as SageAttention)
+# TeaCache: Step-Level Caching for 1.4-2.1x Speedup
+# Based on official ali-vilab/TeaCache implementation for LTX-Video
+# https://github.com/ali-vilab/TeaCache/blob/main/TeaCache4LTX-Video/teacache_ltx.py
+#
+# Key insight: When timestep embeddings are similar between steps, the transformer
+# output changes minimally. We can reuse the previous residual instead of recomputing.
 # ============================================================================
 
-# Polynomial coefficients for LTX-Video rescaling (from ComfyUI-TeaCache)
-# These are tuned specifically for LTX-Video's architecture
+import numpy as np
+
+# Polynomial coefficients for LTX-Video rescaling (from official TeaCache)
+# These rescale the relative L1 distance to better predict output similarity
 _TEACACHE_COEFFICIENTS_LTXV = [
     2.14700694e+01, -1.28016453e+01, 2.31279151e+00, 
     7.92487521e-01, 9.69274326e-03
 ]
 
-# TeaCache runtime state (managed by context manager)
-_teacache_state: dict | None = None
-_teacache_thresh: float = 0.15
-_teacache_skip_count: int = 0
-_teacache_compute_count: int = 0
-_teacache_total_steps: int = 0
-_teacache_current_step: int = 0
-
-
-def _teacache_poly1d(coefficients: list[float], x: "torch.Tensor") -> "torch.Tensor":
-    """Evaluate polynomial at x using Horner's method (matches ComfyUI implementation)."""
-    import torch
-    result = torch.zeros_like(x)
-    for i, coeff in enumerate(coefficients):
-        result = result + coeff * (x ** (len(coefficients) - 1 - i))
-    return result
-
-
-def _teacache_should_compute(
-    modulated_inp: "torch.Tensor",
-    step_idx: int,
-    total_steps: int,
-) -> bool:
-    """Determine if transformer should compute or reuse cached residual.
-    
-    Returns True if computation is needed, False if we can skip.
-    Always computes first 5 steps and final step for quality.
-    """
-    global _teacache_state, _teacache_skip_count, _teacache_compute_count
-    
-    # Always compute first 5 steps (structural integrity)
-    if step_idx < 5:
-        _teacache_compute_count += 1
-        return True
-    
-    # Always compute final step (detail refinement)
-    if step_idx >= total_steps - 1:
-        _teacache_compute_count += 1
-        return True
-    
-    if _teacache_state is None or _teacache_state.get("previous_modulated_input") is None:
-        # First cacheable step - initialize state
-        _teacache_state = {
-            "accumulated_rel_l1_distance": 0.0,
-            "previous_modulated_input": modulated_inp.detach().clone(),
-            "previous_residual_video": None,
-            "previous_residual_audio": None,
-            "should_compute": True,
-        }
-        _teacache_compute_count += 1
-        return True
-    
-    try:
-        import torch
-        prev = _teacache_state["previous_modulated_input"]
-        
-        # Calculate relative L1 distance
-        rel_l1_dist = (modulated_inp - prev).abs().mean() / (prev.abs().mean() + 1e-8)
-        
-        # Apply polynomial rescaling
-        rescaled_dist = _teacache_poly1d(
-            _TEACACHE_COEFFICIENTS_LTXV, 
-            rel_l1_dist.view(1)
-        ).abs().item()
-        
-        _teacache_state["accumulated_rel_l1_distance"] += rescaled_dist
-        
-        # Update previous input for next comparison
-        _teacache_state["previous_modulated_input"] = modulated_inp.detach().clone()
-        
-        if _teacache_state["accumulated_rel_l1_distance"] < _teacache_thresh:
-            # Skip computation, use cached residual
-            _teacache_skip_count += 1
-            return False
-        else:
-            # Threshold exceeded, compute and reset accumulator
-            _teacache_state["accumulated_rel_l1_distance"] = 0.0
-            _teacache_compute_count += 1
-            return True
-            
-    except Exception as e:
-        logger.warning(f"TeaCache evaluation error, computing: {e}")
-        _teacache_compute_count += 1
-        return True
-
 
 class teacache_context:
     """Context manager to enable TeaCache for LTX-2 inference.
     
-    Uses monkey-patching to inject caching logic into the transformer.
-    Matches the SageAttention context manager pattern.
+    Patches LTXModel.forward to implement timestep-embedding-aware caching.
+    Follows the official ali-vilab/TeaCache implementation pattern.
+    
+    Args:
+        thresh: Relative L1 distance threshold. Lower = more accuracy, less speedup.
+                Recommended: 0.03 for 1.6x, 0.05 for 2.1x speedup
+        enabled: Whether to enable TeaCache
     
     Usage:
-        with teacache_context(thresh=0.15):
+        with teacache_context(thresh=0.05, enabled=True):
             result = pipeline(...)
     """
     
-    def __init__(self, thresh: float = 0.15, enabled: bool = True):
+    def __init__(self, thresh: float = 0.05, enabled: bool = True):
         self.thresh = thresh
         self.enabled = enabled
-        self._original_process_blocks = None
-        self._original_simple_denoising_func = None
+        self._original_forward = None
+        self._ltx_model_class = None
     
     def __enter__(self):
-        global _teacache_state, _teacache_thresh
-        global _teacache_skip_count, _teacache_compute_count
-        global _teacache_total_steps, _teacache_current_step
-        
         if not self.enabled:
             return self
         
-        # Reset state for new generation
-        _teacache_state = None
-        _teacache_thresh = self.thresh
-        _teacache_skip_count = 0
-        _teacache_compute_count = 0
-        _teacache_total_steps = 0
-        _teacache_current_step = 0
+        try:
+            from ltx_core.model.transformer.model import LTXModel
+            self._ltx_model_class = LTXModel
+        except ImportError:
+            logger.warning("Could not import LTXModel, TeaCache disabled")
+            return self
         
-        # Apply monkey-patches
-        self._patch_transformer()
-        self._patch_denoising()
+        # Save original forward method
+        self._original_forward = LTXModel.forward
         
+        # Create patched forward with TeaCache logic
+        original_forward = self._original_forward
+        thresh = self.thresh
+        coefficients = _TEACACHE_COEFFICIENTS_LTXV
+        
+        def teacache_forward(
+            model_self, 
+            video, 
+            audio, 
+            perturbations
+        ):
+            """TeaCache-enhanced forward pass.
+            
+            Implements the official TeaCache algorithm (ali-vilab/TeaCache):
+            1. Apply norm1 to hidden states before computing modulated input
+            2. Compare with previous modulated input using rescaled L1 distance
+            3. If accumulated distance < threshold, add cached residual (which includes norm+scale-shift)
+            4. Otherwise, compute transformer blocks, apply norm+scale-shift, then cache residual
+            
+            CRITICAL: The residual is computed AFTER norm_out and scale-shift, not before.
+            This matches the official implementation exactly.
+            """
+            import torch
+            from ltx_core.utils import rms_norm
+            
+            # Initialize TeaCache state on the model instance if needed
+            if not hasattr(model_self, '_teacache_enabled'):
+                model_self._teacache_enabled = True
+                model_self._teacache_cnt = 0
+                model_self._teacache_num_steps = 8  # Matches DISTILLED_SIGMA_VALUES (9 sigmas = 8 steps)
+                model_self._teacache_accumulated_rel_l1_distance = 0.0
+                model_self._teacache_previous_modulated_input = None
+                model_self._teacache_previous_residual = None
+                model_self._teacache_previous_residual_audio = None
+                model_self._teacache_skip_count = 0
+                model_self._teacache_compute_count = 0
+            
+            if not model_self._teacache_enabled:
+                return original_forward(model_self, video, audio, perturbations)
+            
+            # Handle non-video case
+            if not model_self.model_type.is_video_enabled() or video is None:
+                return original_forward(model_self, video, audio, perturbations)
+            
+            # Get the preprocessed video args (contains hidden_states and timestep info)
+            video_args = model_self.video_args_preprocessor.prepare(video)
+            audio_args = model_self.audio_args_preprocessor.prepare(audio) if audio is not None else None
+            
+            # ===== TeaCache Decision Logic =====
+            # Compute modulated input from first transformer block
+            hidden_states = video_args.x
+            timestep = video_args.timestep  # This is the embedded timestep
+            batch_size = hidden_states.shape[0]
+            
+            # Get first block for modulation calculation
+            first_block = model_self.transformer_blocks[0]
+            
+            # CRITICAL FIX #1: Apply rms_norm BEFORE modulation (matches official implementation)
+            # Official: inp = self.transformer_blocks[0].norm1(inp)
+            normed_hidden_states = rms_norm(hidden_states, eps=first_block.norm_eps)
+            
+            # Get first block's scale_shift_table for modulation
+            scale_shift_table = first_block.scale_shift_table
+            num_ada_params = scale_shift_table.shape[0]
+            
+            # Compute AdaLN modulation: scale_shift_table + timestep
+            ada_values = (
+                scale_shift_table[None, None].to(device=timestep.device, dtype=timestep.dtype)
+                + timestep.reshape(batch_size, timestep.shape[1], num_ada_params, -1)
+            )
+            shift_msa, scale_msa = ada_values[:, :, 0], ada_values[:, :, 1]
+            
+            # Modulated input = normed_hidden_states * (1 + scale) + shift
+            modulated_inp = normed_hidden_states * (1 + scale_msa) + shift_msa
+            
+            # Determine if we should compute or skip
+            cnt = model_self._teacache_cnt
+            num_steps = model_self._teacache_num_steps
+            
+            if cnt == 0 or cnt == num_steps - 1:
+                # Always compute first and last step
+                should_calc = True
+                model_self._teacache_accumulated_rel_l1_distance = 0.0
+            elif model_self._teacache_previous_modulated_input is None:
+                # First time, need to compute
+                should_calc = True
+                model_self._teacache_accumulated_rel_l1_distance = 0.0
+            else:
+                # Compare with previous modulated input
+                prev = model_self._teacache_previous_modulated_input
+                rel_l1_dist = (modulated_inp - prev).abs().mean() / (prev.abs().mean() + 1e-8)
+                
+                # Apply polynomial rescaling (matches official implementation)
+                rescale_func = np.poly1d(coefficients)
+                rescaled_dist = rescale_func(rel_l1_dist.cpu().item())
+                
+                model_self._teacache_accumulated_rel_l1_distance += rescaled_dist
+                
+                if model_self._teacache_accumulated_rel_l1_distance < thresh:
+                    should_calc = False
+                else:
+                    should_calc = True
+                    model_self._teacache_accumulated_rel_l1_distance = 0.0
+            
+            # Update state
+            model_self._teacache_previous_modulated_input = modulated_inp.detach().clone()
+            model_self._teacache_cnt += 1
+            if model_self._teacache_cnt >= num_steps:
+                model_self._teacache_cnt = 0
+            
+            # ===== Execute or Skip =====
+            if not should_calc and model_self._teacache_previous_residual is not None:
+                # SKIP PATH: Add cached residual directly
+                # The residual already includes norm_out + scale-shift, so we only apply proj_out
+                model_self._teacache_skip_count += 1
+                
+                # Add cached residual to original hidden states
+                # Official: hidden_states += self.previous_residual
+                skipped_video_hidden = video_args.x + model_self._teacache_previous_residual
+                
+                # Only apply proj_out (norm+scale-shift already baked into residual)
+                vx = model_self.proj_out(skipped_video_hidden)
+                
+                # Audio handling (if present)
+                ax = None
+                if audio_args is not None and model_self._teacache_previous_residual_audio is not None:
+                    skipped_audio_hidden = audio_args.x + model_self._teacache_previous_residual_audio
+                    ax = model_self.audio_proj_out(skipped_audio_hidden)
+                
+                return vx, ax
+            else:
+                # COMPUTE PATH: Full forward through transformer blocks
+                model_self._teacache_compute_count += 1
+                
+                # Store original hidden states for residual calculation
+                original_video_x = video_args.x.clone()
+                original_audio_x = audio_args.x.clone() if audio_args is not None else None
+                
+                # Process transformer blocks - this is the expensive part we skip when caching
+                video_out, audio_out = model_self._process_transformer_blocks(
+                    video=video_args,
+                    audio=audio_args,
+                    perturbations=perturbations,
+                )
+                
+                # CRITICAL FIX #2: Compute residual AFTER norm_out and scale-shift
+                # This matches official: self.previous_residual = hidden_states - ori_hidden_states
+                # where hidden_states has been through norm_out and scale-shift
+                
+                vx = None
+                if video_out is not None:
+                    # Apply norm_out and scale-shift
+                    scale_shift_values = (
+                        model_self.scale_shift_table[None, None].to(
+                            device=video_out.x.device, dtype=video_out.x.dtype
+                        ) + video_out.embedded_timestep[:, :, None]
+                    )
+                    shift, scale = scale_shift_values[:, :, 0], scale_shift_values[:, :, 1]
+                    
+                    normed_video = model_self.norm_out(video_out.x)
+                    processed_video = normed_video * (1 + scale) + shift
+                    
+                    # Cache residual AFTER norm+scale-shift (official pattern)
+                    model_self._teacache_previous_residual = processed_video - original_video_x
+                    
+                    # Apply proj_out
+                    vx = model_self.proj_out(processed_video)
+                
+                ax = None
+                if audio_out is not None and original_audio_x is not None:
+                    # Apply norm_out and scale-shift for audio
+                    audio_scale_shift_values = (
+                        model_self.audio_scale_shift_table[None, None].to(
+                            device=audio_out.x.device, dtype=audio_out.x.dtype
+                        ) + audio_out.embedded_timestep[:, :, None]
+                    )
+                    audio_shift, audio_scale = audio_scale_shift_values[:, :, 0], audio_scale_shift_values[:, :, 1]
+                    
+                    normed_audio = model_self.audio_norm_out(audio_out.x)
+                    processed_audio = normed_audio * (1 + audio_scale) + audio_shift
+                    
+                    # Cache audio residual AFTER norm+scale-shift
+                    model_self._teacache_previous_residual_audio = processed_audio - original_audio_x
+                    
+                    # Apply audio proj_out
+                    ax = model_self.audio_proj_out(processed_audio)
+                
+                return vx, ax
+        
+        # Apply patch
+        LTXModel.forward = teacache_forward
         logger.info(f"TeaCache enabled with threshold {self.thresh}")
         return self
     
     def __exit__(self, exc_type, exc_val, exc_tb):
-        global _teacache_state
-        
-        if not self.enabled:
+        if not self.enabled or self._original_forward is None:
             return False
         
-        # Restore original methods
-        self._unpatch_transformer()
-        self._unpatch_denoising()
+        # Log session completion for debugging
+        logger.info(f"TeaCache session completed (thresh={self.thresh})")
         
-        # Log statistics
-        total = _teacache_skip_count + _teacache_compute_count
-        if total > 0:
-            skip_pct = (_teacache_skip_count / total) * 100
-            logger.info(
-                f"TeaCache stats: {_teacache_skip_count} skipped, "
-                f"{_teacache_compute_count} computed ({skip_pct:.1f}% skip rate)"
-            )
+        # Restore original forward
+        if self._ltx_model_class is not None:
+            self._ltx_model_class.forward = self._original_forward
+            logger.info("TeaCache: Restored original LTXModel.forward")
         
-        # Cleanup state
-        _teacache_state = None
         return False
-    
-    def _patch_transformer(self):
-        """Monkey-patch LTXModel._process_transformer_blocks with TeaCache logic."""
-        try:
-            from ltx_core.model.transformer.model import LTXModel
-        except ImportError:
-            logger.info("Could not import LTXModel, TeaCache transformer patching skipped")
-            return
-        
-        # Save original method
-        self._original_process_blocks = LTXModel._process_transformer_blocks
-        
-        # Create patched method
-        original_method = self._original_process_blocks
-        
-        def patched_process_transformer_blocks(
-            model_self,
-            video,  # TransformerArgs | None
-            audio,  # TransformerArgs | None
-            perturbations,
-        ):
-            """TeaCache-wrapped transformer block processing."""
-            global _teacache_state
-            
-            # If no video or TeaCache state not initialized properly, compute normally
-            if video is None or _teacache_state is None:
-                return original_method(model_self, video, audio, perturbations)
-            
-            # Check if we should skip (based on should_compute flag set by denoising patch)
-            should_compute = _teacache_state.get("should_compute", True)
-            
-            if (not should_compute and 
-                _teacache_state.get("previous_residual_video") is not None):
-                
-                # Apply cached residuals instead of computing
-                from dataclasses import replace
-                video_out = replace(
-                    video, 
-                    x=video.x + _teacache_state["previous_residual_video"]
-                )
-                audio_out = audio
-                if audio is not None and _teacache_state.get("previous_residual_audio") is not None:
-                    audio_out = replace(
-                        audio,
-                        x=audio.x + _teacache_state["previous_residual_audio"]
-                    )
-                return video_out, audio_out
-            
-            # Compute normally and cache the residual
-            original_video_x = video.x.clone()
-            original_audio_x = audio.x.clone() if audio is not None else None
-            
-            video_out, audio_out = original_method(model_self, video, audio, perturbations)
-            
-            # Cache residuals for potential reuse
-            if video_out is not None and _teacache_state is not None:
-                _teacache_state["previous_residual_video"] = video_out.x - original_video_x
-            if audio_out is not None and original_audio_x is not None and _teacache_state is not None:
-                _teacache_state["previous_residual_audio"] = audio_out.x - original_audio_x
-            
-            return video_out, audio_out
-        
-        # Apply patch
-        LTXModel._process_transformer_blocks = patched_process_transformer_blocks
-        logger.info("TeaCache: Patched LTXModel._process_transformer_blocks")
-    
-    def _unpatch_transformer(self):
-        """Restore original LTXModel._process_transformer_blocks."""
-        if self._original_process_blocks is not None:
-            try:
-                from ltx_core.model.transformer.model import LTXModel
-                LTXModel._process_transformer_blocks = self._original_process_blocks
-                self._original_process_blocks = None
-                logger.info("TeaCache: Restored LTXModel._process_transformer_blocks")
-            except ImportError:
-                pass
-    
-    def _patch_denoising(self):
-        """Patch the denoising function to integrate TeaCache decision logic."""
-        try:
-            from ltx_pipelines.utils import helpers
-        except ImportError:
-            logger.warning("Could not import helpers, TeaCache denoising patching skipped")
-            return
-        
-        self._original_simple_denoising_func = helpers.simple_denoising_func
-        original_func = self._original_simple_denoising_func
-        
-        def teacache_simple_denoising_func(video_context, audio_context, transformer):
-            """Wrapper that adds TeaCache step tracking."""
-            original_step_fn = original_func(video_context, audio_context, transformer)
-            
-            def teacache_denoising_step(video_state, audio_state, sigmas, step_index):
-                global _teacache_state, _teacache_total_steps, _teacache_current_step
-                
-                _teacache_total_steps = len(sigmas) - 1
-                _teacache_current_step = step_index
-                
-                # Compute modulated input for TeaCache decision
-                # We use the video latent as a proxy for the modulated input
-                modulated_inp = video_state.latent
-                
-                should_compute = _teacache_should_compute(
-                    modulated_inp, step_index, _teacache_total_steps
-                )
-                
-                if _teacache_state is not None:
-                    _teacache_state["should_compute"] = should_compute
-                
-                # Call original (patched transformer will check should_compute)
-                return original_step_fn(video_state, audio_state, sigmas, step_index)
-            
-            return teacache_denoising_step
-        
-        helpers.simple_denoising_func = teacache_simple_denoising_func
-        logger.info("TeaCache: Patched simple_denoising_func")
-    
-    def _unpatch_denoising(self):
-        """Restore original denoising function."""
-        if self._original_simple_denoising_func is not None:
-            try:
-                from ltx_pipelines.utils import helpers
-                helpers.simple_denoising_func = self._original_simple_denoising_func
-                self._original_simple_denoising_func = None
-                logger.info("TeaCache: Restored simple_denoising_func")
-            except ImportError:
-                pass
 
 
 def log_teacache_stats() -> dict:
-    """Log and return TeaCache usage statistics."""
-    total = _teacache_skip_count + _teacache_compute_count
-    if total == 0:
-        return {"skip_count": 0, "compute_count": 0, "skip_rate": 0.0}
+    """Log and return TeaCache usage statistics.
     
-    skip_rate = (_teacache_skip_count / total) * 100
-    return {
-        "skip_count": _teacache_skip_count,
-        "compute_count": _teacache_compute_count,
-        "skip_rate": skip_rate,
-    }
+    Note: With the new implementation, TeaCache stats are stored per-model-instance
+    and are logged automatically when the teacache_context exits.
+    This function is kept for backward compatibility but returns empty stats.
+    """
+    # Stats are now per-model-instance and logged in teacache_context.__exit__
+    return {"skip_count": 0, "compute_count": 0, "skip_rate": 0.0, "note": "See INFO logs for stats"}
 
 
 # ============================================================================

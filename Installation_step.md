@@ -87,12 +87,13 @@ cp .env.example .env
 nano .env
 
 ## Part 4: build & run
-git pull
-docker system prune
-docker compose build --no-cache
-docker compose up -d
-docker compose logs -f
+
+sudo git pull
+sudo docker system prune
+sudo docker compose build --no-cache
+sudo docker compose up -d
+sudo docker compose logs -f
 
 # clean up old containers
 
-docker system prune
+sudo docker system prune

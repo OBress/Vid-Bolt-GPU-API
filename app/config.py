@@ -90,10 +90,10 @@ class InferenceConfig:
     LTX2_MAX_CONCURRENT_VIDEOS = 3  # 3 concurrent videos in video-only mode (QAT text encoder)
     LTX2_CONCURRENT_VRAM_BUDGET_GB = 72.0  # VRAM available for activations (after base model)
     
-    # LTX-2 TeaCache Settings (Step-Level Caching for 1.4-1.7x Speedup)
-    # Skips transformer evaluation when hidden states are similar across timesteps
+    # LTX-2 TeaCache Settings (Step-Level Caching for 1.4-2.1x Speedup)
+    # Based on official ali-vilab/TeaCache: https://github.com/ali-vilab/TeaCache
     LTX2_TEACACHE_ENABLED = True  # Enable TeaCache step-skipping
-    LTX2_TEACACHE_THRESH = 0.15  # Threshold (0.15=lossless, 0.25=fast, 0.4=draft)
+    LTX2_TEACACHE_THRESH = 0.05  # Threshold (0.03=1.6x speedup, 0.05=2.1x speedup)
     
     # Job timeouts (seconds)
     IMAGE_JOB_TIMEOUT = 300      # 5 minutes for image batch jobs (large batches at 1920x1080)
@@ -337,7 +337,7 @@ class Settings(BaseSettings):
     
     @property
     def ltx2_teacache_thresh(self) -> float:
-        """TeaCache threshold (0.15=lossless, 0.25=fast, 0.4=draft)."""
+        """TeaCache threshold (0.03=1.6x speedup, 0.05=2.1x speedup)."""
         return InferenceConfig.LTX2_TEACACHE_THRESH
     
     # --- Limits ---
