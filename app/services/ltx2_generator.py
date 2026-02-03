@@ -44,18 +44,28 @@ logger = logging.getLogger(__name__)
 
 
 # ============================================================================
-# SageAttention 2.2.0: Blackwell-optimized FP8 attention
-# Patches PyTorch SDPA globally - same approach used by ComfyUI
-# Uses FP8 CUDA backend with per-warp quantization for optimal Blackwell (sm120) performance
+# SageAttention 2.2.0: Blackwell-optimized FP8 attention (NON-GLOBAL)
+# Uses a context manager to patch SDPA only during LTX-2 inference
+# This prevents SageAttention from affecting Z-Image or Qwen-Image-Edit
 # ============================================================================
+_sage_attn = None
+_original_sdpa = None
+_sage_available = False
+_sage_call_count = 0
+_fallback_call_count = 0
+
 try:
     from sageattention import sageattn_qk_int8_pv_fp8_cuda as _sage_attn
     import torch.nn.functional as F
-
     _original_sdpa = F.scaled_dot_product_attention
-    _sage_call_count = 0
-    _fallback_call_count = 0
+    _sage_available = True
+    logger.info("SageAttention 2.2.0 available (FP8 CUDA backend, Blackwell-optimized)")
+except ImportError:
+    logger.info("SageAttention not installed - using PyTorch SDPA")
 
+
+def _make_sage_sdpa():
+    """Create a SageAttention-patched SDPA function."""
     def _patched_sdpa(query, key, value, attn_mask=None, *args, **kwargs):
         global _sage_call_count, _fallback_call_count
         # Fall back to original SDPA when masks are used
@@ -80,21 +90,55 @@ try:
             pv_accum_dtype="fp32+fp16",
             smooth_k=True,
         )
+    return _patched_sdpa
 
-    def log_sage_stats():
-        logger.info(f"SageAttention stats: {_sage_call_count} SageAttn calls, {_fallback_call_count} fallback calls")
-        return {"sage_calls": _sage_call_count, "fallback_calls": _fallback_call_count}
 
-    F.scaled_dot_product_attention = _patched_sdpa
-    # Also patch torch.nn.functional directly since LTX-2 uses torch.nn.functional.scaled_dot_product_attention
-    import torch.nn.functional
-    torch.nn.functional.scaled_dot_product_attention = _patched_sdpa
-    logger.info("SageAttention 2.2.0 enabled (FP8 CUDA backend, Blackwell-optimized)")
-except ImportError:
-    # SageAttention not installed - use default PyTorch SDPA
-    def log_sage_stats():
+class sage_attention_context:
+    """Context manager to temporarily enable SageAttention for LTX-2 only.
+    
+    Usage:
+        with sage_attention_context():
+            # SageAttention is active here
+            result = pipeline(...)
+        # Original SDPA is restored here
+    
+    This prevents SageAttention from leaking into Z-Image or Qwen-Image-Edit.
+    """
+    
+    def __enter__(self):
+        if not _sage_available:
+            return self
+        
+        import torch.nn.functional as F
+        import torch.nn.functional
+        
+        # Patch SDPA with SageAttention
+        self._patched = _make_sage_sdpa()
+        F.scaled_dot_product_attention = self._patched
+        torch.nn.functional.scaled_dot_product_attention = self._patched
+        return self
+    
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        if not _sage_available:
+            return False
+        
+        import torch.nn.functional as F
+        import torch.nn.functional
+        
+        # Restore original SDPA
+        F.scaled_dot_product_attention = _original_sdpa
+        torch.nn.functional.scaled_dot_product_attention = _original_sdpa
+        return False
+
+
+def log_sage_stats():
+    """Log SageAttention usage statistics."""
+    if not _sage_available:
         return {"sage_calls": 0, "fallback_calls": 0, "disabled": True}
-    pass
+    logger.info(f"SageAttention stats: {_sage_call_count} SageAttn calls, {_fallback_call_count} fallback calls")
+    return {"sage_calls": _sage_call_count, "fallback_calls": _fallback_call_count}
+
+
 
 
 # ============================================================================
@@ -296,7 +340,8 @@ class LTX2Generator(VideoGenerator):
             
             # Run warmup with DistilledPipeline
             # This forces all model weights to GPU and compiles CUDA kernels
-            with torch.no_grad():
+            # Use sage_attention_context to enable SageAttention during warmup
+            with torch.no_grad(), sage_attention_context():
                 tiling_config = TilingConfig.default()
                 
                 # Warmup DistilledPipeline
@@ -723,7 +768,8 @@ class LTX2Generator(VideoGenerator):
 
         # Wrap entire generation in inference_mode to match official LTX-2 CLI pattern
         # This ensures encode_video (which iterates the video generator) runs in the same context
-        with torch.no_grad():
+        # Also wrap with sage_attention_context to enable SageAttention ONLY during LTX-2 inference
+        with torch.no_grad(), sage_attention_context():
             return self._generate_sync_inner(
                 params, num_frames, seed, target_width, target_height,
                 TilingConfig, get_video_chunks_number, encode_video, AUDIO_SAMPLE_RATE
