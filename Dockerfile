@@ -95,6 +95,8 @@ RUN pip install --no-cache-dir sgl-kernel || echo "sgl-kernel installation skipp
 # Must install from GitHub - version 2.x not available on PyPI (only 1.0.x)
 # Uses CUDA backend (not Triton) to avoid black output artifacts on sm_120
 # --no-build-isolation: SageAttention setup.py imports torch, so use system torch
+# TORCH_CUDA_ARCH_LIST: Required because Docker build has no GPU access
+ENV TORCH_CUDA_ARCH_LIST="12.0"
 RUN pip install --no-cache-dir --no-build-isolation git+https://github.com/thu-ml/SageAttention.git
 
 # =============================================================================
