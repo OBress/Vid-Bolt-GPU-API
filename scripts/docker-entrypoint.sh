@@ -28,26 +28,47 @@ else
     
     mkdir -p "$FP8_DIR"
     
-    # Download the single-file 8-step FP8 checkpoint (~20.5GB)
-    # Use Python module execution (more reliable than huggingface-cli in PATH)
-    python -m huggingface_hub.commands.huggingface_cli download \
-        lightx2v/Qwen-Image-Edit-2511-Lightning \
-        qwen_image_edit_2511_fp8_e4m3fn_scaled_lightning_8steps_v1.0.safetensors \
-        --local-dir "$FP8_DIR" \
-        --local-dir-use-symlinks False
-    
-    # Download text_encoder, vae, scheduler, tokenizer from original Qwen model
-    echo -e "${YELLOW}[Startup] Downloading text_encoder, vae, and configs (~7GB)...${NC}"
-    python -m huggingface_hub.commands.huggingface_cli download \
-        Qwen/Qwen-Image-Edit-2511 \
-        --include "text_encoder/*" "vae/*" "scheduler/*" "tokenizer/*" "*.json" "*.txt" \
-        --exclude "transformer/*" \
-        --local-dir "/app/models/temp-components" \
-        --local-dir-use-symlinks False
-    
-    # Copy components to FP8 directory
-    cp -r /app/models/temp-components/* "$FP8_DIR/"
-    rm -rf "/app/models/temp-components"
+    # Use inline Python with huggingface_hub (same as model_downloader.py)
+    python3 << 'EOF'
+import os
+from pathlib import Path
+from huggingface_hub import hf_hub_download, snapshot_download
+
+fp8_dir = "/app/models/qwen-image-edit-2511-fp8"
+temp_dir = "/app/models/temp-components"
+
+# Download the single-file 8-step FP8 checkpoint (~20.5GB)
+print("[Startup] Downloading FP8 checkpoint...")
+hf_hub_download(
+    repo_id="lightx2v/Qwen-Image-Edit-2511-Lightning",
+    filename="qwen_image_edit_2511_fp8_e4m3fn_scaled_lightning_8steps_v1.0.safetensors",
+    local_dir=fp8_dir,
+)
+
+# Download text_encoder, vae, scheduler, tokenizer from original Qwen model (~7GB)
+print("[Startup] Downloading text_encoder, vae, and configs...")
+snapshot_download(
+    repo_id="Qwen/Qwen-Image-Edit-2511",
+    allow_patterns=["text_encoder/*", "vae/*", "scheduler/*", "tokenizer/*", "*.json", "*.txt"],
+    ignore_patterns=["transformer/*"],
+    local_dir=temp_dir,
+)
+
+# Copy components to FP8 directory
+import shutil
+for item in Path(temp_dir).iterdir():
+    dest = Path(fp8_dir) / item.name
+    if item.is_dir():
+        if dest.exists():
+            shutil.rmtree(dest)
+        shutil.copytree(item, dest)
+    else:
+        shutil.copy2(item, dest)
+
+# Cleanup temp directory
+shutil.rmtree(temp_dir)
+print("[Startup] FP8 model download complete!")
+EOF
     
     echo -e "${GREEN}[Startup] FP8 model + all components downloaded successfully!${NC}"
 fi
