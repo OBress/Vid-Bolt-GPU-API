@@ -55,16 +55,15 @@ try:
 
     _original_sdpa = F.scaled_dot_product_attention
 
-    def _patched_sdpa(
-        query, key, value, attn_mask=None, dropout_p=0.0, is_causal=False, scale=None
-    ):
+    def _patched_sdpa(query, key, value, attn_mask=None, *args, **kwargs):
         # Fall back to original SDPA when masks are used
         # (SageAttention CUDA backend doesn't support attention masks)
         if attn_mask is not None:
-            return _original_sdpa(query, key, value, attn_mask, dropout_p, is_causal, scale)
+            return _original_sdpa(query, key, value, attn_mask, *args, **kwargs)
 
         # SageAttention expects tensor_layout="HND" which matches LTX-2's
         # [Batch, Heads, SeqLen, Dim] layout after PytorchAttention reshape
+        is_causal = kwargs.get('is_causal', False)
         return _sage_attn(query, key, value, tensor_layout="HND", is_causal=is_causal)
 
     F.scaled_dot_product_attention = _patched_sdpa
