@@ -275,7 +275,7 @@ class teacache_context:
         self._patch_transformer()
         self._patch_denoising()
         
-        logger.debug(f"TeaCache enabled with threshold {self.thresh}")
+        logger.info(f"TeaCache enabled with threshold {self.thresh}")
         return self
     
     def __exit__(self, exc_type, exc_val, exc_tb):
@@ -306,7 +306,7 @@ class teacache_context:
         try:
             from ltx_core.model.transformer.model import LTXModel
         except ImportError:
-            logger.warning("Could not import LTXModel, TeaCache transformer patching skipped")
+            logger.info("Could not import LTXModel, TeaCache transformer patching skipped")
             return
         
         # Save original method
@@ -364,7 +364,7 @@ class teacache_context:
         
         # Apply patch
         LTXModel._process_transformer_blocks = patched_process_transformer_blocks
-        logger.debug("TeaCache: Patched LTXModel._process_transformer_blocks")
+        logger.info("TeaCache: Patched LTXModel._process_transformer_blocks")
     
     def _unpatch_transformer(self):
         """Restore original LTXModel._process_transformer_blocks."""
@@ -373,7 +373,7 @@ class teacache_context:
                 from ltx_core.model.transformer.model import LTXModel
                 LTXModel._process_transformer_blocks = self._original_process_blocks
                 self._original_process_blocks = None
-                logger.debug("TeaCache: Restored LTXModel._process_transformer_blocks")
+                logger.info("TeaCache: Restored LTXModel._process_transformer_blocks")
             except ImportError:
                 pass
     
@@ -415,7 +415,7 @@ class teacache_context:
             return teacache_denoising_step
         
         helpers.simple_denoising_func = teacache_simple_denoising_func
-        logger.debug("TeaCache: Patched simple_denoising_func")
+        logger.info("TeaCache: Patched simple_denoising_func")
     
     def _unpatch_denoising(self):
         """Restore original denoising function."""
@@ -424,7 +424,7 @@ class teacache_context:
                 from ltx_pipelines.utils import helpers
                 helpers.simple_denoising_func = self._original_simple_denoising_func
                 self._original_simple_denoising_func = None
-                logger.debug("TeaCache: Restored simple_denoising_func")
+                logger.info("TeaCache: Restored simple_denoising_func")
             except ImportError:
                 pass
 
