@@ -3,7 +3,7 @@
 # Target: NVIDIA RTX PRO 6000 Blackwell / Ubuntu 22.04 / CUDA 12.8
 # =============================================================================
 
-FROM nvidia/cuda:12.8.0-cudnn-runtime-ubuntu22.04
+FROM nvidia/cuda:12.8.0-cudnn-devel-ubuntu22.04
 
 LABEL maintainer="Vid-Bolt Team"
 LABEL description="GPU-accelerated image/video generation API"
@@ -34,8 +34,6 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     git \
     curl \
     wget \
-    cuda-nvcc-12-8 \
-    cuda-cudart-dev-12-8 \
     && rm -rf /var/lib/apt/lists/* \
     && apt-get clean
 
