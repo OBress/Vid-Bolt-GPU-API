@@ -219,12 +219,8 @@ class teacache_context:
             import torch
             from ltx_core.utils import rms_norm
             
-            # Initialize TeaCache state on the model instance if needed
-            # OR reset if input shape changed (handles multi-stage pipelines and new generations)
-            current_shape = video_args.x.shape if video_args is not None else None
-            
+            # Initialize basic TeaCache flag on first call
             if not hasattr(model_self, '_teacache_enabled'):
-                # First time initialization
                 model_self._teacache_enabled = True
                 model_self._teacache_cnt = 0
                 model_self._teacache_accumulated_rel_l1_distance = 0.0
@@ -233,16 +229,7 @@ class teacache_context:
                 model_self._teacache_previous_residual_audio = None
                 model_self._teacache_skip_count = 0
                 model_self._teacache_compute_count = 0
-                model_self._teacache_last_shape = current_shape
-            elif current_shape != model_self._teacache_last_shape:
-                # Shape changed (new generation or new pipeline stage) - reset cached tensors
-                # Keep skip/compute counts for stats, but reset caching state
-                model_self._teacache_cnt = 0
-                model_self._teacache_accumulated_rel_l1_distance = 0.0
-                model_self._teacache_previous_modulated_input = None
-                model_self._teacache_previous_residual = None
-                model_self._teacache_previous_residual_audio = None
-                model_self._teacache_last_shape = current_shape
+                model_self._teacache_last_shape = None
             
             if not model_self._teacache_enabled:
                 return original_forward(model_self, video, audio, perturbations)
@@ -254,6 +241,17 @@ class teacache_context:
             # Get the preprocessed video args (contains hidden_states and timestep info)
             video_args = model_self.video_args_preprocessor.prepare(video)
             audio_args = model_self.audio_args_preprocessor.prepare(audio) if audio is not None else None
+            
+            # Check if input shape changed (new generation or new pipeline stage)
+            # If so, reset cached tensors to prevent shape mismatches
+            current_shape = video_args.x.shape
+            if current_shape != model_self._teacache_last_shape:
+                model_self._teacache_cnt = 0
+                model_self._teacache_accumulated_rel_l1_distance = 0.0
+                model_self._teacache_previous_modulated_input = None
+                model_self._teacache_previous_residual = None
+                model_self._teacache_previous_residual_audio = None
+                model_self._teacache_last_shape = current_shape
             
             # ===== TeaCache Decision Logic =====
             # Compute modulated input from first transformer block

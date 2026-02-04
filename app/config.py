@@ -93,7 +93,7 @@ class InferenceConfig:
     # LTX-2 TeaCache Settings (Step-Level Caching for 1.4-2.1x Speedup)
     # Based on official ali-vilab/TeaCache: https://github.com/ali-vilab/TeaCache
     LTX2_TEACACHE_ENABLED = True  # Enable TeaCache step-skipping
-    LTX2_TEACACHE_THRESH = 0.05  # Threshold (0.03=1.6x speedup, 0.05=2.1x speedup)
+    LTX2_TEACACHE_THRESH = 0.15  # Threshold (0.15=~1.5x speedup, 0.25=~2x speedup)
     
     # Job timeouts (seconds)
     IMAGE_JOB_TIMEOUT = 300      # 5 minutes for image batch jobs (large batches at 1920x1080)
