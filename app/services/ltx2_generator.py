@@ -220,16 +220,29 @@ class teacache_context:
             from ltx_core.utils import rms_norm
             
             # Initialize TeaCache state on the model instance if needed
+            # OR reset if input shape changed (handles multi-stage pipelines and new generations)
+            current_shape = video_args.x.shape if video_args is not None else None
+            
             if not hasattr(model_self, '_teacache_enabled'):
+                # First time initialization
                 model_self._teacache_enabled = True
                 model_self._teacache_cnt = 0
-                model_self._teacache_num_steps = 8  # Matches DISTILLED_SIGMA_VALUES (9 sigmas = 8 steps)
                 model_self._teacache_accumulated_rel_l1_distance = 0.0
                 model_self._teacache_previous_modulated_input = None
                 model_self._teacache_previous_residual = None
                 model_self._teacache_previous_residual_audio = None
                 model_self._teacache_skip_count = 0
                 model_self._teacache_compute_count = 0
+                model_self._teacache_last_shape = current_shape
+            elif current_shape != model_self._teacache_last_shape:
+                # Shape changed (new generation or new pipeline stage) - reset cached tensors
+                # Keep skip/compute counts for stats, but reset caching state
+                model_self._teacache_cnt = 0
+                model_self._teacache_accumulated_rel_l1_distance = 0.0
+                model_self._teacache_previous_modulated_input = None
+                model_self._teacache_previous_residual = None
+                model_self._teacache_previous_residual_audio = None
+                model_self._teacache_last_shape = current_shape
             
             if not model_self._teacache_enabled:
                 return original_forward(model_self, video, audio, perturbations)
@@ -270,11 +283,12 @@ class teacache_context:
             modulated_inp = normed_hidden_states * (1 + scale_msa) + shift_msa
             
             # Determine if we should compute or skip
+            # Use threshold-based approach only (no fixed step counting)
+            # This handles multi-stage pipelines like distilled (8+3 steps)
             cnt = model_self._teacache_cnt
-            num_steps = model_self._teacache_num_steps
             
-            if cnt == 0 or cnt == num_steps - 1:
-                # Always compute first and last step
+            if cnt == 0:
+                # Always compute first step after shape change/reset
                 should_calc = True
                 model_self._teacache_accumulated_rel_l1_distance = 0.0
             elif model_self._teacache_previous_modulated_input is None:
@@ -301,8 +315,6 @@ class teacache_context:
             # Update state
             model_self._teacache_previous_modulated_input = modulated_inp.detach().clone()
             model_self._teacache_cnt += 1
-            if model_self._teacache_cnt >= num_steps:
-                model_self._teacache_cnt = 0
             
             # ===== Execute or Skip =====
             if not should_calc and model_self._teacache_previous_residual is not None:
