@@ -337,7 +337,7 @@ class Settings(BaseSettings):
     
     @property
     def ltx2_teacache_thresh(self) -> float:
-        """TeaCache threshold (0.03=1.6x speedup, 0.05=2.1x speedup)."""
+        """TeaCache threshold (0.15=~1.5x speedup, 0.25=~2x speedup)."""
         return InferenceConfig.LTX2_TEACACHE_THRESH
     
     # --- Limits ---
