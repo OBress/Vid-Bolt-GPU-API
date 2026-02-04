@@ -3,7 +3,7 @@
 # Target: NVIDIA RTX PRO 6000 Blackwell / Ubuntu 22.04 / CUDA 12.8
 # =============================================================================
 
-FROM nvidia/cuda:12.8.0-cudnn-devel-ubuntu22.04
+FROM nvidia/cuda:12.8.0-cudnn-runtime-ubuntu22.04
 
 LABEL maintainer="Vid-Bolt Team"
 LABEL description="GPU-accelerated image/video generation API"
@@ -63,8 +63,8 @@ RUN pip install --no-cache-dir \
 # NOTE: xformers is NOT installed because it doesn't support Blackwell GPUs (compute capability 12.0)
 # All libraries (LTX-2, LightX2V, etc.) automatically fall back to PyTorch native SDPA
 
-# Triton - MUST be pinned to 3.5.0 for PyTorch 2.9.1 + SageAttention compatibility
-RUN pip install --no-cache-dir triton==3.5.0
+# Triton for torch.compile
+RUN pip install --no-cache-dir "triton>=3.3.0"
 
 # =============================================================================
 # Core Dependencies
@@ -88,14 +88,6 @@ RUN pip install --no-cache-dir -e /app/LightX2V || echo "LightX2V installation s
 
 # sgl-kernel for FP8 quantized inference (provides sgl_per_token_quant_fp8, fp8_scaled_mm)
 RUN pip install --no-cache-dir sgl-kernel || echo "sgl-kernel installation skipped"
-
-# SageAttention 2.x for ~2x faster attention on Blackwell GPUs
-# Must install from GitHub - version 2.x not available on PyPI (only 1.0.x)
-# Uses CUDA backend (not Triton) to avoid black output artifacts on sm_120
-# --no-build-isolation: SageAttention setup.py imports torch, so use system torch
-# TORCH_CUDA_ARCH_LIST: Required because Docker build has no GPU access
-ENV TORCH_CUDA_ARCH_LIST="12.0"
-RUN pip install --no-cache-dir --no-build-isolation git+https://github.com/thu-ml/SageAttention.git
 
 # =============================================================================
 # Copy Application Code
