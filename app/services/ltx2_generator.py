@@ -166,15 +166,15 @@ class teacache_context:
     
     Args:
         thresh: Relative L1 distance threshold. Lower = more accuracy, less speedup.
-                Recommended: 0.03 for 1.6x, 0.05 for 2.1x speedup
+                Recommended: 0.15 for ~1.5x speedup, 0.25 for ~2x speedup (more aggressive)
         enabled: Whether to enable TeaCache
     
     Usage:
-        with teacache_context(thresh=0.05, enabled=True):
+        with teacache_context(thresh=0.15, enabled=True):
             result = pipeline(...)
     """
     
-    def __init__(self, thresh: float = 0.05, enabled: bool = True):
+    def __init__(self, thresh: float = 0.15, enabled: bool = True):
         self.thresh = thresh
         self.enabled = enabled
         self._original_forward = None
