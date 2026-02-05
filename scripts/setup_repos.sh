@@ -1,6 +1,6 @@
 #!/bin/bash
 
-# This script clones the required model repositories into the Vid-Bolt-GPU-API directory.
+# This script clones the required model repositories into the repos/ directory.
 # Run this script from the root of the Vid-Bolt-GPU-API project after cloning.
 
 # Exit on error
@@ -8,11 +8,17 @@ set -e
 
 echo "Starting setup of external repositories..."
 
+# Create repos directory if it doesn't exist
+mkdir -p repos
+cd repos
+
 # Define repositories
 REPOS=(
     "https://github.com/Lightricks/LTX-2.git"
     "https://github.com/Tongyi-MAI/Z-Image.git"
     "https://github.com/ModelTC/LightX2V.git"
+    "https://github.com/ace-step/ACE-Step.git"
+    "https://github.com/facebookresearch/audiocraft.git"
 )
 
 for repo in "${REPOS[@]}"; do
@@ -27,14 +33,19 @@ for repo in "${REPOS[@]}"; do
             continue
         fi
         
-        echo "Found existing directory '$folder' but it's not a git repository (likely an empty gitlink)."
-        echo "Cleaning up '$folder' to allow for a fresh clone..."
-        rm -rf "$folder"
+        echo "Found existing directory '$folder' but it's not a git repository (likely vendored)."
+        echo "Skipping '$folder'..."
+        continue
     fi
     
     echo "Cloning $folder from $repo..."
     git clone "$repo"
+    
+    # Remove .git directory to vendor the repo
+    echo "Removing .git directory from $folder to vendor..."
+    rm -rf "$folder/.git"
 done
 
+cd ..
 echo "------------------------------------------"
-echo "All external repositories have been set up successfully."
+echo "All external repositories have been set up in repos/ directory."

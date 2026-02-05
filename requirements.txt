@@ -67,4 +67,5 @@ websockets==15.0.1
 win32_setctime==1.2.0
 
 # Audio Generation
-audiocraft>=1.0.0   # Facebook AudioGen (CC-BY-NC 4.0)
+# NOTE: audiocraft and acestep are installed directly in Dockerfile
+# (they require system-level FFmpeg dev libraries for PyAV compilation)

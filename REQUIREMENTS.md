@@ -156,12 +156,12 @@ pip install -v git+https://github.com/ModelTC/LightX2V.git
 | `Pillow`        | Latest     | Image handling            |
 
 ```bash
-# Install from LTX-2 repository
-cd LTX-2
+# Install from LTX-2 repository (vendored in repos/)
+cd repos/LTX-2
 uv sync --frozen
 # Or with pip:
-pip install -e packages/ltx-core
-pip install -e packages/ltx-pipelines
+pip install -e repos/LTX-2/packages/ltx-core
+pip install -e repos/LTX-2/packages/ltx-pipelines
 ```
 
 ---
@@ -256,9 +256,9 @@ pip install transformers>=4.51.0 safetensors>=0.4.5 peft>=0.12.0
 # 5. Install LightX2V
 pip install -v git+https://github.com/ModelTC/LightX2V.git
 
-# 6. Install LTX-2 packages
-pip install -e LTX-2/packages/ltx-core
-pip install -e LTX-2/packages/ltx-pipelines
+# 6. Install LTX-2 packages (vendored in repos/)
+pip install -e repos/LTX-2/packages/ltx-core
+pip install -e repos/LTX-2/packages/ltx-pipelines
 
 # 7. Install FastAPI and utilities
 pip install fastapi>=0.115.0 uvicorn[standard]>=0.32.0

@@ -34,6 +34,17 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     git \
     curl \
     wget \
+    pkg-config \
+    # FFmpeg dev headers for PyAV (audiocraft dependency)
+    libavformat-dev \
+    libavcodec-dev \
+    libavdevice-dev \
+    libavutil-dev \
+    libswscale-dev \
+    libswresample-dev \
+    libavfilter-dev \
+    # Audio I/O for soundfile/librosa (ACE-Step dependency)
+    libsndfile1-dev \
     && rm -rf /var/lib/apt/lists/* \
     && apt-get clean
 
@@ -83,26 +94,31 @@ RUN pip install --no-cache-dir git+https://github.com/huggingface/diffusers
 
 # LightX2V - install from local vendored copy (has custom fixes for native resolution)
 # Copy and install from local directory instead of GitHub
-COPY LightX2V /app/LightX2V
-RUN pip install --no-cache-dir -e /app/LightX2V || echo "LightX2V installation skipped"
+COPY repos/LightX2V /app/repos/LightX2V
+RUN pip install --no-cache-dir -e /app/repos/LightX2V || echo "LightX2V installation skipped"
 
 # sgl-kernel for FP8 quantized inference (provides sgl_per_token_quant_fp8, fp8_scaled_mm)
 RUN pip install --no-cache-dir sgl-kernel || echo "sgl-kernel installation skipped"
 
-# AudioCraft (for AudioGen sound effects)
-RUN pip install --no-cache-dir audiocraft || echo "audiocraft installation skipped"
+# AudioCraft (for AudioGen sound effects) - vendored locally for version stability
+COPY repos/audiocraft /app/repos/audiocraft
+RUN pip install --no-cache-dir -e /app/repos/audiocraft || echo "audiocraft installation skipped"
+
+# ACE-Step (for music generation) - vendored locally for version stability
+COPY repos/ACE-Step /app/repos/ACE-Step
+RUN pip install --no-cache-dir -e /app/repos/ACE-Step || echo "ACE-Step installation skipped"
 
 # =============================================================================
 # Copy Application Code
 # =============================================================================
 
 # Copy LTX-2 packages if they exist and install
-COPY LTX-2/packages /app/LTX-2/packages
-RUN pip install --no-cache-dir -e /app/LTX-2/packages/ltx-core \
-    && pip install --no-cache-dir -e /app/LTX-2/packages/ltx-pipelines
+COPY repos/LTX-2/packages /app/repos/LTX-2/packages
+RUN pip install --no-cache-dir -e /app/repos/LTX-2/packages/ltx-core \
+    && pip install --no-cache-dir -e /app/repos/LTX-2/packages/ltx-pipelines
 
 # Copy Z-Image (for native inference if needed)
-COPY Z-Image /app/Z-Image
+COPY repos/Z-Image /app/repos/Z-Image
 
 # Copy main application
 COPY app /app/app
@@ -141,7 +157,7 @@ ENV LOG_LEVEL=INFO
 # =============================================================================
 # Copy LightX2V source for FP8 converter tool
 # =============================================================================
-COPY LightX2V /app/LightX2V
+COPY repos/LightX2V /app/repos/LightX2V
 
 # =============================================================================
 # Entrypoint Script (handles FP8 conversion on first startup)

@@ -40,7 +40,7 @@ class ACEStepGenerator(MusicGenerator):
 
         logger.info("Loading ACE-Step 1.5 models...")
         try:
-            from acestep import ACEStepPipeline
+            from acestep.pipeline_ace_step import ACEStepPipeline
 
             model_path = Path(self._settings.acestep_model_path)
             if not model_path.exists():
