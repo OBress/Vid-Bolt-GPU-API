@@ -43,6 +43,17 @@ class BatchImageEditItem(BaseModel):
         ...,
         description="Presigned URL (PUT) for direct storage upload",
     )
+    # Dynamic LoRA support (per-item)
+    lora_name: Optional[str] = Field(
+        default=None,
+        description="Optional LoRA to apply. Available: 'multiple-angles' (96 camera positions)",
+    )
+    lora_strength: Optional[float] = Field(
+        default=None,
+        ge=0.0,
+        le=1.0,
+        description="LoRA strength (0.0-1.0). Default: 0.9 when LoRA is specified",
+    )
 
 
 class BatchImageEditRequest(BaseModel):

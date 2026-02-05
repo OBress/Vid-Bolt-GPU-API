@@ -82,6 +82,13 @@ class ModelDownloader:
             "filename": "Qwen-Image-Edit-2511-Lightning-8steps-V1.0-fp32.safetensors",
         },
         {
+            "name": "qwen-multiple-angles-lora",
+            "repo": "fal/Qwen-Image-Edit-2511-Multiple-Angles-LoRA",
+            "local_dir": "models/loras/qwen-image-edit-multiple-angles",
+            "type": "file",
+            "filename": "qwen-image-edit-2511-multiple-angles-lora.safetensors",
+        },
+        {
             "name": "ltx2-checkpoint",
             "repo": "Lightricks/LTX-2",
             "local_dir": "models/ltx-2",

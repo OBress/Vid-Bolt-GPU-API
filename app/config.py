@@ -36,6 +36,10 @@ class ModelPaths:
     LIGHTX2V_LORA = "models/loras/qwen-image-edit-2511"
     LIGHTX2V_LORA_FILE = "Qwen-Image-Edit-2511-Lightning-8steps-V1.0-fp32.safetensors"
     
+    # Multiple Angles LoRA (camera control for Qwen-Image-Edit)
+    LIGHTX2V_MULTIPLE_ANGLES_LORA = "models/loras/qwen-image-edit-multiple-angles"
+    LIGHTX2V_MULTIPLE_ANGLES_LORA_FILE = "qwen-image-edit-2511-multiple-angles-lora.safetensors"
+    
     # LTX-2 (video generation)
     LTX2_CHECKPOINT = "models/ltx-2/ltx-2-19b-distilled-fp8.safetensors"
     LTX2_SPATIAL_UPSAMPLER = "models/ltx-2/ltx-2-spatial-upscaler-x2-1.0.safetensors"
@@ -44,6 +48,12 @@ class ModelPaths:
     
     # Stream-DiffVSR (video upscaling)
     STREAM_DIFFVSR_MODEL_ID = "Jamichsu/Stream-DiffVSR"
+    
+    # ACE-Step 1.5 (music generation)
+    ACESTEP_MODEL = "models/ace-step-1.5"
+    
+    # AudioGen (sound effect generation)
+    AUDIOGEN_MODEL = "models/audiogen-medium"
 
 
 class InferenceConfig:
@@ -72,6 +82,10 @@ class InferenceConfig:
     LIGHTX2V_TEXT_ENCODER_OFFLOAD = True
     LIGHTX2V_FP8_ENABLED = True  # Use FP8 quantized model (~19GB vs ~38GB)
     LIGHTX2V_FP8_QUANT_SCHEME = "fp8-sgl"  # FP8 single-element scaling
+    
+    # Dynamic LoRA settings (for Multiple Angles LoRA, etc.)
+    LIGHTX2V_DEFAULT_LORA_STRENGTH = 0.9  # Recommended for Multiple Angles LoRA
+    LIGHTX2V_DYNAMIC_LORA_ENABLED = True  # Enable per-request LoRA switching
     # LightX2V instance counts per mode (FP8: ~19GB per instance)
     LIGHTX2V_MAX_INSTANCES_ALL = 1       # Conservative when sharing VRAM with Z-Image + LTX-2
     LIGHTX2V_MAX_INSTANCES_DEDICATED = 2  # 2 concurrent instances (2 x ~19GB = ~38GB)
@@ -90,9 +104,20 @@ class InferenceConfig:
     LTX2_MAX_CONCURRENT_VIDEOS = 3  # 3 concurrent videos in video-only mode (QAT text encoder)
     LTX2_CONCURRENT_VRAM_BUDGET_GB = 72.0  # VRAM available for activations (after base model)
     
+    # ACE-Step (music) settings
+    ACESTEP_DEFAULT_DURATION = 30.0   # seconds
+    ACESTEP_MAX_DURATION = 600.0      # 10 minutes max
+    ACESTEP_SAMPLE_RATE = 44100       # 44.1kHz output
+    
+    # AudioGen (sound effects) settings
+    AUDIOGEN_DEFAULT_DURATION = 5.0   # seconds
+    AUDIOGEN_MAX_DURATION = 30.0      # 30 seconds max
+    AUDIOGEN_SAMPLE_RATE = 16000      # 16kHz output (AudioGen native)
+    
     # Job timeouts (seconds)
     IMAGE_JOB_TIMEOUT = 300      # 5 minutes for image batch jobs (large batches at 1920x1080)
     VIDEO_JOB_TIMEOUT = 600      # 10 minutes for video jobs
+    AUDIO_JOB_TIMEOUT = 600      # 10 minutes for audio jobs
     
     # Limits
     MAX_IMAGE_SIZE_MB = 10
@@ -136,6 +161,7 @@ class Settings(BaseSettings):
     zimage_dry_run_override: Optional[bool] = None
     lightx2v_dry_run_override: Optional[bool] = None
     ltx2_dry_run_override: Optional[bool] = None
+    audio_dry_run_override: Optional[bool] = None
 
     # Optimization settings
     ltx2_use_fp8_text_encoder: bool = True  # Use FP8 quantized text encoder
@@ -184,6 +210,14 @@ class Settings(BaseSettings):
     @property
     def stream_diffvsr_model_id(self) -> str:
         return ModelPaths.STREAM_DIFFVSR_MODEL_ID
+    
+    @property
+    def acestep_model_path(self) -> str:
+        return ModelPaths.ACESTEP_MODEL
+    
+    @property
+    def audiogen_model_path(self) -> str:
+        return ModelPaths.AUDIOGEN_MODEL
     
     # --- Device & Dtype ---
     @property
@@ -284,6 +318,27 @@ class Settings(BaseSettings):
         """Max LightX2V instances when in dedicated IMAGE_EDITING mode."""
         return InferenceConfig.LIGHTX2V_MAX_INSTANCES_DEDICATED
     
+    # --- LightX2V Multiple Angles LoRA ---
+    @property
+    def lightx2v_multiple_angles_lora_path(self) -> str:
+        """Directory containing the Multiple Angles LoRA."""
+        return ModelPaths.LIGHTX2V_MULTIPLE_ANGLES_LORA
+    
+    @property
+    def lightx2v_multiple_angles_lora_filename(self) -> str:
+        """Filename of the Multiple Angles LoRA safetensors."""
+        return ModelPaths.LIGHTX2V_MULTIPLE_ANGLES_LORA_FILE
+    
+    @property
+    def lightx2v_default_dynamic_lora_strength(self) -> float:
+        """Default strength when applying dynamic LoRAs (e.g., Multiple Angles)."""
+        return InferenceConfig.LIGHTX2V_DEFAULT_LORA_STRENGTH
+    
+    @property
+    def lightx2v_dynamic_lora_enabled(self) -> bool:
+        """Whether dynamic per-request LoRA switching is enabled."""
+        return InferenceConfig.LIGHTX2V_DYNAMIC_LORA_ENABLED
+    
     # --- LTX-2 ---
     @property
     def ltx2_fp8_enabled(self) -> bool:
@@ -349,6 +404,42 @@ class Settings(BaseSettings):
     def max_concurrent_video_generations(self) -> int:
         """Max concurrent video generations (LTX-2 + upscaling workflow)."""
         return InferenceConfig.MAX_CONCURRENT_VIDEO_GENERATIONS
+    
+    # --- Audio Generation ---
+    @property
+    def acestep_default_duration(self) -> float:
+        return InferenceConfig.ACESTEP_DEFAULT_DURATION
+    
+    @property
+    def acestep_max_duration(self) -> float:
+        return InferenceConfig.ACESTEP_MAX_DURATION
+    
+    @property
+    def acestep_sample_rate(self) -> int:
+        return InferenceConfig.ACESTEP_SAMPLE_RATE
+    
+    @property
+    def audiogen_default_duration(self) -> float:
+        return InferenceConfig.AUDIOGEN_DEFAULT_DURATION
+    
+    @property
+    def audiogen_max_duration(self) -> float:
+        return InferenceConfig.AUDIOGEN_MAX_DURATION
+    
+    @property
+    def audiogen_sample_rate(self) -> int:
+        return InferenceConfig.AUDIOGEN_SAMPLE_RATE
+    
+    @property
+    def audio_job_timeout(self) -> int:
+        return InferenceConfig.AUDIO_JOB_TIMEOUT
+    
+    @property
+    def audio_dry_run(self) -> bool:
+        """In mock_mode, all generators run in dry-run mode."""
+        if self.audio_dry_run_override is not None:
+            return self.audio_dry_run_override
+        return self.mock_mode
 
 
 @lru_cache

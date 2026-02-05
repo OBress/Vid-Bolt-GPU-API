@@ -89,6 +89,9 @@ RUN pip install --no-cache-dir -e /app/LightX2V || echo "LightX2V installation s
 # sgl-kernel for FP8 quantized inference (provides sgl_per_token_quant_fp8, fp8_scaled_mm)
 RUN pip install --no-cache-dir sgl-kernel || echo "sgl-kernel installation skipped"
 
+# AudioCraft (for AudioGen sound effects)
+RUN pip install --no-cache-dir audiocraft || echo "audiocraft installation skipped"
+
 # =============================================================================
 # Copy Application Code
 # =============================================================================

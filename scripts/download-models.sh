@@ -128,6 +128,22 @@ huggingface-cli download google/gemma-3-12b-it-qat-q4_0-unquantized \
 echo -e "${GREEN}  ✓ Gemma text encoder downloaded${NC}"
 
 # =============================================================================
+# ACE-Step 1.5 (Music Generation) - OPTIONAL
+# =============================================================================
+# ACE-Step auto-downloads on first use, uncomment below to pre-download
+# echo -e "${YELLOW}[5/5] Downloading ACE-Step 1.5...${NC}"
+# huggingface-cli download ace-step/ACE-Step-1.5 \
+#     --local-dir "$MODELS_DIR/ace-step-1.5" \
+#     --local-dir-use-symlinks False
+# echo -e "${GREEN}  ✓ ACE-Step 1.5 downloaded${NC}"
+
+# =============================================================================
+# AudioGen (Sound Effect Generation) - Auto-downloads on first use
+# =============================================================================
+# AudioGen auto-downloads from facebook/audiogen-medium on first inference
+# No manual download required
+
+# =============================================================================
 # Summary
 # =============================================================================
 echo ""

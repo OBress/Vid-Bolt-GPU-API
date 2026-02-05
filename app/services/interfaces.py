@@ -14,6 +14,10 @@ from app.models.internal import (
     ImageGenerationParams,
     ImageGenerationResult,
     KeyframeInterpolationParams,
+    MusicGenerationParams,
+    MusicGenerationResult,
+    SoundEffectParams,
+    SoundEffectResult,
     UpscaleParams,
     UpscaleResult,
     VideoGenerationParams,
@@ -122,4 +126,22 @@ class Upscaler(BaseModelGenerator):
     @abstractmethod
     async def upscale_video(self, params: UpscaleParams) -> UpscaleResult:
         """Upscale a video."""
+        pass
+
+
+class MusicGenerator(BaseModelGenerator):
+    """Interface for music generators."""
+
+    @abstractmethod
+    async def generate_music(self, params: MusicGenerationParams) -> MusicGenerationResult:
+        """Generate music from a text prompt and optional lyrics."""
+        pass
+
+
+class SoundEffectGenerator(BaseModelGenerator):
+    """Interface for sound effect generators."""
+
+    @abstractmethod
+    async def generate_sound_effect(self, params: SoundEffectParams) -> SoundEffectResult:
+        """Generate a sound effect from a text description."""
         pass

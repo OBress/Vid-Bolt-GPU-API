@@ -16,6 +16,8 @@ A high-performance FastAPI backend for AI-powered image and video generation.
   - [Image Editing](#image-editing)
   - [Video Generation](#video-generation)
   - [LTX-2 Video Generation](#ltx-2-video-generation)
+  - [Music Generation](#music-generation)
+  - [Sound Effect Generation](#sound-effect-generation)
   - [Batch Operations](#batch-operations)
 - [Error Handling](#error-handling)
 - [Configuration](#configuration)
@@ -32,6 +34,8 @@ Vid-Bolt GPU API provides AI-powered generation capabilities:
 | **Text-to-Image**    | Z-Image Turbo        | Generate images from text prompts        |
 | **Image Editing**    | Qwen-Image-Edit-2511 | Edit images with AI instructions         |
 | **Video Generation** | LTX-2 19B            | Generate videos from images (720p/1080p) |
+| **Music Generation** | ACE-Step 1.5         | Generate music from text prompts         |
+| **Sound Effects**    | AudioGen Medium      | Generate sound effects from descriptions |
 
 ### Architecture
 
@@ -183,12 +187,13 @@ The API manages GPU VRAM by loading only the required models for each use case. 
 
 Configurable via `/api/v1/settings/vram-mode`:
 
-| Mode               | Models Loaded      | VRAM Usage | Best For                   |
-| ------------------ | ------------------ | ---------- | -------------------------- |
-| `image_generation` | Z-Image Turbo only | ~8GB       | Text-to-image workloads    |
-| `image_editing`    | LightX2V only      | ~12GB      | Image editing/inpainting   |
-| `video_generation` | LTX-2 only         | ~20GB      | Video generation           |
-| `all`              | All models         | ~40GB+     | High-VRAM GPUs (A100/H100) |
+| Mode               | Models Loaded       | VRAM Usage | Best For                   |
+| ------------------ | ------------------- | ---------- | -------------------------- |
+| `image_generation` | Z-Image Turbo only  | ~8GB       | Text-to-image workloads    |
+| `image_editing`    | LightX2V only       | ~12GB      | Image editing/inpainting   |
+| `video_generation` | LTX-2 only          | ~20GB      | Video generation           |
+| `audio_creation`   | ACE-Step + AudioGen | ~20GB      | Music and sound effects    |
+| `all`              | All models          | ~60GB+     | High-VRAM GPUs (A100/H100) |
 
 #### Mode Behavior
 
@@ -207,7 +212,12 @@ Configurable via `/api/v1/settings/vram-mode`:
    - Scheduling: Grouped by job type to minimize switching
    - Switching time: ~30-60s
 
-4. **all**:
+4. **audio_creation**:
+   - Loads **ACE-Step 1.5** for music generation and **AudioGen** for sound effects
+   - Scheduling: Grouped by job type to minimize switching
+   - Switching time: ~15-30s
+
+5. **all**:
    - Loads **all models simultaneously**
    - Scheduling: Strict FIFO (no switching needed)
    - Switching time: Instant
@@ -406,6 +416,28 @@ Check the status of a specific job.
 | `webhook_url` | string | ✅ | **REQUIRED:** URL to POST when complete | - |
 | `item_id` | string | ❌ | Client identifier (returned in webhook) | `job_id` |
 | `webhook_secret` | string | ❌ | HMAC signing secret | - |
+| `lora_name` | string | ❌ | LoRA to apply (see available LoRAs below) | - |
+| `lora_strength` | float | ❌ | LoRA strength (0.0-1.0) | `0.9` |
+
+**Available LoRAs:**
+
+| Name              | Description                                         | Prompt Format                            |
+| ----------------- | --------------------------------------------------- | ---------------------------------------- |
+| `multiple-angles` | 96-position camera control for multi-view synthesis | `<sks> {azimuth} {elevation} {distance}` |
+
+**Multiple Angles LoRA Usage:**
+
+The `multiple-angles` LoRA enables precise camera angle control. Use the `<sks>` trigger token followed by position descriptors:
+
+- **Azimuth:** `front`, `front-left`, `front-right`, `left`, `right`, `back`, `back-left`, `back-right`
+- **Elevation:** `below`, `eye-level`, `above`, `overhead`
+- **Distance:** `close`, `medium`, `far`
+
+Example prompts:
+
+- `<sks> front-right eye-level medium` - Standard 3/4 view
+- `<sks> above front far` - High-angle establishing shot
+- `<sks> left eye-level close` - Profile close-up
 
 **Response (Immediate - 202 Accepted):**
 
@@ -415,6 +447,20 @@ Check the status of a specific job.
   "status": "pending",
   "status_url": "/api/v1/jobs/550e8400-e29b...",
   "message": "Job accepted for processing"
+}
+```
+
+**Example Request with Multiple Angles LoRA:**
+
+```json
+{
+  "job_id": "angle-test-001",
+  "input_image_url": "https://example.com/product.png",
+  "prompt": "<sks> front-right eye-level medium",
+  "lora_name": "multiple-angles",
+  "lora_strength": 0.9,
+  "save_url": "https://storage.example.com/outputs/angle-test-001.png",
+  "webhook_url": "https://myapp.com/webhook"
 }
 ```
 
@@ -454,6 +500,67 @@ Check the status of a specific job.
   "status": "pending",
   "status_url": "/api/v1/jobs/550e8400-e29b...",
   "message": "Job accepted for processing"
+}
+```
+
+---
+
+### Music Generation
+
+#### `POST /api/v1/music/generate`
+
+**Returns HTTP 202 Accepted**. Generates music using ACE-Step 1.5.
+
+**Request:**
+| Field | Type | Required | Description | Default |
+|-------|------|----------|-------------|---------|
+| `job_id` | string | ✅ | Unique job identifier | - |
+| `prompt` | string | ✅ | Music style/genre description | - |
+| `lyrics` | string | ❌ | Optional lyrics for vocal generation | - |
+| `duration_seconds` | float | ❌ | Duration (10-600 seconds) | `30.0` |
+| `seed` | int | ❌ | Random seed for reproducibility | - |
+| `save_url` | string | ✅ | Presigned PUT URL for output | - |
+| `webhook_url` | string | ✅ | **REQUIRED:** URL to POST when complete | - |
+| `item_id` | string | ❌ | Client identifier (returned in webhook) | `job_id` |
+| `webhook_secret` | string | ❌ | HMAC signing secret | - |
+
+**Response (Immediate - 202 Accepted):**
+
+```json
+{
+  "job_id": "550e8400-e29b...",
+  "status": "queued",
+  "message": "Music generation job queued"
+}
+```
+
+---
+
+### Sound Effect Generation
+
+#### `POST /api/v1/sfx/generate`
+
+**Returns HTTP 202 Accepted**. Generates sound effects using AudioGen.
+
+**Request:**
+| Field | Type | Required | Description | Default |
+|-------|------|----------|-------------|---------|
+| `job_id` | string | ✅ | Unique job identifier | - |
+| `prompt` | string | ✅ | Sound effect description | - |
+| `duration_seconds` | float | ❌ | Duration (1-30 seconds) | `5.0` |
+| `seed` | int | ❌ | Random seed for reproducibility | - |
+| `save_url` | string | ✅ | Presigned PUT URL for output | - |
+| `webhook_url` | string | ✅ | **REQUIRED:** URL to POST when complete | - |
+| `item_id` | string | ❌ | Client identifier (returned in webhook) | `job_id` |
+| `webhook_secret` | string | ❌ | HMAC signing secret | - |
+
+**Response (Immediate - 202 Accepted):**
+
+```json
+{
+  "job_id": "550e8400-e29b...",
+  "status": "queued",
+  "message": "Sound effect generation job queued"
 }
 ```
 
@@ -620,6 +727,13 @@ Collect batch results and immediately delete the batch. Use when done polling.
 ---
 
 ## Changelog
+
+### v0.5.0
+
+- **Music Generation**: Added `/api/v1/music/generate` endpoint using ACE-Step 1.5
+- **Sound Effects**: Added `/api/v1/sfx/generate` endpoint using AudioGen Medium
+- **Audio VRAM Mode**: New `audio_creation` mode for dedicated audio generation (~20GB)
+- **Dynamic Audio Loading**: Audio models load on-demand in `all` mode
 
 ### v0.4.0
 

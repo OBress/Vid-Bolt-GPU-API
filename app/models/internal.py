@@ -36,6 +36,9 @@ class ImageEditParams:
     height: int
     mask_data: Optional[bytes]
     seed: Optional[int]
+    # Dynamic LoRA support (e.g., Multiple Angles LoRA)
+    lora_name: Optional[str] = None  # e.g., "multiple-angles"
+    lora_strength: Optional[float] = None  # 0.0-1.0, default from config
 
 @dataclass
 class ImageEditResult:
@@ -106,3 +109,42 @@ class UpscaleResult:
     frame_count: int
     processing_time_seconds: float
     was_upscaled: bool
+
+
+# --- Audio Generation ---
+
+@dataclass
+class MusicGenerationParams:
+    """Parameters for music generation (ACE-Step 1.5)."""
+    job_id: str
+    prompt: str  # Style/genre description
+    lyrics: Optional[str]  # Optional lyrics for vocal generation
+    duration_seconds: float
+    seed: Optional[int]
+
+
+@dataclass
+class MusicGenerationResult:
+    """Result of music generation."""
+    audio_data: bytes
+    duration_seconds: float
+    sample_rate: int
+    seed: int
+
+
+@dataclass
+class SoundEffectParams:
+    """Parameters for sound effect generation (AudioGen)."""
+    job_id: str
+    prompt: str  # Sound description
+    duration_seconds: float
+    seed: Optional[int]
+
+
+@dataclass
+class SoundEffectResult:
+    """Result of sound effect generation."""
+    audio_data: bytes
+    duration_seconds: float
+    sample_rate: int
+    seed: int

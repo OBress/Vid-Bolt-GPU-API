@@ -43,6 +43,17 @@ class ImageEditRequest(BaseModel):
         default=None,
         description="Secret for signing webhook payload (HMAC-SHA256)",
     )
+    # Dynamic LoRA support
+    lora_name: str | None = Field(
+        default=None,
+        description="Optional LoRA to apply. Available: 'multiple-angles' (96 camera positions with <sks> prompt token)",
+    )
+    lora_strength: float | None = Field(
+        default=None,
+        ge=0.0,
+        le=1.0,
+        description="LoRA strength (0.0-1.0). Default: 0.9 when LoRA is specified",
+    )
 
     model_config = {
         "json_schema_extra": {
@@ -54,7 +65,17 @@ class ImageEditRequest(BaseModel):
                     "aspect_ratio": "16:9",
                     "save_url": "https://example.com/upload/edited.png",
                     "webhook_url": "https://myapp.com/api/gpu-callback",
-                }
+                },
+                {
+                    "job_id": "550e8400-e29b-41d4-a716-446655440002",
+                    "input_image_url": "https://example.com/input.png",
+                    "prompt": "<sks> front-right eye-level medium",
+                    "aspect_ratio": "16:9",
+                    "save_url": "https://example.com/upload/edited.png",
+                    "webhook_url": "https://myapp.com/api/gpu-callback",
+                    "lora_name": "multiple-angles",
+                    "lora_strength": 0.9,
+                },
             ]
         }
     }

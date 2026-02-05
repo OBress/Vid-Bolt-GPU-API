@@ -88,6 +88,50 @@ class LightX2VInstancePool:
         """Number of currently available instances."""
         return self._available.qsize()
     
+    def _disable_lora_branch(self, pipeline: Any) -> None:
+        """Disable LoRA branch on pipeline without deleting buffers.
+        
+        This sets has_lora_branch=False on all weight modules, bypassing
+        the LoRA computation while keeping tensors allocated for future switching.
+        
+        CRITICAL: Do NOT use switch_lora("", 0) as it deletes LoRA buffers
+        and breaks subsequent switch_lora calls (the "deletion trap").
+        
+        Args:
+            pipeline: LightX2V pipeline instance
+        """
+        def _disable_recursive(module: Any) -> None:
+            if hasattr(module, 'has_lora_branch'):
+                module.has_lora_branch = False
+            if hasattr(module, '_modules'):
+                for submodule in module._modules.values():
+                    if submodule is not None:
+                        _disable_recursive(submodule)
+            if hasattr(module, '_parameters'):
+                for param in module._parameters.values():
+                    if param is not None and hasattr(param, 'has_lora_branch'):
+                        param.has_lora_branch = False
+        
+        try:
+            if hasattr(pipeline, 'runner') and hasattr(pipeline.runner, 'model'):
+                model = pipeline.runner.model
+                for weight_attr in ['pre_weight', 'transformer_weights', 'post_weight']:
+                    if hasattr(model, weight_attr):
+                        weight_module = getattr(model, weight_attr)
+                        if weight_module is not None:
+                            _disable_recursive(weight_module)
+                logger.debug("LoRA branch disabled on pipeline")
+        except Exception as e:
+            logger.warning(f"Failed to disable LoRA branch: {e}")
+    
+    def disable_lora_branch(self, pipeline: Any) -> None:
+        """Public method to disable LoRA branch (for use by generator).
+        
+        Args:
+            pipeline: LightX2V pipeline instance
+        """
+        self._disable_lora_branch(pipeline)
+    
     def load_all(self) -> None:
         """Load all pipeline instances into VRAM.
         
@@ -212,14 +256,44 @@ class LightX2VInstancePool:
                     vae_offload=False,
                 )
             
-            # Enable LoRA - but skip for FP8 since it has Lightning LoRA baked in
+            # Enable LoRA - FP8 models have Lightning LoRA baked in, but we can still add
+            # dynamic LoRAs (e.g., Multiple Angles) on top using the additive branch pattern.
+            # For dynamic switching to work, we must initialize with a real LoRA config.
             if not using_fp8:
+                # Non-FP8: Load Lightning LoRA normally
                 pipe.enable_lora([{
                     "path": str(lora_path.absolute()),
                     "strength": self.settings.lightx2v_lora_strength
                 }])
+                logger.info(f"  Lightning LoRA loaded: {lora_path}")
             else:
-                logger.info(f"  Skipping LoRA loading (FP8 model has Lightning LoRA baked in)")
+                # FP8: Lightning LoRA is merged into weights. Initialize dynamic LoRA
+                # system with Multiple Angles LoRA (registers buffers for switching).
+                logger.info(f"  FP8 model: Lightning LoRA already merged into weights")
+                
+                if self.settings.lightx2v_dynamic_lora_enabled:
+                    multiple_angles_lora = Path(self.settings.lightx2v_multiple_angles_lora_path) / \
+                                           self.settings.lightx2v_multiple_angles_lora_filename
+                    
+                    if multiple_angles_lora.exists():
+                        logger.info(f"  Initializing dynamic LoRA system with: {multiple_angles_lora}")
+                        pipe.enable_lora(
+                            lora_configs=[{
+                                "path": str(multiple_angles_lora.absolute()),
+                                "strength": self.settings.lightx2v_default_dynamic_lora_strength
+                            }],
+                            lora_dynamic_apply=True  # Enable in-place switching
+                        )
+                        # Disable the LoRA branch by default (will be enabled per-request)
+                        self._disable_lora_branch(pipe)
+                        logger.info(f"  Dynamic LoRA initialized and disabled (ready for per-request switching)")
+                    else:
+                        logger.warning(
+                            f"  Multiple Angles LoRA not found at {multiple_angles_lora}. "
+                            f"Dynamic LoRA switching will be unavailable."
+                        )
+                else:
+                    logger.info(f"  Dynamic LoRA switching disabled in config")
             
             # Resolution is controlled via custom_shape at generate() time 
             # (see lightx2v_generator.py). This forces exact input dimensions

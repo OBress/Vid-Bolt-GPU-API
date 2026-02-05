@@ -108,6 +108,9 @@ async def edit_image(
         height=height,
         mask_data=mask_data,
         seed=body.seed,
+        # Dynamic LoRA support
+        lora_name=body.lora_name,
+        lora_strength=body.lora_strength,
     )
 
     # 3. Submit Job

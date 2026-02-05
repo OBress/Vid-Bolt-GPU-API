@@ -255,6 +255,9 @@ class BatchManager:
                 height=height,
                 mask_data=mask_data,
                 seed=item.seed,
+                # Dynamic LoRA support (per-item)
+                lora_name=item.lora_name,
+                lora_strength=item.lora_strength,
             )
             
             # Submit to JobManager with webhook config

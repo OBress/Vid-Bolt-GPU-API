@@ -341,6 +341,9 @@ class LightX2VImageEditGenerator(ImageEditor):
         Returns:
             Tuple of (image_bytes, orig_width, orig_height, output_width, output_height)
         """
+        # Handle LoRA switching BEFORE inference
+        self._apply_lora_for_request(instance, params)
+        
         # Get original image dimensions
         input_image = Image.open(io.BytesIO(params.input_image_data))
         orig_width, orig_height = input_image.size
@@ -411,6 +414,72 @@ class LightX2VImageEditGenerator(ImageEditor):
             logger.warning(f"Failed to clean up temp files: {e}")
 
         return buffer.getvalue(), orig_width, orig_height, target_width, target_height
+
+    def _apply_lora_for_request(
+        self, 
+        instance: PooledInstance, 
+        params: ImageEditParams
+    ) -> None:
+        """Apply or disable LoRA for a specific request.
+        
+        Uses switch_lora() when a LoRA is requested, or disables the LoRA branch
+        (without deleting buffers) when no LoRA is specified.
+        
+        Args:
+            instance: Pooled pipeline instance
+            params: Edit parameters containing LoRA configuration
+        """
+        if params.lora_name:
+            # LoRA requested - resolve path and apply
+            lora_path = self._resolve_lora_path(params.lora_name)
+            if lora_path:
+                strength = params.lora_strength or self.settings.lightx2v_default_dynamic_lora_strength
+                logger.info(f"Applying LoRA: {params.lora_name} (strength={strength})")
+                try:
+                    instance.pipeline.switch_lora(str(lora_path), strength)
+                except Exception as e:
+                    logger.error(f"Failed to switch LoRA: {e}")
+                    # Fall back to no LoRA
+                    self._pool.disable_lora_branch(instance.pipeline)
+            else:
+                logger.warning(f"LoRA '{params.lora_name}' not found, proceeding without LoRA")
+                self._pool.disable_lora_branch(instance.pipeline)
+        else:
+            # No LoRA requested - disable the branch (keeps buffers for future switching)
+            logger.debug("No LoRA requested, disabling LoRA branch")
+            self._pool.disable_lora_branch(instance.pipeline)
+
+    def _resolve_lora_path(self, lora_name: str) -> Optional[Path]:
+        """Resolve LoRA name to filesystem path.
+        
+        Maps user-friendly LoRA names to actual safetensors file paths.
+        
+        Args:
+            lora_name: Short LoRA identifier (e.g., "multiple-angles")
+            
+        Returns:
+            Path to .safetensors file, or None if not found
+        """
+        # Registry of available LoRAs
+        LORA_REGISTRY = {
+            "multiple-angles": (
+                self.settings.lightx2v_multiple_angles_lora_path,
+                self.settings.lightx2v_multiple_angles_lora_filename
+            ),
+        }
+        
+        if lora_name not in LORA_REGISTRY:
+            logger.warning(f"Unknown LoRA: '{lora_name}'. Available: {list(LORA_REGISTRY.keys())}")
+            return None
+        
+        lora_dir, lora_file = LORA_REGISTRY[lora_name]
+        lora_path = Path(lora_dir) / lora_file
+        
+        if not lora_path.exists():
+            logger.warning(f"LoRA file not found: {lora_path}")
+            return None
+        
+        return lora_path
 
     async def _edit_dry_run(
         self, params: ImageEditParams, seed: int
