@@ -77,7 +77,7 @@ fi
 # Auto-download ACE-Step 1.5 Model if Missing
 # =============================================================================
 ACESTEP_DIR="/app/models/ace-step-1.5"
-ACESTEP_CHECK="$ACESTEP_DIR/model_index.json"
+ACESTEP_CHECK="$ACESTEP_DIR/ace_step_transformer/config.json"
 
 if [ -f "$ACESTEP_CHECK" ]; then
     echo -e "${GREEN}[Startup] ACE-Step 1.5 model found${NC}"

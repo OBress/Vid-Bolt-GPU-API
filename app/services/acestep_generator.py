@@ -46,7 +46,12 @@ class ACEStepGenerator(MusicGenerator):
             if not model_path.exists():
                 raise FileNotFoundError(f"ACE-Step model not found at {model_path}")
 
-            self._model = ACEStepPipeline.from_pretrained(str(model_path), device="cuda")
+            # ACE-Step uses checkpoint_dir constructor + load_checkpoint(), not from_pretrained()
+            self._model = ACEStepPipeline(
+                checkpoint_dir=str(model_path),
+                dtype="bfloat16",
+            )
+            self._model.load_checkpoint()
             self._is_loaded = True
             logger.info("ACE-Step 1.5 models loaded successfully")
         except ImportError as e:
@@ -94,22 +99,25 @@ class ACEStepGenerator(MusicGenerator):
         return await asyncio.to_thread(self._generate_sync, params, seed)
 
     def _generate_sync(self, params: MusicGenerationParams, seed: int) -> MusicGenerationResult:
-        import torch
+        import tempfile
+        import os
 
-        torch.manual_seed(seed)
-        if torch.cuda.is_available():
-            torch.cuda.manual_seed(seed)
-
-        gen_kwargs = {
-            "prompt": params.prompt,
-            "duration": params.duration_seconds,
-            "seed": seed,
-        }
-        if params.lyrics:
-            gen_kwargs["lyrics"] = params.lyrics
-
-        audio_output = self._model.generate(**gen_kwargs)
-        audio_bytes = self._encode_wav(audio_output, self._settings.acestep_sample_rate)
+        # ACE-Step pipeline is callable, returns [output_path, ..., input_params_dict]
+        with tempfile.TemporaryDirectory() as tmpdir:
+            result = self._model(
+                prompt=params.prompt,
+                lyrics=params.lyrics or "",
+                audio_duration=params.duration_seconds,
+                manual_seeds=[seed],
+                save_path=tmpdir,
+                format="wav",
+            )
+            
+            # Result is [audio_path, ..., params_dict] - first item is the audio file
+            audio_path = result[0]
+            
+            with open(audio_path, "rb") as f:
+                audio_bytes = f.read()
 
         return MusicGenerationResult(
             audio_data=audio_bytes,
