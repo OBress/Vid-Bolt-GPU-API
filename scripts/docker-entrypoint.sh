@@ -74,6 +74,34 @@ EOF
 fi
 
 # =============================================================================
+# Auto-download ACE-Step 1.5 Model if Missing
+# =============================================================================
+ACESTEP_DIR="/app/models/ace-step-1.5"
+ACESTEP_CHECK="$ACESTEP_DIR/model_index.json"
+
+if [ -f "$ACESTEP_CHECK" ]; then
+    echo -e "${GREEN}[Startup] ACE-Step 1.5 model found${NC}"
+else
+    echo -e "${YELLOW}[Startup] ACE-Step 1.5 model not found - downloading from HuggingFace...${NC}"
+    echo -e "  This is a one-time download (~1.5GB)"
+    
+    mkdir -p "$ACESTEP_DIR"
+    
+    python3 << 'EOF'
+from huggingface_hub import snapshot_download
+
+print("[Startup] Downloading ACE-Step 1.5 model...")
+snapshot_download(
+    repo_id="ACE-Step/ACE-Step-v1-3.5B",
+    local_dir="/app/models/ace-step-1.5",
+)
+print("[Startup] ACE-Step 1.5 model download complete!")
+EOF
+    
+    echo -e "${GREEN}[Startup] ACE-Step 1.5 model downloaded successfully!${NC}"
+fi
+
+# =============================================================================
 # Start the application
 # =============================================================================
 echo -e "${GREEN}[Startup] Starting Vid-Bolt GPU API...${NC}"
