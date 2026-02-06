@@ -108,6 +108,9 @@ RUN pip install --no-cache-dir -e /app/repos/audiocraft || echo "audiocraft inst
 COPY repos/ACE-Step /app/repos/ACE-Step
 RUN pip install --no-cache-dir -e /app/repos/ACE-Step || echo "ACE-Step installation skipped"
 
+# Ensure soundfile backend is available for torchaudio (ACE-Step audio saving)
+RUN pip install --no-cache-dir soundfile==0.13.1
+
 # =============================================================================
 # Copy Application Code
 # =============================================================================
