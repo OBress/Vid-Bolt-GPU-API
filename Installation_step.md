@@ -89,11 +89,11 @@ nano .env
 ## Part 4: build & run
 
 sudo git pull
-sudo docker system prune
+sudo docker system prune -a
 sudo docker compose build --no-cache
 sudo docker compose up -d
 sudo docker compose logs -f
 
 # clean up old containers
 
-sudo docker system prune
+sudo docker system prune -a

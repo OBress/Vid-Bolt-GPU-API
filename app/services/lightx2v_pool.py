@@ -277,13 +277,10 @@ class LightX2VInstancePool:
                     
                     if multiple_angles_lora.exists():
                         logger.info(f"  Initializing dynamic LoRA system with: {multiple_angles_lora}")
-                        pipe.enable_lora(
-                            lora_configs=[{
-                                "path": str(multiple_angles_lora.absolute()),
-                                "strength": self.settings.lightx2v_default_dynamic_lora_strength
-                            }],
-                            lora_dynamic_apply=True  # Enable in-place switching
-                        )
+                        pipe.enable_lora([{
+                            "path": str(multiple_angles_lora.absolute()),
+                            "strength": self.settings.lightx2v_default_dynamic_lora_strength
+                        }])
                         # Disable the LoRA branch by default (will be enabled per-request)
                         self._disable_lora_branch(pipe)
                         logger.info(f"  Dynamic LoRA initialized and disabled (ready for per-request switching)")

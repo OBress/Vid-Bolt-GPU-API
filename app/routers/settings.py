@@ -19,7 +19,7 @@ class VRAMModeResponse(BaseModel):
 
 class VRAMModeRequest(BaseModel):
     """Request model for setting VRAM mode."""
-    mode: Literal["image_generation", "image_editing", "video_generation", "all"]
+    mode: Literal["image_generation", "image_editing", "video_generation", "audio_creation", "all"]
 
 
 # Mode descriptions
