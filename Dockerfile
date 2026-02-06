@@ -111,6 +111,7 @@ RUN pip install --no-cache-dir --no-deps -e /app/repos/audiocraft && \
 # ACE-Step 1.5 (for music generation) - vendored locally for version stability
 COPY repos/ACE-Step-1.5 /app/repos/ACE-Step-1.5
 RUN pip install --no-cache-dir --no-deps -e /app/repos/ACE-Step-1.5 && \
+    pip install --no-cache-dir --no-deps -e /app/repos/ACE-Step-1.5/acestep/third_parts/nano-vllm && \
     pip install --no-cache-dir loguru einops accelerate numba vector-quantize-pytorch \
     diskcache toml peft lightning modelscope || echo "ACE-Step 1.5 installation skipped"
 
