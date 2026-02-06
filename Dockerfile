@@ -102,6 +102,9 @@ RUN pip install --no-cache-dir sgl-kernel || echo "sgl-kernel installation skipp
 
 # AudioCraft (for AudioGen sound effects) - vendored locally for version stability
 # Install without dependencies to avoid torch/torchvision/torchaudio version conflicts
+# NOTE: xformers is NOT installed (incompatible with Blackwell GPUs).
+# We patched audiocraft/modules/transformer.py to make xformers optional.
+# AudioCraft defaults to 'torch' SDPA backend which works without xformers.
 COPY repos/audiocraft /app/repos/audiocraft
 RUN pip install --no-cache-dir --no-deps -e /app/repos/audiocraft && \
     pip install --no-cache-dir av einops flashy hydra-core hydra_colorlog julius \
@@ -109,11 +112,17 @@ RUN pip install --no-cache-dir --no-deps -e /app/repos/audiocraft && \
     demucs librosa soundfile gradio torchmetrics encodec protobuf pesq pystoi torchdiffeq
 
 # ACE-Step 1.5 (for music generation) - vendored locally for version stability
+# Split into separate RUN steps to ensure failures are visible (not swallowed by || echo)
+# NOTE: pyproject.toml patched from requires-python=="==3.11.*" to ">=3.11" for Python 3.12
 COPY repos/ACE-Step-1.5 /app/repos/ACE-Step-1.5
-RUN pip install --no-cache-dir --no-deps -e /app/repos/ACE-Step-1.5 && \
-    pip install --no-cache-dir --no-deps -e /app/repos/ACE-Step-1.5/acestep/third_parts/nano-vllm && \
-    pip install --no-cache-dir loguru einops accelerate numba vector-quantize-pytorch \
-    diskcache toml peft lightning modelscope || echo "ACE-Step 1.5 installation skipped"
+RUN pip install --no-cache-dir hatchling && \
+    pip install --no-cache-dir --no-deps -e /app/repos/ACE-Step-1.5
+RUN pip install --no-cache-dir --no-deps -e /app/repos/ACE-Step-1.5/acestep/third_parts/nano-vllm
+# Dependencies from ACE-Step 1.5 requirements.txt (excluding torch/torchaudio/torchvision already installed)
+RUN pip install --no-cache-dir \
+    loguru einops accelerate numba vector-quantize-pytorch \
+    diskcache toml peft lightning modelscope \
+    diffusers scipy matplotlib soundfile flash-attn xxhash torchao torchcodec
 
 # Ensure soundfile backend is available for torchaudio (ACE-Step audio saving)
 RUN pip install --no-cache-dir soundfile==0.13.1

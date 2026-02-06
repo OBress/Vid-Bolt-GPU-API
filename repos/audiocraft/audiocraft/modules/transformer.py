@@ -20,7 +20,10 @@ import torch
 import torch.nn as nn
 from torch.nn import functional as F
 from torch.utils.checkpoint import checkpoint as torch_checkpoint
-from xformers import ops
+try:
+    from xformers import ops as xformers_ops
+except ImportError:
+    xformers_ops = None  # xformers not available (e.g., Blackwell GPUs)
 
 from .rope import RotaryEmbedding
 from .streaming import StreamingModule
@@ -371,7 +374,7 @@ class StreamingMultiheadAttention(StreamingModule):
                     else:
                         bound_layout = "b t p h d"
                     packed = rearrange(projected, f"b t (p h d) -> {bound_layout}", p=3, h=self.num_heads)
-                    q, k, v = ops.unbind(packed, dim=2)
+                    q, k, v = torch.unbind(packed, dim=2)
                 else:
                     embed_dim = self.embed_dim
                     per_head_dim = (embed_dim // self.num_heads)
@@ -413,7 +416,8 @@ class StreamingMultiheadAttention(StreamingModule):
                     x = torch.nn.functional.scaled_dot_product_attention(
                         q, k, v, is_causal=attn_mask is not None, dropout_p=p)
                 else:
-                    x = ops.memory_efficient_attention(q, k, v, attn_mask, p=p)
+                    assert xformers_ops is not None, "xformers is required for xformers attention backend"
+                    x = xformers_ops.memory_efficient_attention(q, k, v, attn_mask, p=p)
             else:
                 # We include the dot product as float32, for consistency
                 # with the other implementations that include that step
