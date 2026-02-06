@@ -1393,14 +1393,20 @@ class ACEStepPipeline:
                 output_path_wav = save_path
 
         target_wav = target_wav.float()
-        backend = "soundfile"
-        if format == "ogg":
-            backend = "sox"
-        logger.info(f"Saving audio to {output_path_wav} using backend {backend}")
-        torchaudio.save(
-            output_path_wav, target_wav, sample_rate=sample_rate, format=format, backend=backend
-        )
+        
+        # Use soundfile directly to avoid torchaudio's torchcodec dependency bug
+        import soundfile as sf
+        import numpy as np
+        
+        # Convert tensor to numpy: [channels, samples] -> [samples, channels]
+        audio_np = target_wav.cpu().numpy()
+        if len(audio_np.shape) == 2:
+            audio_np = audio_np.T  # Transpose to [samples, channels]
+        
+        logger.info(f"Saving audio to {output_path_wav} using soundfile directly")
+        sf.write(output_path_wav, audio_np, sample_rate, format=format.upper())
         return output_path_wav
+
 
     @cpu_offload("music_dcae")
     def infer_latents(self, input_audio_path):

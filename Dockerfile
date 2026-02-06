@@ -101,8 +101,12 @@ RUN pip install --no-cache-dir -e /app/repos/LightX2V || echo "LightX2V installa
 RUN pip install --no-cache-dir sgl-kernel || echo "sgl-kernel installation skipped"
 
 # AudioCraft (for AudioGen sound effects) - vendored locally for version stability
+# Install without dependencies to avoid torch/torchvision/torchaudio version conflicts
 COPY repos/audiocraft /app/repos/audiocraft
-RUN pip install --no-cache-dir -e /app/repos/audiocraft || echo "audiocraft installation skipped"
+RUN pip install --no-cache-dir --no-deps -e /app/repos/audiocraft && \
+    pip install --no-cache-dir av einops flashy hydra-core hydra_colorlog julius \
+    num2words "numpy<2.0.0" sentencepiece spacy==3.7.6 huggingface_hub tqdm \
+    demucs librosa soundfile gradio torchmetrics encodec protobuf pesq pystoi torchdiffeq
 
 # ACE-Step (for music generation) - vendored locally for version stability
 COPY repos/ACE-Step /app/repos/ACE-Step
