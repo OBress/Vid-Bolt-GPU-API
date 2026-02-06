@@ -124,10 +124,6 @@ RUN pip install --no-cache-dir \
     diskcache toml peft lightning modelscope \
     diffusers scipy matplotlib soundfile xxhash torchao torchcodec
 
-# flash-attn requires CUDA compilation — use --no-build-isolation so it finds the installed torch
-# ninja speeds up the CUDA kernel compilation significantly
-RUN pip install --no-cache-dir ninja && \
-    pip install --no-cache-dir flash-attn --no-build-isolation
 
 # Ensure soundfile backend is available for torchaudio (ACE-Step audio saving)
 RUN pip install --no-cache-dir soundfile==0.13.1
@@ -157,6 +153,12 @@ RUN pip install --no-cache-dir --force-reinstall \
     torchvision==0.24.1 \
     torchaudio==2.9.1 \
     --index-url https://download.pytorch.org/whl/cu128
+
+# flash-attn MUST be compiled AFTER the final torch install to avoid ABI mismatch
+# (undefined symbol: _ZNK3c106SymInt6sym_neERKS0_)
+# Uses --no-build-isolation so it finds the installed torch; ninja speeds up CUDA compilation
+RUN pip install --no-cache-dir ninja && \
+    pip install --no-cache-dir flash-attn --no-build-isolation
 
 # NOTE: xformers is intentionally NOT installed - Blackwell GPU compatibility
 # PyTorch native SDPA is used instead (automatic fallback in all libraries)

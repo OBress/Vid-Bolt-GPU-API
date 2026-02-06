@@ -93,19 +93,12 @@ else
     python3 << 'EOF'
 from huggingface_hub import snapshot_download
 
-print("[Startup] Downloading ACE-Step 1.5 main model (VAE + text encoder + turbo DiT)...")
+print("[Startup] Downloading ACE-Step 1.5 model (VAE + text encoder + turbo DiT + LM)...")
 snapshot_download(
     repo_id="ACE-Step/Ace-Step1.5",
     local_dir="/app/repos/ACE-Step-1.5/checkpoints",
 )
 print("[Startup] ACE-Step 1.5 model download complete!")
-
-print("[Startup] Downloading ACE-Step 1.5 LM model (1.7B)...")
-snapshot_download(
-    repo_id="ACE-Step/acestep-5Hz-lm-1.7B",
-    local_dir="/app/repos/ACE-Step-1.5/checkpoints/acestep-5Hz-lm-1.7B",
-)
-print("[Startup] ACE-Step 1.5 LM download complete!")
 EOF
     
     echo -e "${GREEN}[Startup] ACE-Step 1.5 models downloaded successfully!${NC}"
