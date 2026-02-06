@@ -107,7 +107,7 @@ class InferenceConfig:
     # ACE-Step (music) settings
     ACESTEP_DEFAULT_DURATION = 30.0   # seconds
     ACESTEP_MAX_DURATION = 600.0      # 10 minutes max
-    ACESTEP_SAMPLE_RATE = 44100       # 44.1kHz output
+    ACESTEP_SAMPLE_RATE = 48000       # 48kHz output (ACE-Step 1.5 native)
     
     # AudioGen (sound effects) settings
     AUDIOGEN_DEFAULT_DURATION = 5.0   # seconds

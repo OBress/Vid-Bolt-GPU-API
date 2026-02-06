@@ -130,10 +130,16 @@ echo -e "${GREEN}  ✓ Gemma text encoder downloaded${NC}"
 # =============================================================================
 # ACE-Step 1.5 (Music Generation) - OPTIONAL
 # =============================================================================
-# ACE-Step auto-downloads on first use, uncomment below to pre-download
+# ACE-Step 1.5 auto-downloads on first use via AceStepHandler.initialize_service().
+# Uncomment below to pre-download for faster cold starts.
 # echo -e "${YELLOW}[5/5] Downloading ACE-Step 1.5...${NC}"
-# huggingface-cli download ace-step/ACE-Step-1.5 \
-#     --local-dir "$MODELS_DIR/ace-step-1.5" \
+# ACESTEP_CKPT_DIR="$PROJECT_DIR/repos/ACE-Step-1.5/checkpoints"
+# mkdir -p "$ACESTEP_CKPT_DIR"
+# huggingface-cli download ACE-Step/Ace-Step1.5 \
+#     --local-dir "$ACESTEP_CKPT_DIR" \
+#     --local-dir-use-symlinks False
+# huggingface-cli download ACE-Step/acestep-5Hz-lm-1.7B \
+#     --local-dir "$ACESTEP_CKPT_DIR/acestep-5Hz-lm-1.7B" \
 #     --local-dir-use-symlinks False
 # echo -e "${GREEN}  ✓ ACE-Step 1.5 downloaded${NC}"
 

@@ -76,29 +76,39 @@ fi
 # =============================================================================
 # Auto-download ACE-Step 1.5 Model if Missing
 # =============================================================================
-ACESTEP_DIR="/app/models/ace-step-1.5"
-ACESTEP_CHECK="$ACESTEP_DIR/ace_step_transformer/config.json"
+# ACE-Step 1.5 auto-downloads models on first initialize_service() call.
+# The handler checks checkpoints/ dir and downloads from HuggingFace as needed.
+# We pre-download here to avoid delays on first API request.
+ACESTEP_CKPT_DIR="/app/repos/ACE-Step-1.5/checkpoints"
+ACESTEP_CHECK="$ACESTEP_CKPT_DIR/acestep-v15-turbo/config.json"
 
 if [ -f "$ACESTEP_CHECK" ]; then
     echo -e "${GREEN}[Startup] ACE-Step 1.5 model found${NC}"
 else
     echo -e "${YELLOW}[Startup] ACE-Step 1.5 model not found - downloading from HuggingFace...${NC}"
-    echo -e "  This is a one-time download (~1.5GB)"
+    echo -e "  This is a one-time download (~3GB)"
     
-    mkdir -p "$ACESTEP_DIR"
+    mkdir -p "$ACESTEP_CKPT_DIR"
     
     python3 << 'EOF'
 from huggingface_hub import snapshot_download
 
-print("[Startup] Downloading ACE-Step 1.5 model...")
+print("[Startup] Downloading ACE-Step 1.5 main model (VAE + text encoder + turbo DiT)...")
 snapshot_download(
-    repo_id="ACE-Step/ACE-Step-v1-3.5B",
-    local_dir="/app/models/ace-step-1.5",
+    repo_id="ACE-Step/Ace-Step1.5",
+    local_dir="/app/repos/ACE-Step-1.5/checkpoints",
 )
 print("[Startup] ACE-Step 1.5 model download complete!")
+
+print("[Startup] Downloading ACE-Step 1.5 LM model (1.7B)...")
+snapshot_download(
+    repo_id="ACE-Step/acestep-5Hz-lm-1.7B",
+    local_dir="/app/repos/ACE-Step-1.5/checkpoints/acestep-5Hz-lm-1.7B",
+)
+print("[Startup] ACE-Step 1.5 LM download complete!")
 EOF
     
-    echo -e "${GREEN}[Startup] ACE-Step 1.5 model downloaded successfully!${NC}"
+    echo -e "${GREEN}[Startup] ACE-Step 1.5 models downloaded successfully!${NC}"
 fi
 
 # =============================================================================

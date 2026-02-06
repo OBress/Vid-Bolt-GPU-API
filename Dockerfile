@@ -108,9 +108,11 @@ RUN pip install --no-cache-dir --no-deps -e /app/repos/audiocraft && \
     num2words "numpy<2.0.0" sentencepiece spacy==3.7.6 huggingface_hub tqdm \
     demucs librosa soundfile gradio torchmetrics encodec protobuf pesq pystoi torchdiffeq
 
-# ACE-Step (for music generation) - vendored locally for version stability
-COPY repos/ACE-Step /app/repos/ACE-Step
-RUN pip install --no-cache-dir -e /app/repos/ACE-Step || echo "ACE-Step installation skipped"
+# ACE-Step 1.5 (for music generation) - vendored locally for version stability
+COPY repos/ACE-Step-1.5 /app/repos/ACE-Step-1.5
+RUN pip install --no-cache-dir --no-deps -e /app/repos/ACE-Step-1.5 && \
+    pip install --no-cache-dir loguru einops accelerate numba vector-quantize-pytorch \
+    diskcache toml peft lightning modelscope || echo "ACE-Step 1.5 installation skipped"
 
 # Ensure soundfile backend is available for torchaudio (ACE-Step audio saving)
 RUN pip install --no-cache-dir soundfile==0.13.1

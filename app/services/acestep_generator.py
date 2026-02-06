@@ -1,12 +1,21 @@
-"""ACE-Step 1.5 Music Generator Service."""
+"""ACE-Step 1.5 Music Generator Service.
+
+Uses the ACE-Step 1.5 hybrid LM+DiT architecture for commercial-grade
+music generation. Supports text-to-music with optional lyrics, Chain-of-Thought
+reasoning via the 5Hz Language Model, and auto-model selection based on VRAM.
+
+Ref: https://github.com/ace-step/ACE-Step-1.5
+"""
 
 import asyncio
 import gc
 import io
 import logging
+import os
 import random
+import tempfile
 from pathlib import Path
-from typing import Any, Dict
+from typing import Any, Dict, Optional
 
 from app.config import Settings
 from app.models.internal import MusicGenerationParams, MusicGenerationResult
@@ -16,12 +25,13 @@ logger = logging.getLogger(__name__)
 
 
 class ACEStepGenerator(MusicGenerator):
-    """Music generator using ACE-Step 1.5."""
+    """Music generator using ACE-Step 1.5 (hybrid LM + DiT architecture)."""
 
     def __init__(self, settings: Settings):
         super().__init__(settings)
         self._settings = settings
-        self._model = None
+        self._dit_handler = None
+        self._llm_handler = None
         self._is_loaded = False
         self._dry_run = settings.audio_dry_run
         logger.info(f"ACEStepGenerator initialized (dry_run={self._dry_run})")
@@ -38,24 +48,61 @@ class ACEStepGenerator(MusicGenerator):
             logger.info("ACEStepGenerator loaded in dry-run mode")
             return
 
-        logger.info("Loading ACE-Step 1.5 models...")
+        logger.info("Loading ACE-Step 1.5 models (hybrid LM + DiT)...")
         try:
-            from acestep.pipeline_ace_step import ACEStepPipeline
+            from acestep.handler import AceStepHandler
+            from acestep.llm_inference import LLMHandler
 
-            model_path = Path(self._settings.acestep_model_path)
-            if not model_path.exists():
-                raise FileNotFoundError(f"ACE-Step model not found at {model_path}")
+            # --- Initialize DiT Handler ---
+            self._dit_handler = AceStepHandler()
 
-            # ACE-Step uses checkpoint_dir constructor + load_checkpoint(), not from_pretrained()
-            self._model = ACEStepPipeline(
-                checkpoint_dir=str(model_path),
-                dtype="bfloat16",
+            # ACE-Step 1.5 auto-detects project_root and auto-downloads models.
+            # project_root should point to the repo root (which contains "checkpoints/").
+            # The handler will create checkpoints/ and download models there if needed.
+            project_root = os.path.abspath(
+                os.path.join(os.path.dirname(__file__), "..", "..", "repos", "ACE-Step-1.5")
             )
-            self._model.load_checkpoint()
+
+            # Use turbo model for fast inference (8 steps, <2s per song on A100)
+            config_path = "acestep-v15-turbo"
+
+            logger.info(f"Initializing DiT handler (project_root={project_root}, config={config_path})")
+            status_msg, success = self._dit_handler.initialize_service(
+                project_root=project_root,
+                config_path=config_path,
+                device="cuda",
+            )
+            if not success:
+                raise RuntimeError(f"DiT initialization failed: {status_msg}")
+            logger.info(f"DiT handler initialized: {status_msg}")
+
+            # --- Initialize LLM Handler ---
+            self._llm_handler = LLMHandler()
+
+            # checkpoint_dir is where the LM model lives (checkpoints/ under project root)
+            checkpoint_dir = os.path.join(project_root, "checkpoints")
+
+            # Default LM model (1.7B is a good balance of quality and speed)
+            lm_model_path = "acestep-5Hz-lm-1.7B"
+
+            logger.info(f"Initializing LLM handler (checkpoint_dir={checkpoint_dir}, lm_model={lm_model_path})")
+            lm_status_msg, lm_success = self._llm_handler.initialize(
+                checkpoint_dir=checkpoint_dir,
+                lm_model_path=lm_model_path,
+                backend="vllm",
+                device="cuda",
+            )
+            if not lm_success:
+                # LLM is optional - DiT can work without it (no CoT reasoning)
+                logger.warning(f"LLM initialization failed (DiT-only mode): {lm_status_msg}")
+            else:
+                logger.info(f"LLM handler initialized: {lm_status_msg}")
+
             self._is_loaded = True
             logger.info("ACE-Step 1.5 models loaded successfully")
+
         except ImportError as e:
-            logger.error(f"Failed to import ACE-Step: {e}")
+            logger.error(f"Failed to import ACE-Step 1.5: {e}")
             logger.warning("Falling back to dry-run mode")
             self._dry_run = True
             self._is_loaded = True
@@ -63,10 +110,13 @@ class ACEStepGenerator(MusicGenerator):
     def unload_models(self) -> None:
         if not self._is_loaded:
             return
-        logger.info("Unloading ACE-Step models...")
-        if self._model is not None:
-            del self._model
-            self._model = None
+        logger.info("Unloading ACE-Step 1.5 models...")
+        if self._dit_handler is not None:
+            del self._dit_handler
+            self._dit_handler = None
+        if self._llm_handler is not None:
+            del self._llm_handler
+            self._llm_handler = None
         self._is_loaded = False
         gc.collect()
         try:
@@ -75,13 +125,18 @@ class ACEStepGenerator(MusicGenerator):
                 torch.cuda.empty_cache()
         except ImportError:
             pass
-        logger.info("ACE-Step models unloaded")
+        logger.info("ACE-Step 1.5 models unloaded")
 
     def get_status(self) -> Dict[str, Any]:
         return {
             "model": "ace-step-1.5",
             "loaded": self._is_loaded,
             "dry_run": self._dry_run,
+            "dit_initialized": self._dit_handler is not None,
+            "llm_initialized": (
+                self._llm_handler is not None
+                and self._llm_handler.llm_initialized
+            ),
             "default_duration": self._settings.acestep_default_duration,
             "max_duration": self._settings.acestep_max_duration,
             "sample_rate": self._settings.acestep_sample_rate,
@@ -89,7 +144,7 @@ class ACEStepGenerator(MusicGenerator):
 
     async def generate_music(self, params: MusicGenerationParams) -> MusicGenerationResult:
         if not self._is_loaded:
-            raise RuntimeError("ACE-Step models not loaded")
+            raise RuntimeError("ACE-Step 1.5 models not loaded")
 
         seed = params.seed if params.seed is not None else random.randint(0, 2**32 - 1)
 
@@ -99,30 +154,67 @@ class ACEStepGenerator(MusicGenerator):
         return await asyncio.to_thread(self._generate_sync, params, seed)
 
     def _generate_sync(self, params: MusicGenerationParams, seed: int) -> MusicGenerationResult:
-        import tempfile
-        import os
+        from acestep.inference import GenerationParams, GenerationConfig, generate_music
 
-        # ACE-Step pipeline is callable, returns [output_path, ..., input_params_dict]
+        # Map our API params to ACE-Step 1.5 GenerationParams
+        gen_params = GenerationParams(
+            caption=params.prompt,
+            lyrics=params.lyrics or "",
+            instrumental=not bool(params.lyrics),
+            duration=params.duration_seconds,
+            seed=seed,
+            # Turbo model defaults
+            inference_steps=8,
+            shift=3.0,  # Recommended for turbo models
+            # Enable Chain-of-Thought reasoning for better quality
+            thinking=True,
+            use_cot_metas=True,
+            use_cot_caption=True,
+            use_cot_language=True,
+        )
+
+        gen_config = GenerationConfig(
+            batch_size=1,
+            use_random_seed=False,  # We manage our own seed
+            seeds=[seed],
+            audio_format="wav",  # We need raw audio for upload
+        )
+
         with tempfile.TemporaryDirectory() as tmpdir:
-            result = self._model(
-                prompt=params.prompt,
-                lyrics=params.lyrics or "",
-                audio_duration=params.duration_seconds,
-                manual_seeds=[seed],
-                save_path=tmpdir,
-                format="wav",
+            result = generate_music(
+                dit_handler=self._dit_handler,
+                llm_handler=self._llm_handler,
+                params=gen_params,
+                config=gen_config,
+                save_dir=tmpdir,
             )
-            
-            # Result is [audio_path, ..., params_dict] - first item is the audio file
-            audio_path = result[0]
-            
-            with open(audio_path, "rb") as f:
-                audio_bytes = f.read()
+
+            if not result.success:
+                raise RuntimeError(f"ACE-Step 1.5 generation failed: {result.error}")
+
+            if not result.audios:
+                raise RuntimeError("ACE-Step 1.5 returned no audio")
+
+            # Read the generated audio file
+            audio_info = result.audios[0]
+            audio_path = audio_info.get("path", "")
+
+            if audio_path and os.path.exists(audio_path):
+                with open(audio_path, "rb") as f:
+                    audio_bytes = f.read()
+            elif audio_info.get("tensor") is not None:
+                # Fallback: encode tensor directly to WAV
+                audio_bytes = self._encode_wav(
+                    audio_info["tensor"],
+                    audio_info.get("sample_rate", self._settings.acestep_sample_rate),
+                )
+            else:
+                raise RuntimeError("ACE-Step 1.5 generated no audio output")
 
         return MusicGenerationResult(
             audio_data=audio_bytes,
             duration_seconds=params.duration_seconds,
-            sample_rate=self._settings.acestep_sample_rate,
+            sample_rate=audio_info.get("sample_rate", self._settings.acestep_sample_rate),
             seed=seed,
         )
 

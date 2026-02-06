@@ -17,7 +17,7 @@ REPOS=(
     "https://github.com/Lightricks/LTX-2.git"
     "https://github.com/Tongyi-MAI/Z-Image.git"
     "https://github.com/ModelTC/LightX2V.git"
-    "https://github.com/ace-step/ACE-Step.git"
+    "https://github.com/ace-step/ACE-Step-1.5.git"
     "https://github.com/facebookresearch/audiocraft.git"
 )
 
