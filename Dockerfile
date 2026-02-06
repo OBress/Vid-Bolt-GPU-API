@@ -3,7 +3,7 @@
 # Target: NVIDIA RTX PRO 6000 Blackwell / Ubuntu 22.04 / CUDA 12.8
 # =============================================================================
 
-FROM nvidia/cuda:12.8.0-cudnn-runtime-ubuntu22.04
+FROM nvidia/cuda:12.8.0-cudnn-devel-ubuntu22.04
 
 LABEL maintainer="Vid-Bolt Team"
 LABEL description="GPU-accelerated image/video generation API"
@@ -122,7 +122,12 @@ RUN pip install --no-cache-dir --no-deps -e /app/repos/ACE-Step-1.5/acestep/thir
 RUN pip install --no-cache-dir \
     loguru einops accelerate numba vector-quantize-pytorch \
     diskcache toml peft lightning modelscope \
-    diffusers scipy matplotlib soundfile flash-attn xxhash torchao torchcodec
+    diffusers scipy matplotlib soundfile xxhash torchao torchcodec
+
+# flash-attn requires CUDA compilation — use --no-build-isolation so it finds the installed torch
+# ninja speeds up the CUDA kernel compilation significantly
+RUN pip install --no-cache-dir ninja && \
+    pip install --no-cache-dir flash-attn --no-build-isolation
 
 # Ensure soundfile backend is available for torchaudio (ACE-Step audio saving)
 RUN pip install --no-cache-dir soundfile==0.13.1
