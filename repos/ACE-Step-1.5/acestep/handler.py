@@ -397,14 +397,18 @@ class AceStepHandler:
 
                 try:
                     logger.info(f"[initialize_service] Attempting to load model with attention implementation: {attn_implementation}")
-                    # NOTE: Do NOT pass dtype="bfloat16" here. It causes HuggingFace to use
-                    # meta tensors during model construction, which crashes ResidualFSQ.__init__
-                    # because it asserts (levels_tensor > 1).all() — impossible on meta tensors.
+                    # NOTE: low_cpu_mem_usage MUST be False. When True (the default in newer
+                    # transformers when accelerate is installed), HuggingFace initializes all
+                    # model parameters on the meta device, then loads weights after construction.
+                    # But ResidualFSQ.__init__ asserts (levels_tensor > 1).all() during __init__,
+                    # which crashes on meta tensors since .item() cannot be called on them.
+                    # Also do NOT pass dtype="bfloat16" for the same reason.
                     # The dtype cast happens below via .to(self.dtype) after loading.
                     self.model = AutoModel.from_pretrained(
                         acestep_v15_checkpoint_path, 
                         trust_remote_code=True, 
                         attn_implementation=attn_implementation,
+                        low_cpu_mem_usage=False,
                     )
                 except Exception as e:
                     logger.warning(f"[initialize_service] Failed to load model with {attn_implementation}: {e}")
@@ -415,6 +419,7 @@ class AceStepHandler:
                             acestep_v15_checkpoint_path, 
                             trust_remote_code=True, 
                             attn_implementation=attn_implementation,
+                            low_cpu_mem_usage=False,
                         )
                     else:
                         raise e
