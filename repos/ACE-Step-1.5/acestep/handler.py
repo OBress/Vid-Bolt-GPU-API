@@ -2861,15 +2861,11 @@ class AceStepHandler:
                 return any((x or "").strip() for x in v)
             return bool(v and str(v).strip())
 
-        # Auto-detect task type based on audio_code_string
-        # If audio_code_string is provided and not empty, use cover task
-        # Otherwise, use text2music task (or keep current task_type if not text2music)
-        if task_type == "text2music":
-            if _has_audio_codes(audio_code_string):
-                # User has provided audio codes, switch to cover task
-                task_type = "cover"
-                # Update instruction for cover task
-                instruction = TASK_INSTRUCTIONS["cover"]
+        # NOTE: Auto-switch from text2music to cover based on audio_code_string was
+        # removed. LLM-generated audio codes are meant as semantic hints for the DiT
+        # (flowing through audio_code_hints → precomputed_lm_hints_25Hz), NOT as cover
+        # sources. The auto-switch was causing broken output by changing task_type and
+        # instruction. If cover mode is desired, set task_type="cover" explicitly.
 
         logger.info("[generate_music] Starting generation...")
         if progress:

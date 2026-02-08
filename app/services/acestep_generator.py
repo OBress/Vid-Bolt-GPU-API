@@ -163,9 +163,9 @@ class ACEStepGenerator(MusicGenerator):
             instrumental=not bool(params.lyrics),
             duration=params.duration_seconds,
             seed=seed,
-            # Turbo model defaults
+            # Turbo model defaults (acestep-v15-turbo uses shift=1.0)
             inference_steps=8,
-            shift=3.0,  # Recommended for turbo models
+            shift=1.0,  # Must match model variant: v15-turbo=1.0, v15-turbo-shift3=3.0
             # Enable Chain-of-Thought reasoning for better quality
             thinking=True,
             use_cot_metas=True,
