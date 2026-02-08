@@ -97,3 +97,7 @@ sudo docker compose logs -f
 # clean up old containers
 
 sudo docker system prune -a
+
+# SSH in
+
+ssh -i ~/.ssh/google_compute_engine owen@35.245.212.177

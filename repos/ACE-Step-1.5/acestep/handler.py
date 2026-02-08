@@ -395,20 +395,73 @@ class AceStepHandler:
                 else:
                     attn_implementation = "sdpa"
 
+                # ---- Monkey-patch vector_quantize_pytorch to handle meta tensors ----
+                # Latest HuggingFace transformers ALWAYS initializes models under
+                # `torch.device("meta")` context manager (get_init_context appends it).
+                # This makes ALL tensor creation default to the meta device.
+                #
+                # Both ResidualFSQ and FSQ use `from torch import tensor` and then:
+                #   - ResidualFSQ: assert (tensor(levels) > 1).all()  -> .item() crash
+                #   - FSQ: self.codebook_size = self._levels.prod().item()  -> .item() crash
+                #   - FSQ: self._indices_to_codes(torch.arange(...))  -> meta arange crash
+                #
+                # Fix: replace the `tensor` symbol (and related functions) in both
+                # modules to force device='cpu', so assertions and .item() calls work.
+                # After from_pretrained loads weights, meta tensors are replaced anyway.
+                import vector_quantize_pytorch.residual_fsq as _rfsq_mod
+                import vector_quantize_pytorch.finite_scalar_quantization as _fsq_mod
+                
+                _real_tensor = torch.tensor
+                
+                def _cpu_tensor(data, *args, **kwargs):
+                    """Force tensor creation to CPU, overriding meta device context."""
+                    kwargs.pop('device', None)
+                    return _real_tensor(data, *args, device='cpu', **kwargs)
+                
+                _real_arange = torch.arange
+                def _cpu_arange(*args, **kwargs):
+                    kwargs.pop('device', None)
+                    return _real_arange(*args, device='cpu', **kwargs)
+                
+                _real_cumprod = torch.cumprod
+                def _cpu_cumprod(input, *args, **kwargs):
+                    if input.device.type == 'meta':
+                        input = input.to('cpu')
+                    return _real_cumprod(input, *args, **kwargs)
+                
+                # Save originals and patch both modules
+                _rfsq_orig_tensor = getattr(_rfsq_mod, 'tensor', None)
+                _fsq_orig_tensor = getattr(_fsq_mod, 'tensor', None)
+                _fsq_orig_torch = _fsq_mod.torch
+                _rfsq_orig_torch = _rfsq_mod.torch
+                
+                _rfsq_mod.tensor = _cpu_tensor
+                _fsq_mod.tensor = _cpu_tensor
+                
+                # Also patch torch.arange and torch.cumprod via module-level torch ref
+                class _TorchCpuProxy:
+                    """Proxy that forces tensor creation to CPU for meta-incompatible ops."""
+                    def __getattr__(self, name):
+                        if name == 'tensor':
+                            return _cpu_tensor
+                        if name == 'arange':
+                            return _cpu_arange
+                        if name == 'cumprod':
+                            return _cpu_cumprod
+                        return getattr(torch, name)
+                
+                _proxy = _TorchCpuProxy()
+                _rfsq_mod.torch = _proxy
+                _fsq_mod.torch = _proxy
+                logger.info("[initialize_service] Applied meta-tensor compatibility patches for vector_quantize_pytorch")
+                # ---- End monkey-patch setup ----
+
                 try:
                     logger.info(f"[initialize_service] Attempting to load model with attention implementation: {attn_implementation}")
-                    # NOTE: low_cpu_mem_usage MUST be False. When True (the default in newer
-                    # transformers when accelerate is installed), HuggingFace initializes all
-                    # model parameters on the meta device, then loads weights after construction.
-                    # But ResidualFSQ.__init__ asserts (levels_tensor > 1).all() during __init__,
-                    # which crashes on meta tensors since .item() cannot be called on them.
-                    # Also do NOT pass dtype="bfloat16" for the same reason.
-                    # The dtype cast happens below via .to(self.dtype) after loading.
                     self.model = AutoModel.from_pretrained(
                         acestep_v15_checkpoint_path, 
                         trust_remote_code=True, 
                         attn_implementation=attn_implementation,
-                        low_cpu_mem_usage=False,
                     )
                 except Exception as e:
                     logger.warning(f"[initialize_service] Failed to load model with {attn_implementation}: {e}")
@@ -419,10 +472,18 @@ class AceStepHandler:
                             acestep_v15_checkpoint_path, 
                             trust_remote_code=True, 
                             attn_implementation=attn_implementation,
-                            low_cpu_mem_usage=False,
                         )
                     else:
                         raise e
+                finally:
+                    # Always restore original references
+                    if _rfsq_orig_tensor is not None:
+                        _rfsq_mod.tensor = _rfsq_orig_tensor
+                    if _fsq_orig_tensor is not None:
+                        _fsq_mod.tensor = _fsq_orig_tensor
+                    _rfsq_mod.torch = _rfsq_orig_torch
+                    _fsq_mod.torch = _fsq_orig_torch
+                    logger.info("[initialize_service] Restored original vector_quantize_pytorch references")
 
                 self.model.config._attn_implementation = attn_implementation
                 self.config = self.model.config
