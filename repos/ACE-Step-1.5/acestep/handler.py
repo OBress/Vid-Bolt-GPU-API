@@ -393,7 +393,11 @@ class AceStepHandler:
                     attn_implementation = "flash_attention_2"
                     self.dtype = torch.bfloat16
                 else:
-                    attn_implementation = "sdpa"
+                    # Use eager attention by default (instead of sdpa).
+                    # SDPA + bfloat16 produces NaN latents on Blackwell (sm_100) GPUs
+                    # due to PyTorch SDPA kernel compatibility issues with the new architecture.
+                    # Eager attention is fully compatible and avoids the NaN problem.
+                    attn_implementation = "eager"
 
                 # ---- Monkey-patch vector_quantize_pytorch to handle meta tensors ----
                 # Latest HuggingFace transformers ALWAYS initializes models under
@@ -465,9 +469,9 @@ class AceStepHandler:
                     )
                 except Exception as e:
                     logger.warning(f"[initialize_service] Failed to load model with {attn_implementation}: {e}")
-                    if attn_implementation == "sdpa":
-                        logger.info("[initialize_service] Falling back to eager attention")
-                        attn_implementation = "eager"
+                    if attn_implementation == "eager":
+                        logger.info("[initialize_service] Falling back to sdpa attention")
+                        attn_implementation = "sdpa"
                         self.model = AutoModel.from_pretrained(
                             acestep_v15_checkpoint_path, 
                             trust_remote_code=True, 
