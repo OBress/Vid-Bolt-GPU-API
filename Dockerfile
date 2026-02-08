@@ -166,6 +166,10 @@ RUN pip install --no-cache-dir ninja && \
 # Upgrade core libraries for Blackwell GPU compatibility (Issue #10)
 RUN pip install --no-cache-dir --upgrade transformers peft diffusers accelerate
 
+# Pin numpy<2.0.0 AFTER all upgrades — audiocraft's C extensions are compiled
+# against numpy 1.x and crash with "numpy.dtype size changed" if numpy 2.x loads
+RUN pip install --no-cache-dir "numpy<2.0.0"
+
 # =============================================================================
 # Environment Configuration
 # =============================================================================
