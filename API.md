@@ -1,6 +1,6 @@
 # Vid-Bolt GPU API
 
-A high-performance FastAPI backend for AI-powered image and video generation.
+A high-performance FastAPI backend for AI-powered image, video, and music generation.
 
 ## Table of Contents
 
@@ -12,15 +12,21 @@ A high-performance FastAPI backend for AI-powered image and video generation.
 - [Endpoints](#endpoints)
   - [Health & System](#health--system)
   - [Mode Management](#mode-management)
+  - [Settings](#settings)
+  - [Job Management](#job-management)
   - [Image Generation](#image-generation)
   - [Image Editing](#image-editing)
   - [Video Generation](#video-generation)
   - [LTX-2 Video Generation](#ltx-2-video-generation)
+  - [LTX-2 Keyframe Interpolation](#ltx-2-keyframe-interpolation)
   - [Music Generation](#music-generation)
   - [Batch Operations](#batch-operations)
+  - [LoRA Management](#lora-management)
+  - [GPU Monitoring](#gpu-monitoring)
+  - [System Status](#system-status)
+  - [Download Status](#download-status)
 - [Error Handling](#error-handling)
-- [Configuration](#configuration)
-- [System Settings](#system-settings)
+- [Changelog](#changelog)
 
 ---
 
@@ -48,15 +54,15 @@ Vid-Bolt GPU API provides AI-powered generation capabilities:
 │   THREAD    │  • Automatic Mode Switching (Dynamic)     │
 │             │  • OOM & Timeout Handling                 │
 ├─────────────┴───────────────────────────────────────────┤
-│     IMAGE MODE       │          VIDEO MODE              │
-│  ┌────────────────┐  │  ┌────────────────────────────┐  │
-│  │ Z-Image Turbo  │  │  │ LTX-2 19B                  │  │
-│  │ (text-to-img)  │  │  │ (image-to-video, 720p/1080p│  │
-│  ├────────────────┤  │  │ with native 2x upsampling) │  │
-│  │ Qwen-Image-Edit│  │  └────────────────────────────┘  │
-│  │ (image editing)│  │                                  │
-│  └────────────────┘  │                                  │
-└──────────────────────┴──────────────────────────────────┘
+│   IMAGE MODE       │   VIDEO MODE    │   AUDIO MODE     │
+│  ┌──────────────┐  │ ┌─────────────┐ │ ┌──────────────┐ │
+│  │ Z-Image Turbo│  │ │ LTX-2 19B   │ │ │ ACE-Step 1.5 │ │
+│  │ (text-to-img)│  │ │ (I2V, 720p/ │ │ │ (music gen)  │ │
+│  ├──────────────┤  │ │ 1080p)      │ │ └──────────────┘ │
+│  │ Qwen-Image-  │  │ └─────────────┘ │                  │
+│  │ Edit (editing)│  │                 │                  │
+│  └──────────────┘  │                 │                  │
+└────────────────────┴─────────────────┴──────────────────┘
 ```
 
 ---
@@ -96,19 +102,23 @@ All `/api/v1/*` endpoints require the `X-API-Key` header:
 X-API-Key: your-secure-api-key
 ```
 
-**Exception:** The `/health` endpoint does not require authentication.
+**Exceptions:** The following endpoints do **not** require authentication:
+
+- `GET /health`
+- `GET /health/ready`
+- `GET /api/v1/download/status`
 
 ---
 
 ## Webhooks
 
-> **IMPORTANT:** All generation endpoints require a `webhook_url`. Results are delivered via webhook only - job data is deleted after successful webhook delivery.
+> **Note:** Webhook URLs are **optional** on all generation endpoints. If provided, results are delivered via webhook and job data is deleted after successful delivery. If omitted, use polling via `/api/v1/jobs/{job_id}`.
 
 ### How It Works
 
-1. Submit a generation request with a `webhook_url`
-2. Poll `/api/v1/jobs/{job_id}` for **progress only** (no result in response)
-3. Receive webhook callback when job completes (success or failure)
+1. Submit a generation request with an optional `webhook_url`
+2. Poll `/api/v1/jobs/{job_id}` for progress and results
+3. If `webhook_url` was provided, receive webhook callback when job completes
 4. Job data is automatically deleted after webhook delivery
 
 ### Webhook Payload (Success)
@@ -183,15 +193,15 @@ The API manages GPU VRAM by loading only the required models for each use case. 
 
 ### VRAM Loading Modes
 
-Configurable via `/api/v1/settings/vram-mode`:
+Configurable via `POST /api/v1/settings/vram-mode`:
 
 | Mode               | Models Loaded      | VRAM Usage | Best For                   |
 | ------------------ | ------------------ | ---------- | -------------------------- |
-| `image_generation` | Z-Image Turbo only | ~8GB       | Text-to-image workloads    |
-| `image_editing`    | LightX2V only      | ~12GB      | Image editing/inpainting   |
-| `video_generation` | LTX-2 only         | ~20GB      | Video generation           |
+| `image_generation` | Z-Image Turbo only | ~16GB      | Text-to-image workloads    |
+| `image_editing`    | LightX2V only      | ~40GB      | Image editing/inpainting   |
+| `video_generation` | LTX-2 only         | ~40GB      | Video generation           |
 | `audio_creation`   | ACE-Step           | ~4GB       | Music generation           |
-| `all`              | All models         | ~60GB+     | High-VRAM GPUs (A100/H100) |
+| `all`              | All models         | ~76GB+     | High-VRAM GPUs (A100/H100) |
 
 #### Mode Behavior
 
@@ -266,7 +276,69 @@ The API dynamically calculates batch sizes and concurrent processing based on **
 3. **Shorter videos first**: Submit shorter-duration videos when possible for higher parallelism
 4. **Check queue position**: Poll `/api/v1/jobs/{job_id}` to see `queue_position` for pending jobs
 
+---
+
 ## Endpoints
+
+### Health & System
+
+#### `GET /health`
+
+Basic health check. **No authentication required.**
+
+**Response:**
+
+```json
+{
+  "status": "healthy",
+  "version": "0.6.0",
+  "mock_mode": false
+}
+```
+
+---
+
+#### `GET /health/ready`
+
+Readiness check for VM provisioning. **No authentication required.** Returns whether models are loaded and the API is ready for generation requests.
+
+**Response:**
+
+```json
+{
+  "ready": true,
+  "status": "ready",
+  "version": "0.6.0",
+  "mock_mode": false,
+  "current_mode": "image_generation",
+  "models_loaded": true
+}
+```
+
+| Field           | Type         | Description                                                                             |
+| --------------- | ------------ | --------------------------------------------------------------------------------------- |
+| `ready`         | bool         | Whether the API can accept generation requests                                          |
+| `status`        | string       | `ready`, `starting`, `loading_models`, `downloading_models`, `download_failed`, `error` |
+| `current_mode`  | string\|null | Current VRAM mode (null if not yet initialized)                                         |
+| `models_loaded` | bool         | Whether generation models are loaded in memory                                          |
+
+---
+
+#### `GET /api/v1/status`
+
+Detailed service status. **Requires authentication.**
+
+**Response:**
+
+```json
+{
+  "status": "healthy",
+  "version": "0.6.0",
+  "mock_mode": false
+}
+```
+
+---
 
 ### Mode Management
 
@@ -304,14 +376,91 @@ Get the current VRAM mode status including switching progress.
 }
 ```
 
-| Field                | Type         | Description                                                                   |
-| -------------------- | ------------ | ----------------------------------------------------------------------------- |
-| `mode`               | string       | Current mode (`image_generation`, `image_editing`, `video_generation`, `all`) |
-| `is_busy`            | bool         | Whether a job is currently running                                            |
-| `is_switching`       | bool         | Whether mode switch is in progress                                            |
-| `switching_target`   | string\|null | Target mode when switching                                                    |
-| `switching_step`     | string\|null | Current switching step description                                            |
-| `switching_progress` | float\|null  | Progress 0.0-1.0 when switching                                               |
+| Field                | Type         | Description                                                                                     |
+| -------------------- | ------------ | ----------------------------------------------------------------------------------------------- |
+| `mode`               | string       | Current mode (`image_generation`, `image_editing`, `video_generation`, `audio_creation`, `all`) |
+| `is_busy`            | bool         | Whether a job is currently running                                                              |
+| `active_job_id`      | string\|null | ID of the currently running job                                                                 |
+| `loaded_models`      | list[string] | Names of currently loaded models                                                                |
+| `is_switching`       | bool         | Whether mode switch is in progress                                                              |
+| `switching_target`   | string\|null | Target mode when switching                                                                      |
+| `switching_step`     | string\|null | Current switching step description                                                              |
+| `switching_progress` | float\|null  | Progress 0.0-1.0 when switching                                                                 |
+
+---
+
+#### `POST /api/v1/mode/switch`
+
+Switch between Image Mode and Video Mode. Unloads current models and loads the target mode's models (~30-60 seconds).
+
+**Request:**
+
+```json
+{
+  "target_mode": "image"
+}
+```
+
+| Field         | Type   | Required | Description            |
+| ------------- | ------ | -------- | ---------------------- |
+| `target_mode` | string | ✅       | `"image"` or `"video"` |
+
+> **Note:** For full mode control (including `image_editing`, `audio_creation`, `all`), use the `POST /api/v1/settings/vram-mode` endpoint instead.
+
+**Response:**
+
+```json
+{
+  "status": "success",
+  "previous_mode": "image_generation",
+  "current_mode": "video_generation",
+  "message": "Successfully switched from image_generation to video_generation mode"
+}
+```
+
+---
+
+### Settings
+
+#### `GET /api/v1/settings/vram-mode`
+
+Get the current VRAM loading mode.
+
+**Response:**
+
+```json
+{
+  "mode": "image_generation",
+  "description": "Image Generation - Z-Image Turbo only (~16GB VRAM)"
+}
+```
+
+---
+
+#### `POST /api/v1/settings/vram-mode`
+
+Set the VRAM loading mode. This unloads current models and loads the target mode's models.
+
+**Request:**
+
+```json
+{
+  "mode": "video_generation"
+}
+```
+
+| Field  | Type   | Required | Description                                                                              |
+| ------ | ------ | -------- | ---------------------------------------------------------------------------------------- |
+| `mode` | string | ✅       | One of: `image_generation`, `image_editing`, `video_generation`, `audio_creation`, `all` |
+
+**Response:**
+
+```json
+{
+  "mode": "video_generation",
+  "description": "Video Generation - LTX-2 DistilledPipeline only (~40GB VRAM)"
+}
+```
 
 ---
 
@@ -373,15 +522,23 @@ Check the status of a specific job.
 **Returns HTTP 202 Accepted**. The system will automatically switch to Image Mode if needed.
 
 **Request:**
-| Field | Type | Required | Description | Default |
-|-------|------|----------|-------------|---------|
-| `job_id` | string | ✅ | Unique job identifier | - |
-| `prompt` | string | ✅ | Text description (max 2000 chars) | - |
-| `aspect_ratio` | string | ❌ | `16:9`, `9:16`, `1:1`, `4:3`, `3:4` | `16:9` |
-| `save_url` | string | ✅ | Presigned PUT URL for output | - |
-| `webhook_url` | string | ✅ | **REQUIRED:** URL to POST when complete | - |
-| `item_id` | string | ❌ | Client identifier (returned in webhook) | `job_id` |
-| `webhook_secret` | string | ❌ | HMAC signing secret | - |
+
+| Field                 | Type   | Required | Description                                   | Default  |
+| --------------------- | ------ | -------- | --------------------------------------------- | -------- |
+| `job_id`              | string | ✅       | Unique job identifier                         | -        |
+| `prompt`              | string | ✅       | Text description (max 2000 chars)             | -        |
+| `aspect_ratio`        | string | ❌       | `16:9`, `9:16`, `1:1`, `4:3`, `3:4`           | `16:9`   |
+| `width`               | int    | ❌       | Custom width in pixels (256-2048)             | -        |
+| `height`              | int    | ❌       | Custom height in pixels (256-2048)            | -        |
+| `num_inference_steps` | int    | ❌       | Number of diffusion steps (1-50)              | `20`     |
+| `seed`                | int    | ❌       | Random seed for reproducibility               | -        |
+| `lora_name`           | string | ❌       | LoRA style to apply (or `"none"` for no LoRA) | -        |
+| `save_url`            | string | ✅       | Presigned PUT URL for output                  | -        |
+| `webhook_url`         | string | ❌       | URL to POST when complete                     | -        |
+| `item_id`             | string | ❌       | Client identifier (returned in webhook)       | `job_id` |
+| `webhook_secret`      | string | ❌       | HMAC signing secret                           | -        |
+
+> **Note:** If `width` and `height` are provided, they override `aspect_ratio`. Both must be specified together.
 
 **Response (Immediate - 202 Accepted):**
 
@@ -394,8 +551,6 @@ Check the status of a specific job.
 }
 ```
 
-> **Note:** Results are delivered via webhook only. The status endpoint shows progress but not the final result.
-
 ---
 
 ### Image Editing
@@ -405,17 +560,21 @@ Check the status of a specific job.
 **Returns HTTP 202 Accepted**.
 
 **Request:**
-| Field | Type | Required | Description | Default |
-|-------|------|----------|-------------|---------|
-| `job_id` | string | ✅ | Unique job identifier | - |
-| `input_image_url` | string | ✅ | URL of image to edit | - |
-| `prompt` | string | ✅ | Edit instruction | - |
-| `save_url` | string | ✅ | Presigned PUT URL for output | - |
-| `webhook_url` | string | ✅ | **REQUIRED:** URL to POST when complete | - |
-| `item_id` | string | ❌ | Client identifier (returned in webhook) | `job_id` |
-| `webhook_secret` | string | ❌ | HMAC signing secret | - |
-| `lora_name` | string | ❌ | LoRA to apply (see available LoRAs below) | - |
-| `lora_strength` | float | ❌ | LoRA strength (0.0-1.0) | `0.9` |
+
+| Field             | Type   | Required | Description                               | Default  |
+| ----------------- | ------ | -------- | ----------------------------------------- | -------- |
+| `job_id`          | string | ✅       | Unique job identifier                     | -        |
+| `input_image_url` | string | ✅       | URL of image to edit                      | -        |
+| `prompt`          | string | ✅       | Edit instruction (max 2000 chars)         | -        |
+| `aspect_ratio`    | string | ❌       | `16:9`, `9:16`, `1:1`, `4:3`, `3:4`       | `16:9`   |
+| `mask_image_url`  | string | ❌       | URL of mask image for inpainting          | -        |
+| `seed`            | int    | ❌       | Random seed for reproducibility           | -        |
+| `save_url`        | string | ✅       | Presigned PUT URL for output              | -        |
+| `webhook_url`     | string | ❌       | URL to POST when complete                 | -        |
+| `item_id`         | string | ❌       | Client identifier (returned in webhook)   | `job_id` |
+| `webhook_secret`  | string | ❌       | HMAC signing secret                       | -        |
+| `lora_name`       | string | ❌       | LoRA to apply (see available LoRAs below) | -        |
+| `lora_strength`   | float  | ❌       | LoRA strength (0.0-1.0)                   | `0.9`    |
 
 **Available LoRAs:**
 
@@ -464,31 +623,29 @@ Example prompts:
 
 ---
 
-### Video Generation (LTX-2)
+### Video Generation
 
-#### `POST /api/v1/ltx2/generate`
+#### `POST /api/v1/video/generate`
 
-**Returns HTTP 202 Accepted**. The system will automatically switch to Video Mode if needed.
+**Returns HTTP 202 Accepted**. Generate a video from an input image and prompt.
 
 **Request:**
-| Field | Type | Required | Description | Default |
-|-------|------|----------|-------------|---------|
-| `job_id` | string | ✅ | Unique job identifier | - |
-| `start_frame_url` | string | ✅ | URL of starting frame image | - |
-| `prompt` | string | ✅ | Motion description | - |
-| `end_frame_url` | string | ❌ | Optional URL of end frame for interpolation | - |
-| `duration_seconds` | float | ❌ | Video length (0.5-10.0) | `5.0` |
-| `frame_rate` | float | ❌ | Frame rate (8.0-60.0) | `24.0` |
-| `aspect_ratio` | string | ❌ | `16:9`, `9:16`, `1:1`, `4:3`, `3:4` | `16:9` |
-| `width` | int | ❌ | Target width (512-1920, overrides aspect_ratio) | - |
-| `height` | int | ❌ | Target height (512-1920, overrides aspect_ratio) | - |
-| `negative_prompt` | string | ❌ | What should not appear in the video | `""` |
-| `seed` | int | ❌ | Random seed for reproducibility | - |
-| `enhance_prompt` | bool | ❌ | Auto-enhance prompt | `false` |
-| `save_url` | string | ✅ | Presigned PUT URL | - |
-| `webhook_url` | string | ✅ | **REQUIRED:** URL to POST when complete | - |
-| `item_id` | string | ❌ | Client identifier (returned in webhook) | `job_id` |
-| `webhook_secret` | string | ❌ | HMAC signing secret | - |
+
+| Field              | Type   | Required | Description                                      | Default |
+| ------------------ | ------ | -------- | ------------------------------------------------ | ------- |
+| `job_id`           | string | ✅       | Unique job identifier                            | -       |
+| `input_image_url`  | string | ✅       | URL of the first frame image                     | -       |
+| `prompt`           | string | ✅       | Description of motion/action (max 2000 chars)    | -       |
+| `duration_seconds` | float  | ❌       | Video duration (1.0-8.0 seconds)                 | `4.0`   |
+| `fps`              | int    | ❌       | Frames per second (8, 12, 16, 24, or 30)         | `24`    |
+| `aspect_ratio`     | string | ❌       | `16:9`, `9:16`, `1:1`, `4:3`, `3:4`              | `16:9`  |
+| `width`            | int    | ❌       | Target width (512-1920, overrides aspect_ratio)  | -       |
+| `height`           | int    | ❌       | Target height (512-1920, overrides aspect_ratio) | -       |
+| `seed`             | int    | ❌       | Random seed for reproducibility                  | -       |
+| `end_image_url`    | string | ❌       | Optional URL of end frame for interpolation      | -       |
+| `save_url`         | string | ✅       | Presigned PUT URL for output                     | -       |
+
+> **Note:** This endpoint does not currently support `webhook_url`. Use polling via `/api/v1/jobs/{job_id}`.
 
 **Response (Immediate - 202 Accepted):**
 
@@ -503,6 +660,120 @@ Example prompts:
 
 ---
 
+### LTX-2 Video Generation
+
+#### `POST /api/v1/ltx2/generate`
+
+**Returns HTTP 202 Accepted**. The system will automatically switch to Video Mode if needed.
+
+**Request:**
+
+| Field              | Type   | Required | Description                                      | Default  |
+| ------------------ | ------ | -------- | ------------------------------------------------ | -------- |
+| `job_id`           | string | ✅       | Unique job identifier                            | -        |
+| `start_frame_url`  | string | ✅       | URL of starting frame image                      | -        |
+| `prompt`           | string | ✅       | Motion description (max 2000 chars)              | -        |
+| `negative_prompt`  | string | ❌       | What should not appear (max 1000 chars)          | `""`     |
+| `duration_seconds` | float  | ❌       | Video length (0.5-10.0)                          | `5.0`    |
+| `frame_rate`       | float  | ❌       | Frame rate (8.0-60.0)                            | `24.0`   |
+| `aspect_ratio`     | string | ❌       | `16:9`, `9:16`, `1:1`, `4:3`, `3:4`              | `16:9`   |
+| `width`            | int    | ❌       | Target width (512-1920, overrides aspect_ratio)  | -        |
+| `height`           | int    | ❌       | Target height (512-1920, overrides aspect_ratio) | -        |
+| `end_frame_url`    | string | ❌       | Optional URL of end frame for interpolation      | -        |
+| `seed`             | int    | ❌       | Random seed for reproducibility                  | -        |
+| `enhance_prompt`   | bool   | ❌       | Auto-enhance prompt                              | `false`  |
+| `save_url`         | string | ✅       | Presigned PUT URL                                | -        |
+| `webhook_url`      | string | ❌       | URL to POST when complete                        | -        |
+| `item_id`          | string | ❌       | Client identifier (returned in webhook)          | `job_id` |
+| `webhook_secret`   | string | ❌       | HMAC signing secret                              | -        |
+
+**Response (Immediate - 202 Accepted):**
+
+```json
+{
+  "job_id": "550e8400-e29b...",
+  "status": "pending",
+  "status_url": "/api/v1/jobs/550e8400-e29b...",
+  "message": "Job accepted for processing"
+}
+```
+
+---
+
+### LTX-2 Keyframe Interpolation
+
+#### `POST /api/v1/ltx2/interpolate`
+
+**Returns HTTP 202 Accepted**. Generate a video by interpolating between multiple keyframes.
+
+**Request:**
+
+| Field              | Type            | Required | Description                                      | Default  |
+| ------------------ | --------------- | -------- | ------------------------------------------------ | -------- |
+| `job_id`           | string          | ✅       | Unique job identifier                            | -        |
+| `prompt`           | string          | ✅       | Video content description (max 2000 chars)       | -        |
+| `negative_prompt`  | string          | ❌       | What should not appear (max 1000 chars)          | `""`     |
+| `keyframes`        | KeyframeImage[] | ✅       | Keyframe images with frame indices (1-10)        | -        |
+| `duration_seconds` | float           | ❌       | Video length (0.5-10.0)                          | `5.0`    |
+| `frame_rate`       | float           | ❌       | Frame rate (8.0-60.0)                            | `24.0`   |
+| `aspect_ratio`     | string          | ❌       | `16:9`, `9:16`, `1:1`, `4:3`, `3:4`              | `16:9`   |
+| `width`            | int             | ❌       | Target width (512-1920, overrides aspect_ratio)  | -        |
+| `height`           | int             | ❌       | Target height (512-1920, overrides aspect_ratio) | -        |
+| `seed`             | int             | ❌       | Random seed for reproducibility                  | -        |
+| `enhance_prompt`   | bool            | ❌       | Auto-enhance prompt                              | `false`  |
+| `save_url`         | string          | ✅       | Presigned PUT URL                                | -        |
+| `webhook_url`      | string          | ❌       | URL to POST when complete                        | -        |
+| `item_id`          | string          | ❌       | Client identifier (returned in webhook)          | `job_id` |
+| `webhook_secret`   | string          | ❌       | HMAC signing secret                              | -        |
+
+**KeyframeImage Object:**
+
+| Field         | Type   | Required | Description                     | Default |
+| ------------- | ------ | -------- | ------------------------------- | ------- |
+| `image_url`   | string | ✅       | URL of the keyframe image       | -       |
+| `frame_index` | int    | ✅       | Target frame index (0-indexed)  | -       |
+| `strength`    | float  | ❌       | Conditioning strength (0.0-1.0) | `1.0`   |
+
+**Example Request:**
+
+```json
+{
+  "job_id": "interp-001",
+  "prompt": "A person walking from left to right, cinematic lighting",
+  "keyframes": [
+    {
+      "image_url": "https://example.com/start.png",
+      "frame_index": 0,
+      "strength": 1.0
+    },
+    {
+      "image_url": "https://example.com/end.png",
+      "frame_index": 120,
+      "strength": 1.0
+    }
+  ],
+  "duration_seconds": 5.0,
+  "frame_rate": 24.0,
+  "save_url": "https://example.com/upload/video.mp4",
+  "webhook_url": "https://myapp.com/api/gpu-callback"
+}
+```
+
+**Response (Immediate - 202 Accepted):**
+
+```json
+{
+  "job_id": "interp-001",
+  "status": "pending",
+  "status_url": "/api/v1/jobs/interp-001",
+  "message": "Job accepted for processing"
+}
+```
+
+> **Note:** LTX-2 requires frame counts following the pattern `frames = 8k + 1`. The API automatically rounds up to the nearest valid frame count and trims the output to the requested `duration_seconds`.
+
+---
+
 ### Music Generation
 
 #### `POST /api/v1/music/generate`
@@ -510,21 +781,22 @@ Example prompts:
 **Returns HTTP 202 Accepted**. Generates music using ACE-Step 1.5 (hybrid LM+DiT architecture).
 
 **Request:**
-| Field | Type | Required | Description | Default |
-|-------|------|----------|-------------|---------|
-| `job_id` | string | ✅ | Unique job identifier | - |
-| `prompt` | string | ✅ | Music style/genre description | - |
-| `lyrics` | string | ❌ | Lyrics for vocal generation (omit for instrumental) | - |
-| `duration_seconds` | float | ❌ | Duration (10-600 seconds) | `30.0` |
-| `seed` | int | ❌ | Random seed for reproducibility | - |
-| `bpm` | int | ❌ | Tempo in BPM (30-300) | Auto-detected |
-| `key_scale` | string | ❌ | Musical key, e.g. `"C Major"`, `"Am"` | Auto-detected |
-| `time_signature` | string | ❌ | Time signature: `"2"` (2/4), `"3"` (3/4), `"4"` (4/4), `"6"` (6/8) | Auto-detected |
-| `vocal_language` | string | ❌ | Vocal language (ISO 639-1), e.g. `"en"`, `"zh"`, `"ja"` | Auto-detected |
-| `save_url` | string | ✅ | Presigned PUT URL for output | - |
-| `webhook_url` | string | ✅ | **REQUIRED:** URL to POST when complete | - |
-| `item_id` | string | ❌ | Client identifier (returned in webhook) | `job_id` |
-| `webhook_secret` | string | ❌ | HMAC signing secret | - |
+
+| Field              | Type   | Required | Description                                         | Default       |
+| ------------------ | ------ | -------- | --------------------------------------------------- | ------------- |
+| `job_id`           | string | ✅       | Unique job identifier                               | -             |
+| `prompt`           | string | ✅       | Music style/genre description                       | -             |
+| `lyrics`           | string | ❌       | Lyrics for vocal generation (omit for instrumental) | -             |
+| `duration_seconds` | float  | ❌       | Duration (10-600 seconds)                           | `30.0`        |
+| `seed`             | int    | ❌       | Random seed for reproducibility                     | -             |
+| `bpm`              | int    | ❌       | Tempo in BPM (30-300)                               | Auto-detected |
+| `key_scale`        | string | ❌       | Musical key, e.g. `"C Major"`, `"Am"`               | Auto-detected |
+| `time_signature`   | string | ❌       | `"2"` (2/4), `"3"` (3/4), `"4"` (4/4), `"6"` (6/8)  | Auto-detected |
+| `vocal_language`   | string | ❌       | ISO 639-1 code, e.g. `"en"`, `"zh"`, `"ja"`         | Auto-detected |
+| `save_url`         | string | ✅       | Presigned PUT URL for output                        | -             |
+| `webhook_url`      | string | ❌       | URL to POST when complete                           | -             |
+| `item_id`          | string | ❌       | Client identifier (returned in webhook)             | -             |
+| `webhook_secret`   | string | ❌       | HMAC signing secret                                 | -             |
 
 > **Note:** When `bpm`, `key_scale`, `time_signature`, or `vocal_language` are omitted, the ACE-Step 1.5 LM uses Chain-of-Thought reasoning to auto-detect optimal values from the prompt and lyrics.
 
@@ -678,17 +950,230 @@ Collect batch results and immediately delete the batch. Use when done polling.
 
 ---
 
+### LoRA Management
+
+Endpoints for managing Z-Image LoRA models. All require authentication.
+
+#### `GET /api/v1/loras/z-image`
+
+List available LoRA models for Z-Image generation.
+
+**Response:**
+
+```json
+[
+  {
+    "name": "multiple-angles",
+    "size_bytes": 157286400,
+    "modified_time": 1715420000.0
+  }
+]
+```
+
+---
+
+#### `POST /api/v1/loras/z-image/upload`
+
+Upload a new LoRA model (`.safetensors` file only).
+
+**Request:** Multipart file upload with `file` field.
+
+**Response (201 Created):**
+
+```json
+{
+  "status": "success",
+  "message": "LoRA multiple-angles.safetensors uploaded successfully"
+}
+```
+
+---
+
+#### `PUT /api/v1/loras/z-image/{lora_name}`
+
+Rename an existing LoRA model.
+
+| Query Param | Type   | Required | Description       |
+| ----------- | ------ | -------- | ----------------- |
+| `new_name`  | string | ✅       | New name for LoRA |
+
+**Response:**
+
+```json
+{
+  "status": "success",
+  "message": "Renamed to new-name"
+}
+```
+
+---
+
+#### `DELETE /api/v1/loras/z-image/{lora_name}`
+
+Delete a LoRA model.
+
+**Response:**
+
+```json
+{
+  "status": "success",
+  "message": "Deleted multiple-angles"
+}
+```
+
+---
+
+### GPU Monitoring
+
+#### `GET /api/v1/gpu/status`
+
+Get detailed GPU memory and utilization information.
+
+**Response:**
+
+```json
+{
+  "available": true,
+  "cuda_version": "12.1",
+  "driver_version": null,
+  "device_count": 1,
+  "devices": [
+    {
+      "device_index": 0,
+      "name": "NVIDIA A100-SXM4-80GB",
+      "total_gb": 79.15,
+      "used_gb": 24.32,
+      "free_gb": 54.83,
+      "usage_percent": 30.7,
+      "temperature_celsius": null,
+      "utilization_percent": null
+    }
+  ],
+  "total_memory_gb": 79.15,
+  "total_used_gb": 24.32,
+  "total_free_gb": 54.83
+}
+```
+
+---
+
+#### `POST /api/v1/gpu/clear-cache`
+
+Force clear CUDA cache and run garbage collection. Useful after OOM errors.
+
+**Response:**
+
+```json
+{
+  "status": "success",
+  "freed_mb": 256.3,
+  "used_before_gb": 24.32,
+  "used_after_gb": 24.07
+}
+```
+
+---
+
+### System Status
+
+#### `GET /api/v1/system/status`
+
+Get comprehensive system and GPU status. **Requires authentication.**
+
+**Response:**
+
+```json
+{
+  "system": {
+    "os": "Linux",
+    "os_version": "5.15.0",
+    "python_version": "3.11.0",
+    "cpu_count": 12,
+    "hostname": "gpu-server-01"
+  },
+  "gpu": {
+    "name": "NVIDIA A100-SXM4-80GB",
+    "memory_total_gb": 79.15,
+    "memory_used_gb": 24.32,
+    "memory_free_gb": 54.83,
+    "memory_usage_percent": 30.7,
+    "temperature_celsius": 42.0,
+    "gpu_utilization_percent": 15.0,
+    "cuda_version": "12.1",
+    "driver_version": "535.129.03"
+  },
+  "mode": {
+    "mode": "image_generation",
+    "is_busy": false,
+    "active_job_id": null,
+    "loaded_models": ["z-image-turbo"]
+  },
+  "concurrency_limits": {
+    "max_concurrent_image_generations": 1,
+    "max_concurrent_video_generations": 1
+  },
+  "mock_mode": false
+}
+```
+
+---
+
+### Download Status
+
+Endpoints for monitoring model download progress. Useful during initial setup.
+
+#### `GET /api/v1/download/status`
+
+Get current model download status. **No authentication required.**
+
+**Response:**
+
+```json
+{
+  "status": "downloading",
+  "ready": false,
+  "total_models": 7,
+  "completed_models": 3,
+  "current_model": "ltx2-checkpoint",
+  "models": {
+    "z-image-turbo": {
+      "model_name": "z-image-turbo",
+      "status": "completed",
+      "progress_percent": 100.0,
+      "error": null
+    }
+  },
+  "started_at": "2025-01-15T10:00:00",
+  "completed_at": null,
+  "error": null
+}
+```
+
+---
+
+#### `POST /api/v1/download/retry`
+
+Retry downloading any failed models. **Requires authentication.**
+
+**Response:** Same as `GET /api/v1/download/status`.
+
+---
+
 ## Error Handling
 
 ### HTTP Status Codes
 
-| Code  | Meaning                                |
-| ----- | -------------------------------------- |
-| `202` | Accepted - Job queued successfully     |
-| `400` | Bad Request - Invalid parameters       |
-| `401` | Unauthorized - Missing/invalid API key |
-| `429` | Too Many Requests (Queue Full)         |
-| `500` | Internal Server Error                  |
+| Code  | Meaning                                 |
+| ----- | --------------------------------------- |
+| `201` | Created (LoRA upload)                   |
+| `202` | Accepted - Job queued successfully      |
+| `400` | Bad Request - Invalid parameters        |
+| `401` | Unauthorized - Missing/invalid API key  |
+| `404` | Not Found - Job or resource not found   |
+| `409` | Conflict - System busy / already exists |
+| `429` | Too Many Requests (Queue Full)          |
+| `500` | Internal Server Error                   |
+| `503` | Service Unavailable (mode switching)    |
 
 ### Job Error Codes (in `GET /jobs/{id}`)
 
@@ -701,6 +1186,19 @@ Collect batch results and immediately delete the batch. Use when done polling.
 ---
 
 ## Changelog
+
+### v0.6.0
+
+- **API Documentation**: Comprehensive update to match codebase
+- **Video Generation**: Added `/api/v1/video/generate` endpoint (simplified video generation)
+- **Keyframe Interpolation**: Added `/api/v1/ltx2/interpolate` endpoint for multi-keyframe video generation
+- **LoRA Management**: Added CRUD endpoints for Z-Image LoRA models (`/api/v1/loras/z-image`)
+- **GPU Monitoring**: Added `/api/v1/gpu/status` and `/api/v1/gpu/clear-cache` endpoints
+- **System Status**: Added `/api/v1/system/status` endpoint
+- **Download Status**: Added `/api/v1/download/status` and `/api/v1/download/retry` endpoints
+- **Readiness Check**: Added `/health/ready` endpoint for VM provisioning
+- **Settings**: Added `GET/POST /api/v1/settings/vram-mode` endpoint documentation
+- **Mode Switch**: Added `POST /api/v1/mode/switch` endpoint documentation
 
 ### v0.5.0
 
