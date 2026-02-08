@@ -349,8 +349,11 @@ class AceStepHandler:
             self.device = device
             self.offload_to_cpu = offload_to_cpu
             self.offload_dit_to_cpu = offload_dit_to_cpu
-            # Set dtype based on device: bfloat16 for cuda, float32 for cpu
-            self.dtype = torch.bfloat16 if device in ["cuda","xpu"] else torch.float32
+            # Force float32 even on CUDA/XPU to avoid bfloat16 precision issues
+            # on Blackwell (sm_100) GPUs. bfloat16 causes NaN latents (with SDPA)
+            # and garbled audio (with eager attention) due to insufficient mantissa precision (7-bit).
+            # This costs ~2x VRAM but produces correct audio output.
+            self.dtype = torch.float32
             self.quantization = quantization
             if self.quantization is not None:
                 assert compile_model, "Quantization requires compile_model to be True"
@@ -391,7 +394,8 @@ class AceStepHandler:
                 # Determine attention implementation
                 if use_flash_attention and self.is_flash_attention_available():
                     attn_implementation = "flash_attention_2"
-                    self.dtype = torch.bfloat16
+                    # Note: NOT overriding self.dtype to bfloat16 here anymore.
+                    # self.dtype is already set to float32 above for Blackwell compatibility.
                 else:
                     # Use eager attention by default (instead of sdpa).
                     # SDPA + bfloat16 produces NaN latents on Blackwell (sm_100) GPUs
@@ -1108,9 +1112,14 @@ class AceStepHandler:
         return os.path.dirname(os.path.dirname(current_file))
     
     def _get_vae_dtype(self, device: Optional[str] = None) -> torch.dtype:
-        """Get VAE dtype based on device."""
-        device = device or self.device
-        return torch.bfloat16 if device in ["cuda", "xpu"] else self.dtype
+        """Get VAE dtype based on device.
+        
+        Note: We force float32 for CUDA as well, because bfloat16 causes
+        garbled (but non-NaN) audio on Blackwell (sm_100) GPUs during VAE decode.
+        The VAE's convolutional layers need higher precision for correct audio reconstruction.
+        """
+        # Always use float32 for VAE to avoid precision issues on newer GPU architectures
+        return torch.float32
     
     def _format_instruction(self, instruction: str) -> str:
         """Format instruction to ensure it ends with colon."""
@@ -1712,7 +1721,7 @@ class AceStepHandler:
         for ii, refer_audio_list in enumerate(refer_audios):
             if isinstance(refer_audio_list, list):
                 for idx, refer_audio in enumerate(refer_audio_list):
-                    refer_audio_list[idx] = refer_audio_list[idx].to(self.device).to(torch.bfloat16)
+                    refer_audio_list[idx] = refer_audio_list[idx].to(self.device).to(self.dtype)
             elif isinstance(refer_audio_list, torch.Tensor):
                 refer_audios[ii] = refer_audios[ii].to(self.device)
         
