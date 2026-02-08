@@ -16,8 +16,6 @@ from app.models.internal import (
     KeyframeInterpolationParams,
     MusicGenerationParams,
     MusicGenerationResult,
-    SoundEffectParams,
-    SoundEffectResult,
     UpscaleParams,
     UpscaleResult,
     VideoGenerationParams,
@@ -137,11 +135,3 @@ class MusicGenerator(BaseModelGenerator):
         """Generate music from a text prompt and optional lyrics."""
         pass
 
-
-class SoundEffectGenerator(BaseModelGenerator):
-    """Interface for sound effect generators."""
-
-    @abstractmethod
-    async def generate_sound_effect(self, params: SoundEffectParams) -> SoundEffectResult:
-        """Generate a sound effect from a text description."""
-        pass

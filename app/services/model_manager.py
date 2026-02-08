@@ -23,7 +23,6 @@ if TYPE_CHECKING:
         ImageEditor,
         ImageGenerator,
         MusicGenerator,
-        SoundEffectGenerator,
         VideoGenerator,
     )
 
@@ -37,7 +36,7 @@ class VRAMLoadMode(str, Enum):
     IMAGE_GENERATION = "image_generation"  # Z-Image Turbo only
     IMAGE_EDITING = "image_editing"        # LightX2V only
     VIDEO_GENERATION = "video_generation"  # LTX-2 DistilledPipeline only (~40GB)
-    AUDIO_CREATION = "audio_creation"      # ACE-Step + AudioGen only
+    AUDIO_CREATION = "audio_creation"      # ACE-Step only
     ALL = "all"                            # All models loaded (disabled)
 
 
@@ -48,7 +47,6 @@ class JobType(str, Enum):
     IMAGE_EDITING = "image_editing"
     VIDEO_GENERATION = "video_generation"
     MUSIC_GENERATION = "music_generation"
-    SOUND_EFFECT_GENERATION = "sound_effect_generation"
 
 
 @dataclass
@@ -113,7 +111,6 @@ class ModelManager:
         self._lightx2v_generator: Optional["ImageEditor"] = None
         self._ltx2_generator: Optional["VideoGenerator"] = None
         self._acestep_generator: Optional["MusicGenerator"] = None
-        self._audiogen_generator: Optional["SoundEffectGenerator"] = None
         
         # Track loaded state
         self._loaded = False
@@ -168,8 +165,6 @@ class ModelManager:
             loaded_models.append("ltx-2-19b")
         if self._acestep_generator and self._acestep_generator._loaded:
             loaded_models.append("ace-step-1.5")
-        if self._audiogen_generator and self._audiogen_generator._loaded:
-            loaded_models.append("audiogen-medium")
             
         return ModeStatus(
             mode=self._mode,
@@ -258,7 +253,7 @@ class ModelManager:
             True if ready to proceed, False if cannot switch
         """
         # Map job type to required mode
-        if job_type in (JobType.MUSIC_GENERATION, JobType.SOUND_EFFECT_GENERATION):
+        if job_type == JobType.MUSIC_GENERATION:
             required_mode = VRAMLoadMode.AUDIO_CREATION
         else:
             required_mode = VRAMLoadMode(job_type.value)
@@ -289,12 +284,11 @@ class ModelManager:
                     self._zimage_dynamic_loaded = False
                     logger.info("ALL mode: Z-Image unloaded, VRAM freed for image editing")
                 return True
-            elif job_type in (JobType.MUSIC_GENERATION, JobType.SOUND_EFFECT_GENERATION):
+            elif job_type == JobType.MUSIC_GENERATION:
                 # Dynamically load audio models in ALL mode
                 if not self._audio_dynamic_loaded:
                     logger.info("ALL mode: Dynamically loading audio models...")
                     await self._load_acestep()
-                    await self._load_audiogen()
                     self._audio_dynamic_loaded = True
                     logger.info("ALL mode: Audio models loaded dynamically")
                 return True
@@ -404,15 +398,15 @@ class ModelManager:
         logger.info("Successfully switched to Video Generation Mode (~40GB VRAM)")
 
     async def _switch_to_audio_creation_mode(self) -> None:
-        """Switch to Audio Creation mode (ACE-Step + AudioGen only).
+        """Switch to Audio Creation mode (ACE-Step only).
         
-        This mode is optimized for music and sound effect generation.
-        Uses ~4GB (ACE-Step) + ~16GB (AudioGen) VRAM.
+        This mode is optimized for music generation.
+        Uses ~4GB (ACE-Step) VRAM.
         """
         if self._is_busy:
             raise RuntimeError("Cannot switch modes while a job is in progress")
         
-        logger.info("Switching to Audio Creation Mode (ACE-Step + AudioGen)...")
+        logger.info("Switching to Audio Creation Mode (ACE-Step only)...")
         
         # Unload other models
         self._set_switching_progress("Unloading Z-Image...", 0.1)
@@ -425,8 +419,6 @@ class ModelManager:
         # Load audio models
         self._set_switching_progress("Loading ACE-Step 1.5...", 0.5)
         await self._load_acestep()
-        self._set_switching_progress("Loading AudioGen...", 0.7)
-        await self._load_audiogen()
         
         self._set_switching_progress("Finalizing...", 1.0)
         logger.info("Successfully switched to Audio Creation Mode")
@@ -593,26 +585,7 @@ class ModelManager:
             await asyncio.to_thread(self._acestep_generator.unload_models)
         self._force_gc()
 
-    async def _load_audiogen(self) -> None:
-        """Load AudioGen sound effect generator."""
-        from app.services.audiogen_generator import AudioGenGenerator
-        
-        if self._audiogen_generator is not None and self._audiogen_generator._loaded:
-            logger.info("AudioGen already loaded, skipping")
-            return
-        
-        self._audiogen_generator = AudioGenGenerator(self._settings)
-        
-        if not self._audiogen_generator._loaded:
-            logger.info("Loading AudioGen models...")
-            await asyncio.to_thread(self._audiogen_generator.load_models)
 
-    async def _unload_audiogen(self) -> None:
-        """Unload AudioGen model."""
-        if self._audiogen_generator and self._audiogen_generator._loaded:
-            logger.info("Unloading AudioGen models...")
-            await asyncio.to_thread(self._audiogen_generator.unload_models)
-        self._force_gc()
 
     def _force_gc(self) -> None:
         """Force garbage collection and clear CUDA cache."""
@@ -732,23 +705,7 @@ class ModelManager:
         
         return self._acestep_generator
 
-    def get_sound_effect_generator(self) -> "SoundEffectGenerator":
-        """Get the SoundEffectGenerator for sound effect generation.
-        
-        Returns:
-            SoundEffectGenerator instance
-            
-        Raises:
-            RuntimeError: If not in a valid mode or generator not loaded
-        """
-        valid_modes = [VRAMLoadMode.AUDIO_CREATION, VRAMLoadMode.ALL]
-        if self._mode not in valid_modes:
-            raise RuntimeError(f"Not in valid mode for sound effect generation (current: {self._mode.value})")
-        
-        if self._audiogen_generator is None or not self._audiogen_generator._loaded:
-            raise RuntimeError("AudioGen generator not loaded")
-        
-        return self._audiogen_generator
+
 
     # --- Legacy compatibility for switch methods ---
 

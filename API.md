@@ -17,7 +17,6 @@ A high-performance FastAPI backend for AI-powered image and video generation.
   - [Video Generation](#video-generation)
   - [LTX-2 Video Generation](#ltx-2-video-generation)
   - [Music Generation](#music-generation)
-  - [Sound Effect Generation](#sound-effect-generation)
   - [Batch Operations](#batch-operations)
 - [Error Handling](#error-handling)
 - [Configuration](#configuration)
@@ -35,7 +34,6 @@ Vid-Bolt GPU API provides AI-powered generation capabilities:
 | **Image Editing**    | Qwen-Image-Edit-2511 | Edit images with AI instructions         |
 | **Video Generation** | LTX-2 19B            | Generate videos from images (720p/1080p) |
 | **Music Generation** | ACE-Step 1.5         | Generate music from text prompts         |
-| **Sound Effects**    | AudioGen Medium      | Generate sound effects from descriptions |
 
 ### Architecture
 
@@ -187,13 +185,13 @@ The API manages GPU VRAM by loading only the required models for each use case. 
 
 Configurable via `/api/v1/settings/vram-mode`:
 
-| Mode               | Models Loaded       | VRAM Usage | Best For                   |
-| ------------------ | ------------------- | ---------- | -------------------------- |
-| `image_generation` | Z-Image Turbo only  | ~8GB       | Text-to-image workloads    |
-| `image_editing`    | LightX2V only       | ~12GB      | Image editing/inpainting   |
-| `video_generation` | LTX-2 only          | ~20GB      | Video generation           |
-| `audio_creation`   | ACE-Step + AudioGen | ~20GB      | Music and sound effects    |
-| `all`              | All models          | ~60GB+     | High-VRAM GPUs (A100/H100) |
+| Mode               | Models Loaded      | VRAM Usage | Best For                   |
+| ------------------ | ------------------ | ---------- | -------------------------- |
+| `image_generation` | Z-Image Turbo only | ~8GB       | Text-to-image workloads    |
+| `image_editing`    | LightX2V only      | ~12GB      | Image editing/inpainting   |
+| `video_generation` | LTX-2 only         | ~20GB      | Video generation           |
+| `audio_creation`   | ACE-Step           | ~4GB       | Music generation           |
+| `all`              | All models         | ~60GB+     | High-VRAM GPUs (A100/H100) |
 
 #### Mode Behavior
 
@@ -213,7 +211,7 @@ Configurable via `/api/v1/settings/vram-mode`:
    - Switching time: ~30-60s
 
 4. **audio_creation**:
-   - Loads **ACE-Step 1.5** for music generation and **AudioGen** for sound effects
+   - Loads **ACE-Step 1.5** for music generation
    - Scheduling: Grouped by job type to minimize switching
    - Switching time: ~15-30s
 
@@ -542,36 +540,6 @@ Example prompts:
 
 ---
 
-### Sound Effect Generation
-
-#### `POST /api/v1/sfx/generate`
-
-**Returns HTTP 202 Accepted**. Generates sound effects using AudioGen.
-
-**Request:**
-| Field | Type | Required | Description | Default |
-|-------|------|----------|-------------|---------|
-| `job_id` | string | ✅ | Unique job identifier | - |
-| `prompt` | string | ✅ | Sound effect description | - |
-| `duration_seconds` | float | ❌ | Duration (1-30 seconds) | `5.0` |
-| `seed` | int | ❌ | Random seed for reproducibility | - |
-| `save_url` | string | ✅ | Presigned PUT URL for output | - |
-| `webhook_url` | string | ✅ | **REQUIRED:** URL to POST when complete | - |
-| `item_id` | string | ❌ | Client identifier (returned in webhook) | `job_id` |
-| `webhook_secret` | string | ❌ | HMAC signing secret | - |
-
-**Response (Immediate - 202 Accepted):**
-
-```json
-{
-  "job_id": "550e8400-e29b...",
-  "status": "queued",
-  "message": "Sound effect generation job queued"
-}
-```
-
----
-
 ### Batch Operations
 
 Batch endpoints allow submitting multiple items in a single request, reducing API overhead from 300+ calls to just 1.
@@ -737,9 +705,7 @@ Collect batch results and immediately delete the batch. Use when done polling.
 ### v0.5.0
 
 - **Music Generation**: Added `/api/v1/music/generate` endpoint using ACE-Step 1.5
-- **Sound Effects**: Added `/api/v1/sfx/generate` endpoint using AudioGen Medium
-- **Audio VRAM Mode**: New `audio_creation` mode for dedicated audio generation (~20GB)
-- **Dynamic Audio Loading**: Audio models load on-demand in `all` mode
+- **Audio VRAM Mode**: New `audio_creation` mode for dedicated music generation (~4GB)
 
 ### v0.4.0
 

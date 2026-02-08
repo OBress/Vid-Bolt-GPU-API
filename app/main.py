@@ -24,7 +24,7 @@ from app import __version__
 from app.config import get_settings
 from app.exceptions import APIError
 from app.models.common import ErrorResponse
-from app.routers import health, image_generation, image_editing, ltx2_generation, mode, system, lora_management, jobs, gpu, download_status, settings as settings_router_module, batch as batch_router, music_generation, sound_effect_generation
+from app.routers import health, image_generation, image_editing, ltx2_generation, mode, system, lora_management, jobs, gpu, download_status, settings as settings_router_module, batch as batch_router, music_generation
 from app.utils.logging import setup_logging
 
 # Initialize settings
@@ -176,7 +176,6 @@ This API provides endpoints for:
 - **Image Editing**: Edit existing images (inpaint, outpaint, style transfer, etc.)
 - **Video Generation**: Create videos from images with AI-powered motion
 - **Music Generation**: Generate music tracks from text prompts
-- **Sound Effect Generation**: Generate sound effects from text descriptions
 
 All generated outputs are uploaded to Cloudflare R2 and accessible via CDN URLs.
 
@@ -340,4 +339,3 @@ app.include_router(download_status.router)
 app.include_router(settings_router_module.router)
 app.include_router(batch_router.router)
 app.include_router(music_generation.router)
-app.include_router(sound_effect_generation.router)

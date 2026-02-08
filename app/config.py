@@ -51,9 +51,6 @@ class ModelPaths:
     
     # ACE-Step 1.5 (music generation)
     ACESTEP_MODEL = "models/ace-step-1.5"
-    
-    # AudioGen (sound effect generation)
-    AUDIOGEN_MODEL = "models/audiogen-medium"
 
 
 class InferenceConfig:
@@ -108,11 +105,6 @@ class InferenceConfig:
     ACESTEP_DEFAULT_DURATION = 30.0   # seconds
     ACESTEP_MAX_DURATION = 600.0      # 10 minutes max
     ACESTEP_SAMPLE_RATE = 48000       # 48kHz output (ACE-Step 1.5 native)
-    
-    # AudioGen (sound effects) settings
-    AUDIOGEN_DEFAULT_DURATION = 5.0   # seconds
-    AUDIOGEN_MAX_DURATION = 30.0      # 30 seconds max
-    AUDIOGEN_SAMPLE_RATE = 16000      # 16kHz output (AudioGen native)
     
     # Job timeouts (seconds)
     IMAGE_JOB_TIMEOUT = 300      # 5 minutes for image batch jobs (large batches at 1920x1080)
@@ -214,10 +206,6 @@ class Settings(BaseSettings):
     @property
     def acestep_model_path(self) -> str:
         return ModelPaths.ACESTEP_MODEL
-    
-    @property
-    def audiogen_model_path(self) -> str:
-        return ModelPaths.AUDIOGEN_MODEL
     
     # --- Device & Dtype ---
     @property
@@ -417,18 +405,6 @@ class Settings(BaseSettings):
     @property
     def acestep_sample_rate(self) -> int:
         return InferenceConfig.ACESTEP_SAMPLE_RATE
-    
-    @property
-    def audiogen_default_duration(self) -> float:
-        return InferenceConfig.AUDIOGEN_DEFAULT_DURATION
-    
-    @property
-    def audiogen_max_duration(self) -> float:
-        return InferenceConfig.AUDIOGEN_MAX_DURATION
-    
-    @property
-    def audiogen_sample_rate(self) -> int:
-        return InferenceConfig.AUDIOGEN_SAMPLE_RATE
     
     @property
     def audio_job_timeout(self) -> int:

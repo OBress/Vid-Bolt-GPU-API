@@ -136,20 +136,3 @@ class MusicGenerationResult:
     sample_rate: int
     seed: int
 
-
-@dataclass
-class SoundEffectParams:
-    """Parameters for sound effect generation (AudioGen)."""
-    job_id: str
-    prompt: str  # Sound description
-    duration_seconds: float
-    seed: Optional[int]
-
-
-@dataclass
-class SoundEffectResult:
-    """Result of sound effect generation."""
-    audio_data: bytes
-    duration_seconds: float
-    sample_rate: int
-    seed: int
