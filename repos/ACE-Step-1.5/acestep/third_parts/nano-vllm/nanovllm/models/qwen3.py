@@ -132,7 +132,7 @@ class Qwen3DecoderLayer(nn.Module):
             qkv_bias=getattr(config, 'attention_bias', True),
             head_dim=getattr(config, 'head_dim', None),
             rope_theta=getattr(config, "rope_theta", 1000000),
-            rope_scaling=getattr(config, "rope_scaling", None),
+            rope_scaling=None,  # nano-vllm's get_rope doesn't support rope_scaling (asserts None); passing dict crashes @lru_cache
         )
         self.mlp = Qwen3MLP(
             hidden_size=config.hidden_size,
