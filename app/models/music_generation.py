@@ -18,6 +18,20 @@ class MusicGenerateRequest(BaseModel):
     )
     seed: Optional[int] = Field(None, description="Random seed for reproducibility")
 
+    # ACE-Step 1.5 metadata controls (optional — auto-detected if omitted)
+    bpm: Optional[int] = Field(
+        None, ge=30, le=300, description="Tempo in BPM (30-300)"
+    )
+    key_scale: Optional[str] = Field(
+        None, description="Musical key/scale, e.g. 'C Major', 'Am', 'F# minor'"
+    )
+    time_signature: Optional[str] = Field(
+        None, description="Time signature: '2' (2/4), '3' (3/4), '4' (4/4), '6' (6/8)"
+    )
+    vocal_language: Optional[str] = Field(
+        None, description="Vocal language code (ISO 639-1), e.g. 'en', 'zh', 'ja', 'es'"
+    )
+
     # Webhook and storage
     webhook_url: Optional[str] = Field(None, description="URL for job completion webhook")
     save_url: str = Field(..., description="Pre-signed URL to save audio file")

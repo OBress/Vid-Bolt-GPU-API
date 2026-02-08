@@ -2,9 +2,15 @@
 
 Uses the ACE-Step 1.5 hybrid LM+DiT architecture for commercial-grade
 music generation. Supports text-to-music with optional lyrics, Chain-of-Thought
-reasoning via the 5Hz Language Model, and auto-model selection based on VRAM.
+reasoning via the 5Hz Language Model, and metadata control (BPM, key, time sig).
+
+Target hardware: NVIDIA RTX PRO 6000 Blackwell (~96GB VRAM)
+- Uses acestep-5Hz-lm-4B (best quality LM, fits easily in VRAM)
+- No CPU offloading needed
+- Flash attention enabled
 
 Ref: https://github.com/ace-step/ACE-Step-1.5
+API: repos/ACE-Step-1.5/docs/en/INFERENCE.md
 """
 
 import asyncio
@@ -14,7 +20,6 @@ import logging
 import os
 import random
 import tempfile
-from pathlib import Path
 from typing import Any, Dict, Optional
 
 from app.config import Settings
@@ -40,6 +45,10 @@ class ACEStepGenerator(MusicGenerator):
     def _loaded(self) -> bool:
         return self._is_loaded
 
+    # =========================================================================
+    # Model Lifecycle
+    # =========================================================================
+
     def load_models(self) -> None:
         if self._is_loaded:
             return
@@ -53,17 +62,15 @@ class ACEStepGenerator(MusicGenerator):
             from acestep.handler import AceStepHandler
             from acestep.llm_inference import LLMHandler
 
-            # --- Initialize DiT Handler ---
-            self._dit_handler = AceStepHandler()
-
-            # ACE-Step 1.5 auto-detects project_root and auto-downloads models.
-            # project_root should point to the repo root (which contains "checkpoints/").
-            # The handler will create checkpoints/ and download models there if needed.
             project_root = os.path.abspath(
                 os.path.join(os.path.dirname(__file__), "..", "..", "repos", "ACE-Step-1.5")
             )
+            checkpoint_dir = os.path.join(project_root, "checkpoints")
 
-            # Use turbo model for fast inference (8 steps, <2s per song on A100)
+            # --- Initialize DiT Handler ---
+            self._dit_handler = AceStepHandler()
+
+            # acestep-v15-turbo: 8-step turbo distilled model (best speed/quality)
             config_path = "acestep-v15-turbo"
 
             logger.info(f"Initializing DiT handler (project_root={project_root}, config={config_path})")
@@ -77,13 +84,9 @@ class ACEStepGenerator(MusicGenerator):
             logger.info(f"DiT handler initialized: {status_msg}")
 
             # --- Initialize LLM Handler ---
+            # RTX PRO 6000 Blackwell has ~96GB VRAM → use 4B model for best quality
             self._llm_handler = LLMHandler()
-
-            # checkpoint_dir is where the LM model lives (checkpoints/ under project root)
-            checkpoint_dir = os.path.join(project_root, "checkpoints")
-
-            # Default LM model (1.7B is a good balance of quality and speed)
-            lm_model_path = "acestep-5Hz-lm-1.7B"
+            lm_model_path = "acestep-5Hz-lm-4B"
 
             logger.info(f"Initializing LLM handler (checkpoint_dir={checkpoint_dir}, lm_model={lm_model_path})")
             lm_status_msg, lm_success = self._llm_handler.initialize(
@@ -93,7 +96,7 @@ class ACEStepGenerator(MusicGenerator):
                 device="cuda",
             )
             if not lm_success:
-                # LLM is optional - DiT can work without it (no CoT reasoning)
+                # LLM is optional — DiT can work without it (no CoT reasoning)
                 logger.warning(f"LLM initialization failed (DiT-only mode): {lm_status_msg}")
             else:
                 logger.info(f"LLM handler initialized: {lm_status_msg}")
@@ -135,12 +138,18 @@ class ACEStepGenerator(MusicGenerator):
             "dit_initialized": self._dit_handler is not None,
             "llm_initialized": (
                 self._llm_handler is not None
-                and self._llm_handler.llm_initialized
+                and getattr(self._llm_handler, "llm_initialized", False)
             ),
+            "dit_model": "acestep-v15-turbo",
+            "lm_model": "acestep-5Hz-lm-4B",
             "default_duration": self._settings.acestep_default_duration,
             "max_duration": self._settings.acestep_max_duration,
             "sample_rate": self._settings.acestep_sample_rate,
         }
+
+    # =========================================================================
+    # Music Generation
+    # =========================================================================
 
     async def generate_music(self, params: MusicGenerationParams) -> MusicGenerationResult:
         if not self._is_loaded:
@@ -154,19 +163,25 @@ class ACEStepGenerator(MusicGenerator):
         return await asyncio.to_thread(self._generate_sync, params, seed)
 
     def _generate_sync(self, params: MusicGenerationParams, seed: int) -> MusicGenerationResult:
+        """Run ACE-Step 1.5 generation synchronously (called via asyncio.to_thread)."""
         from acestep.inference import GenerationParams, GenerationConfig, generate_music
-        import numpy as np
 
         # Map our API params to ACE-Step 1.5 GenerationParams
+        # See: repos/ACE-Step-1.5/docs/en/INFERENCE.md
         gen_params = GenerationParams(
+            # Text inputs
             caption=params.prompt,
             lyrics=params.lyrics or "",
             instrumental=not bool(params.lyrics),
+            # Metadata (None/empty = auto-detect via LM CoT)
             duration=params.duration_seconds,
-            seed=seed,
-            # Turbo model defaults (acestep-v15-turbo uses shift=1.0)
+            bpm=params.bpm,
+            keyscale=params.key_scale or "",
+            timesignature=params.time_signature or "",
+            vocal_language=params.vocal_language or "unknown",
+            # Generation settings (turbo model defaults)
             inference_steps=8,
-            shift=1.0,  # Must match model variant: v15-turbo=1.0, v15-turbo-shift3=3.0
+            seed=seed,
             # Enable Chain-of-Thought reasoning for better quality
             thinking=True,
             use_cot_metas=True,
@@ -178,20 +193,17 @@ class ACEStepGenerator(MusicGenerator):
             batch_size=1,
             use_random_seed=False,  # We manage our own seed
             seeds=[seed],
-            audio_format="wav",  # We need raw audio for upload
+            audio_format="wav",
         )
 
-        # --- Debug: Log generation parameters ---
         logger.info(
-            f"[music-debug] Generation params: prompt={params.prompt!r}, "
-            f"lyrics={params.lyrics!r}, duration={params.duration_seconds}s, "
-            f"seed={seed}, inference_steps=8, shift=1.0, "
-            f"thinking=True, instrumental={not bool(params.lyrics)}"
+            f"Generating music: prompt={params.prompt!r}, "
+            f"lyrics={'yes' if params.lyrics else 'no'}, "
+            f"duration={params.duration_seconds}s, seed={seed}, "
+            f"bpm={params.bpm}, key={params.key_scale}, time_sig={params.time_signature}"
         )
 
         with tempfile.TemporaryDirectory() as tmpdir:
-            logger.info(f"[music-debug] Saving to tmpdir={tmpdir}")
-
             result = generate_music(
                 dit_handler=self._dit_handler,
                 llm_handler=self._llm_handler,
@@ -200,105 +212,46 @@ class ACEStepGenerator(MusicGenerator):
                 save_dir=tmpdir,
             )
 
-            # --- Debug: Log generation result ---
-            logger.info(
-                f"[music-debug] Result: success={result.success}, "
-                f"error={result.error}, num_audios={len(result.audios)}, "
-                f"status={result.status_message!r}"
-            )
-
-            if result.extra_outputs:
-                time_costs = result.extra_outputs.get("time_costs", {})
-                if time_costs:
-                    logger.info(f"[music-debug] Time costs: {time_costs}")
-                lm_metadata = result.extra_outputs.get("lm_metadata")
-                if lm_metadata:
-                    logger.info(f"[music-debug] LM metadata: {lm_metadata}")
-
             if not result.success:
                 raise RuntimeError(f"ACE-Step 1.5 generation failed: {result.error}")
 
             if not result.audios:
                 raise RuntimeError("ACE-Step 1.5 returned no audio")
 
+            # Log generation info
+            if result.extra_outputs:
+                time_costs = result.extra_outputs.get("time_costs", {})
+                if time_costs:
+                    logger.info(f"Generation time costs: {time_costs}")
+
             # Read the generated audio file
             audio_info = result.audios[0]
             audio_path = audio_info.get("path", "")
-
-            # --- Debug: Log audio info dict keys ---
-            logger.info(
-                f"[music-debug] Audio info keys: {list(audio_info.keys())}, "
-                f"path={audio_path!r}, "
-                f"sample_rate={audio_info.get('sample_rate')}"
-            )
-
-            if audio_info.get("tensor") is not None:
-                tensor = audio_info["tensor"]
-                logger.info(
-                    f"[music-debug] Audio tensor: shape={tensor.shape}, "
-                    f"dtype={tensor.dtype}, "
-                    f"min={tensor.min().item():.6f}, max={tensor.max().item():.6f}, "
-                    f"mean={tensor.mean().item():.6f}, std={tensor.std().item():.6f}"
-                )
-                # Check for silence
-                if hasattr(tensor, 'abs'):
-                    max_abs = tensor.abs().max().item()
-                    logger.info(f"[music-debug] Max absolute value: {max_abs:.6f} "
-                                f"(silent={max_abs < 0.001})")
-                    # Check for clipping
-                    if max_abs > 0.99:
-                        import torch
-                        clip_pct = (tensor.abs() > 0.99).float().mean().item() * 100
-                        logger.warning(f"[music-debug] Audio may be clipped: "
-                                       f"{clip_pct:.2f}% of samples > 0.99")
+            sample_rate = audio_info.get("sample_rate", self._settings.acestep_sample_rate)
 
             if audio_path and os.path.exists(audio_path):
-                file_size = os.path.getsize(audio_path)
-                logger.info(f"[music-debug] Reading audio file: {audio_path} "
-                            f"(size={file_size} bytes)")
                 with open(audio_path, "rb") as f:
                     audio_bytes = f.read()
-                logger.info(f"[music-debug] Read {len(audio_bytes)} bytes from file")
-
-                # --- Debug: Validate WAV header ---
-                if len(audio_bytes) >= 44:
-                    import struct
-                    riff = audio_bytes[:4]
-                    wave_fmt = audio_bytes[8:12]
-                    if riff == b'RIFF' and wave_fmt == b'WAVE':
-                        # Parse WAV header
-                        audio_format_code = struct.unpack_from('<H', audio_bytes, 20)[0]
-                        num_channels = struct.unpack_from('<H', audio_bytes, 22)[0]
-                        wav_sample_rate = struct.unpack_from('<I', audio_bytes, 24)[0]
-                        bits_per_sample = struct.unpack_from('<H', audio_bytes, 34)[0]
-                        logger.info(
-                            f"[music-debug] WAV header: format={audio_format_code}, "
-                            f"channels={num_channels}, sample_rate={wav_sample_rate}, "
-                            f"bits_per_sample={bits_per_sample}"
-                        )
-                    else:
-                        logger.warning(f"[music-debug] File is NOT a valid WAV: "
-                                       f"riff={riff!r}, wave={wave_fmt!r}")
-                else:
-                    logger.warning(f"[music-debug] File too small for WAV: {len(audio_bytes)} bytes")
+                logger.info(f"Read audio file: {audio_path} ({len(audio_bytes)} bytes)")
 
             elif audio_info.get("tensor") is not None:
                 # Fallback: encode tensor directly to WAV
-                logger.info("[music-debug] No audio file found, encoding tensor to WAV")
-                audio_bytes = self._encode_wav(
-                    audio_info["tensor"],
-                    audio_info.get("sample_rate", self._settings.acestep_sample_rate),
-                )
-                logger.info(f"[music-debug] Encoded WAV: {len(audio_bytes)} bytes")
+                logger.info("No audio file found, encoding tensor to WAV")
+                audio_bytes = self._encode_wav(audio_info["tensor"], sample_rate)
+
             else:
                 raise RuntimeError("ACE-Step 1.5 generated no audio output")
 
         return MusicGenerationResult(
             audio_data=audio_bytes,
             duration_seconds=params.duration_seconds,
-            sample_rate=audio_info.get("sample_rate", self._settings.acestep_sample_rate),
+            sample_rate=sample_rate,
             seed=seed,
         )
+
+    # =========================================================================
+    # Helpers
+    # =========================================================================
 
     async def _generate_dry_run(self, params: MusicGenerationParams, seed: int) -> MusicGenerationResult:
         """Generate a silent WAV for dry-run testing."""
@@ -322,6 +275,7 @@ class ACEStepGenerator(MusicGenerator):
         )
 
     def _encode_wav(self, audio_tensor, sample_rate: int) -> bytes:
+        """Encode an audio tensor to WAV bytes."""
         import numpy as np
         import wave
 

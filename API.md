@@ -509,20 +509,26 @@ Example prompts:
 
 #### `POST /api/v1/music/generate`
 
-**Returns HTTP 202 Accepted**. Generates music using ACE-Step 1.5.
+**Returns HTTP 202 Accepted**. Generates music using ACE-Step 1.5 (hybrid LM+DiT architecture).
 
 **Request:**
 | Field | Type | Required | Description | Default |
 |-------|------|----------|-------------|---------|
 | `job_id` | string | ✅ | Unique job identifier | - |
 | `prompt` | string | ✅ | Music style/genre description | - |
-| `lyrics` | string | ❌ | Optional lyrics for vocal generation | - |
+| `lyrics` | string | ❌ | Lyrics for vocal generation (omit for instrumental) | - |
 | `duration_seconds` | float | ❌ | Duration (10-600 seconds) | `30.0` |
 | `seed` | int | ❌ | Random seed for reproducibility | - |
+| `bpm` | int | ❌ | Tempo in BPM (30-300) | Auto-detected |
+| `key_scale` | string | ❌ | Musical key, e.g. `"C Major"`, `"Am"` | Auto-detected |
+| `time_signature` | string | ❌ | Time signature: `"2"` (2/4), `"3"` (3/4), `"4"` (4/4), `"6"` (6/8) | Auto-detected |
+| `vocal_language` | string | ❌ | Vocal language (ISO 639-1), e.g. `"en"`, `"zh"`, `"ja"` | Auto-detected |
 | `save_url` | string | ✅ | Presigned PUT URL for output | - |
 | `webhook_url` | string | ✅ | **REQUIRED:** URL to POST when complete | - |
 | `item_id` | string | ❌ | Client identifier (returned in webhook) | `job_id` |
 | `webhook_secret` | string | ❌ | HMAC signing secret | - |
+
+> **Note:** When `bpm`, `key_scale`, `time_signature`, or `vocal_language` are omitted, the ACE-Step 1.5 LM uses Chain-of-Thought reasoning to auto-detect optimal values from the prompt and lyrics.
 
 **Response (Immediate - 202 Accepted):**
 

@@ -117,10 +117,15 @@ class UpscaleResult:
 class MusicGenerationParams:
     """Parameters for music generation (ACE-Step 1.5)."""
     job_id: str
-    prompt: str  # Style/genre description
+    prompt: str  # Style/genre description (maps to ACE-Step "caption")
     lyrics: Optional[str]  # Optional lyrics for vocal generation
     duration_seconds: float
     seed: Optional[int]
+    # ACE-Step 1.5 metadata (optional — auto-detected via LM if omitted)
+    bpm: Optional[int] = None  # Tempo (30-300)
+    key_scale: Optional[str] = None  # e.g. "C Major", "Am"
+    time_signature: Optional[str] = None  # "2","3","4","6" for 2/4, 3/4, 4/4, 6/8
+    vocal_language: Optional[str] = None  # ISO 639-1 code, e.g. "en", "zh", "ja"
 
 
 @dataclass

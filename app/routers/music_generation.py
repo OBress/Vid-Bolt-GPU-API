@@ -53,6 +53,10 @@ async def generate_music(
         lyrics=body.lyrics,
         duration_seconds=body.duration_seconds,
         seed=body.seed,
+        bpm=body.bpm,
+        key_scale=body.key_scale,
+        time_signature=body.time_signature,
+        vocal_language=body.vocal_language,
     )
 
     submitted = await job_manager.try_submit_job(
