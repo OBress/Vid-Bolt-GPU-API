@@ -239,13 +239,19 @@ class StreamingMultiheadAttention(StreamingModule):
         # convention both in the builtin MHA in Pytorch, and Xformers functions.
         time_dim = _get_attention_time_dimension(self.memory_efficient)
         if self.memory_efficient:
-            from xformers.ops import LowerTriangularMask
             if current_steps == 1:
                 # If we only have one step, then we do not need a mask.
                 return None
-            elif 'past_keys' in self._streaming_state:
-                raise RuntimeError("Not supported at the moment")
+            if _efficient_attention_backend == 'torch':
+                # For torch SDPA backend, return True as a sentinel for is_causal=True
+                # (the forward() method uses: is_causal=attn_mask is not None)
+                if 'past_keys' in self._streaming_state:
+                    raise RuntimeError("Streaming with past_keys not supported with torch SDPA backend")
+                return True
             else:
+                from xformers.ops import LowerTriangularMask
+                if 'past_keys' in self._streaming_state:
+                    raise RuntimeError("Not supported at the moment")
                 # Then we can safely use a lower triangular mask
                 return LowerTriangularMask()
         if self._streaming_state:

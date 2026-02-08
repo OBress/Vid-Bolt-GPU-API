@@ -155,6 +155,7 @@ class ACEStepGenerator(MusicGenerator):
 
     def _generate_sync(self, params: MusicGenerationParams, seed: int) -> MusicGenerationResult:
         from acestep.inference import GenerationParams, GenerationConfig, generate_music
+        import numpy as np
 
         # Map our API params to ACE-Step 1.5 GenerationParams
         gen_params = GenerationParams(
@@ -180,7 +181,17 @@ class ACEStepGenerator(MusicGenerator):
             audio_format="wav",  # We need raw audio for upload
         )
 
+        # --- Debug: Log generation parameters ---
+        logger.info(
+            f"[music-debug] Generation params: prompt={params.prompt!r}, "
+            f"lyrics={params.lyrics!r}, duration={params.duration_seconds}s, "
+            f"seed={seed}, inference_steps=8, shift=1.0, "
+            f"thinking=True, instrumental={not bool(params.lyrics)}"
+        )
+
         with tempfile.TemporaryDirectory() as tmpdir:
+            logger.info(f"[music-debug] Saving to tmpdir={tmpdir}")
+
             result = generate_music(
                 dit_handler=self._dit_handler,
                 llm_handler=self._llm_handler,
@@ -188,6 +199,21 @@ class ACEStepGenerator(MusicGenerator):
                 config=gen_config,
                 save_dir=tmpdir,
             )
+
+            # --- Debug: Log generation result ---
+            logger.info(
+                f"[music-debug] Result: success={result.success}, "
+                f"error={result.error}, num_audios={len(result.audios)}, "
+                f"status={result.status_message!r}"
+            )
+
+            if result.extra_outputs:
+                time_costs = result.extra_outputs.get("time_costs", {})
+                if time_costs:
+                    logger.info(f"[music-debug] Time costs: {time_costs}")
+                lm_metadata = result.extra_outputs.get("lm_metadata")
+                if lm_metadata:
+                    logger.info(f"[music-debug] LM metadata: {lm_metadata}")
 
             if not result.success:
                 raise RuntimeError(f"ACE-Step 1.5 generation failed: {result.error}")
@@ -199,15 +225,71 @@ class ACEStepGenerator(MusicGenerator):
             audio_info = result.audios[0]
             audio_path = audio_info.get("path", "")
 
+            # --- Debug: Log audio info dict keys ---
+            logger.info(
+                f"[music-debug] Audio info keys: {list(audio_info.keys())}, "
+                f"path={audio_path!r}, "
+                f"sample_rate={audio_info.get('sample_rate')}"
+            )
+
+            if audio_info.get("tensor") is not None:
+                tensor = audio_info["tensor"]
+                logger.info(
+                    f"[music-debug] Audio tensor: shape={tensor.shape}, "
+                    f"dtype={tensor.dtype}, "
+                    f"min={tensor.min().item():.6f}, max={tensor.max().item():.6f}, "
+                    f"mean={tensor.mean().item():.6f}, std={tensor.std().item():.6f}"
+                )
+                # Check for silence
+                if hasattr(tensor, 'abs'):
+                    max_abs = tensor.abs().max().item()
+                    logger.info(f"[music-debug] Max absolute value: {max_abs:.6f} "
+                                f"(silent={max_abs < 0.001})")
+                    # Check for clipping
+                    if max_abs > 0.99:
+                        import torch
+                        clip_pct = (tensor.abs() > 0.99).float().mean().item() * 100
+                        logger.warning(f"[music-debug] Audio may be clipped: "
+                                       f"{clip_pct:.2f}% of samples > 0.99")
+
             if audio_path and os.path.exists(audio_path):
+                file_size = os.path.getsize(audio_path)
+                logger.info(f"[music-debug] Reading audio file: {audio_path} "
+                            f"(size={file_size} bytes)")
                 with open(audio_path, "rb") as f:
                     audio_bytes = f.read()
+                logger.info(f"[music-debug] Read {len(audio_bytes)} bytes from file")
+
+                # --- Debug: Validate WAV header ---
+                if len(audio_bytes) >= 44:
+                    import struct
+                    riff = audio_bytes[:4]
+                    wave_fmt = audio_bytes[8:12]
+                    if riff == b'RIFF' and wave_fmt == b'WAVE':
+                        # Parse WAV header
+                        audio_format_code = struct.unpack_from('<H', audio_bytes, 20)[0]
+                        num_channels = struct.unpack_from('<H', audio_bytes, 22)[0]
+                        wav_sample_rate = struct.unpack_from('<I', audio_bytes, 24)[0]
+                        bits_per_sample = struct.unpack_from('<H', audio_bytes, 34)[0]
+                        logger.info(
+                            f"[music-debug] WAV header: format={audio_format_code}, "
+                            f"channels={num_channels}, sample_rate={wav_sample_rate}, "
+                            f"bits_per_sample={bits_per_sample}"
+                        )
+                    else:
+                        logger.warning(f"[music-debug] File is NOT a valid WAV: "
+                                       f"riff={riff!r}, wave={wave_fmt!r}")
+                else:
+                    logger.warning(f"[music-debug] File too small for WAV: {len(audio_bytes)} bytes")
+
             elif audio_info.get("tensor") is not None:
                 # Fallback: encode tensor directly to WAV
+                logger.info("[music-debug] No audio file found, encoding tensor to WAV")
                 audio_bytes = self._encode_wav(
                     audio_info["tensor"],
                     audio_info.get("sample_rate", self._settings.acestep_sample_rate),
                 )
+                logger.info(f"[music-debug] Encoded WAV: {len(audio_bytes)} bytes")
             else:
                 raise RuntimeError("ACE-Step 1.5 generated no audio output")
 
