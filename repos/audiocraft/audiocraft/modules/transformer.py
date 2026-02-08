@@ -728,6 +728,10 @@ class StreamingTransformer(StreamingModule):
 # special attention related function
 
 def _verify_xformers_memory_efficient_compat():
+    # When using the 'torch' backend, memory_efficient attention uses PyTorch's
+    # native scaled_dot_product_attention, which doesn't need xformers at all.
+    if _efficient_attention_backend == 'torch':
+        return
     try:
         from xformers.ops import memory_efficient_attention, LowerTriangularMask  # noqa
     except ImportError:
