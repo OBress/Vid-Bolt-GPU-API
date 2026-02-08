@@ -22,7 +22,7 @@ class BatchImageGenerateItem(BaseModel):
         ...,
         description="Text prompt describing the image to generate",
         min_length=1,
-        max_length=2000,
+        max_length=10000,
     )
     aspect_ratio: AspectRatio = Field(
         default=AspectRatio.r_16_9,

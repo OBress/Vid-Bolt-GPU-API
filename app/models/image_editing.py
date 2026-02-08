@@ -23,7 +23,7 @@ class ImageEditRequest(BaseModel):
 
     job_id: str = Field(..., description="Unique job identifier")
     input_image_url: str = Field(..., description="URL of the input image to edit")
-    prompt: str = Field(..., description="Description of the edit", max_length=2000)
+    prompt: str = Field(..., description="Description of the edit", max_length=10000)
     aspect_ratio: AspectRatio = Field(
         default=AspectRatio.r_16_9,
         description="Aspect ratio of the edited image",

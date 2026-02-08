@@ -25,7 +25,7 @@ class BatchImageEditItem(BaseModel):
     prompt: str = Field(
         ...,
         description="Description of the edit",
-        max_length=2000,
+        max_length=10000,
     )
     aspect_ratio: AspectRatio = Field(
         default=AspectRatio.r_16_9,

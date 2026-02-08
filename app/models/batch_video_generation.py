@@ -25,7 +25,7 @@ class BatchVideoGenerateItem(BaseModel):
     prompt: str = Field(
         ...,
         description="Description of the video content/motion",
-        max_length=2000,
+        max_length=10000,
     )
     negative_prompt: str = Field(
         default="",

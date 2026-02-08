@@ -50,7 +50,7 @@ class ErrorResponse(BaseModel):
                 {
                     "status": "failed",
                     "error_code": "VALIDATION_ERROR",
-                    "error_message": "Prompt cannot exceed 2000 characters",
+                    "error_message": "Prompt cannot exceed 10000 characters",
                 }
             ]
         }

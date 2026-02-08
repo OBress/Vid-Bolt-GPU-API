@@ -12,7 +12,7 @@ class VideoGenerateRequest(BaseModel):
 
     job_id: str = Field(..., description="Unique job identifier")
     input_image_url: str = Field(..., description="URL of the first frame image")
-    prompt: str = Field(..., description="Description of motion/action", max_length=2000)
+    prompt: str = Field(..., description="Description of motion/action", max_length=10000)
     duration_seconds: float = Field(default=4.0, description="Video duration in seconds", ge=1.0, le=8.0)
     fps: int = Field(default=24, description="Frames per second (8, 12, 16, 24, or 30)")
     aspect_ratio: AspectRatio = Field(
