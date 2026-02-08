@@ -94,10 +94,8 @@ sudo docker compose build --no-cache
 sudo docker compose up -d
 sudo docker compose logs -f
 
-# clean up old containers
-
-sudo docker system prune -a
-
 # SSH in
+
+<!-- change IP -->
 
 ssh -i ~/.ssh/google_compute_engine owen@35.245.212.177
