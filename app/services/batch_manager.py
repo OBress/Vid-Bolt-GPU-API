@@ -118,7 +118,7 @@ class BatchManager:
         self,
         batch_id: str,
         items: List[BatchImageGenerateItem],
-        generator: Any,
+        model_manager: Any,
         storage: "StorageService",
         webhook_url: str,
         webhook_secret: Optional[str] = None,
@@ -128,7 +128,7 @@ class BatchManager:
         Args:
             batch_id: Client-provided unique batch identifier
             items: List of image generation items
-            generator: Image generator instance
+            model_manager: ModelManager instance for generator access
             storage: Storage service for uploads
             webhook_url: URL to POST when each item completes
             webhook_secret: Optional HMAC signing secret
@@ -171,7 +171,7 @@ class BatchManager:
                 webhook_url=webhook_url,
                 item_id=item.item_id,
                 webhook_secret=webhook_secret,
-                generator=generator,
+                model_manager=model_manager,
                 storage=storage,
                 params=params,
                 save_url=item.save_url,
@@ -201,7 +201,7 @@ class BatchManager:
         self,
         batch_id: str,
         items: List[BatchImageEditItem],
-        generator: Any,
+        model_manager: Any,
         storage: "StorageService",
         webhook_url: str,
         webhook_secret: Optional[str] = None,
@@ -211,7 +211,7 @@ class BatchManager:
         Args:
             batch_id: Client-provided unique batch identifier
             items: List of image editing items
-            generator: Image editor instance
+            model_manager: ModelManager instance for generator access
             storage: Storage service for uploads
             webhook_url: URL to POST when each item completes
             webhook_secret: Optional HMAC signing secret
@@ -268,7 +268,7 @@ class BatchManager:
                 webhook_url=webhook_url,
                 item_id=item.item_id,
                 webhook_secret=webhook_secret,
-                generator=generator,
+                model_manager=model_manager,
                 storage=storage,
                 params=params,
                 save_url=item.save_url,
@@ -298,7 +298,7 @@ class BatchManager:
         self,
         batch_id: str,
         items: List[BatchVideoGenerateItem],
-        generator: Any,
+        model_manager: Any,
         storage: "StorageService",
         webhook_url: str,
         webhook_secret: Optional[str] = None,
@@ -308,7 +308,7 @@ class BatchManager:
         Args:
             batch_id: Client-provided unique batch identifier
             items: List of video generation items
-            generator: Video generator instance
+            model_manager: ModelManager instance for generator access
             storage: Storage service for uploads
             webhook_url: URL to POST when each item completes
             webhook_secret: Optional HMAC signing secret
@@ -366,7 +366,7 @@ class BatchManager:
                 webhook_url=webhook_url,
                 item_id=item.item_id,
                 webhook_secret=webhook_secret,
-                generator=generator,
+                model_manager=model_manager,
                 storage=storage,
                 params=params,
                 save_url=item.save_url,

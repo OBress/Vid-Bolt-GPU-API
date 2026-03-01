@@ -82,14 +82,8 @@ async def generate_video(
 ) -> AsyncJobResponse:
     """Generate a video from a start frame image (Async)."""
     
-    # 1. Determine active generator (if not mock)
-    active_generator = generator
-
-    if not settings.mock_mode:
-        # Note: Worker will handle mode switching automatically
-        active_generator = model_manager.get_video_generator()
-
-    # 2. Check if generator supports LTX-2 (Video Generation)
+    # 1. Check generator capability (use mock in mock mode, real otherwise)
+    active_generator = generator if settings.mock_mode else model_manager.get_video_generator()
     if not hasattr(active_generator, "generate_video"):
          raise ValidationError("Current generator does not support video generation.")
 
@@ -126,7 +120,7 @@ async def generate_video(
         enhance_prompt=body.enhance_prompt,
     )
 
-    # 4. Submit Job
+    # 4. Submit Job (generator is fetched at execution time via model_manager)
     submitted = await job_manager.try_submit_job(
         job_id=body.job_id,
         job_type=JobType.VIDEO_GENERATION,
@@ -134,7 +128,7 @@ async def generate_video(
         webhook_url=body.webhook_url,
         item_id=body.item_id,
         webhook_secret=body.webhook_secret,
-        generator=active_generator,
+        model_manager=model_manager,
         storage=storage,
         params=params,
         save_url=body.save_url,
@@ -150,14 +144,19 @@ async def generate_video(
 
 
 async def _run_ltx2_generation(
-    generator: GeneratorDep,
+    model_manager: ModelManagerDep,
     storage: StorageDep,
     params: LTX2VideoParams,
     save_url: str,
 ) -> JobResult:
-    """Background task for LTX-2 I2V."""
+    """Background task for LTX-2 I2V.
+    
+    Generator is fetched at execution time (not at request time) to support
+    dynamic model loading via ensure_mode_for_job().
+    """
     start_time = time.time()
     
+    generator = model_manager.get_video_generator()
     result = await generator.generate_video(params)
     
     final_url = await storage.upload_to_url(
@@ -205,13 +204,8 @@ async def interpolate_keyframes(
 ) -> AsyncJobResponse:
     """Generate a video by interpolating between keyframes (Async)."""
     
-    # 1. Determine active generator (if not mock)
-    active_generator = generator
-
-    if not settings.mock_mode:
-        # Note: Worker will handle mode switching automatically
-        active_generator = model_manager.get_video_generator()
-
+    # 1. Check generator capability (use mock in mock mode, real otherwise)
+    active_generator = generator if settings.mock_mode else model_manager.get_video_generator()
     if not hasattr(active_generator, "generate_keyframe_video"):
         raise ValidationError("Current generator does not support keyframe interpolation.")
 
@@ -244,7 +238,7 @@ async def interpolate_keyframes(
         enhance_prompt=body.enhance_prompt,
     )
 
-    # 3. Submit
+    # 3. Submit (generator is fetched at execution time via model_manager)
     submitted = await job_manager.try_submit_job(
         job_id=body.job_id,
         job_type=JobType.VIDEO_GENERATION,
@@ -252,7 +246,7 @@ async def interpolate_keyframes(
         webhook_url=body.webhook_url,
         item_id=body.item_id,
         webhook_secret=body.webhook_secret,
-        generator=active_generator,
+        model_manager=model_manager,
         storage=storage,
         params=params,
         save_url=body.save_url,
@@ -268,14 +262,19 @@ async def interpolate_keyframes(
 
 
 async def _run_ltx2_interpolation(
-    generator: GeneratorDep,
+    model_manager: ModelManagerDep,
     storage: StorageDep,
     params: KeyframeInterpolationParams,
     save_url: str,
 ) -> JobResult:
-    """Background task for interpolation."""
+    """Background task for interpolation.
+    
+    Generator is fetched at execution time (not at request time) to support
+    dynamic model loading via ensure_mode_for_job().
+    """
     start_time = time.time()
     
+    generator = model_manager.get_video_generator()
     result = await generator.generate_keyframe_video(params)
     
     final_url = await storage.upload_to_url(

@@ -98,4 +98,4 @@ sudo docker compose logs -f
 
 <!-- change IP -->
 
-ssh -i ~/.ssh/google_compute_engine owen@35.245.212.177
+ssh -i ~/.ssh/google_compute_engine owen@(IP)

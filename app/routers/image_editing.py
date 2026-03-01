@@ -62,18 +62,7 @@ async def edit_image(
 ) -> AsyncJobResponse:
     """Edit an image with AI-powered transformations (Async)."""
     
-    # 1. Determine active generator and ensure mode (if not mock)
-    active_generator = generator
-
-    if not settings.mock_mode:
-        if not await model_manager.ensure_mode_for_job(JobType.IMAGE_EDITING):
-            raise HTTPException(
-                status_code=409,
-                detail="System is currently busy processing other tasks. Please wait until they are finished."
-            )
-        active_generator = model_manager.get_image_editor()
-
-    # 2. Pre-validation of input URLs (Fail fast)
+    # 1. Pre-validation of input URLs (Fail fast)
     # We download images HERE (blocking the request slightly) to ensure they are valid
     # before queuing the job. This prevents queue slots being taken by bad requests.
     try:
@@ -113,7 +102,7 @@ async def edit_image(
         lora_strength=body.lora_strength,
     )
 
-    # 3. Submit Job
+    # 2. Submit Job (generator is fetched at execution time via model_manager)
     submitted = await job_manager.try_submit_job(
         job_id=body.job_id,
         job_type=JobType.IMAGE_EDITING,
@@ -122,7 +111,7 @@ async def edit_image(
         item_id=body.item_id,
         webhook_secret=body.webhook_secret,
         # Args for task_func:
-        generator=active_generator,
+        model_manager=model_manager,
         storage=storage,
         params=params,
         save_url=body.save_url,
@@ -138,14 +127,19 @@ async def edit_image(
 
 
 async def _run_image_edit(
-    generator: GeneratorDep,
+    model_manager: ModelManagerDep,
     storage: StorageDep,
     params: ImageEditParams,
     save_url: str,
 ) -> JobResult:
-    """Background task for image editing."""
+    """Background task for image editing.
+    
+    Generator is fetched at execution time (not at request time) to support
+    dynamic model loading via ensure_mode_for_job().
+    """
     start_time = time.time()
     
+    generator = model_manager.get_image_editor()
     result = await generator.edit_image(params)
     
     final_url = await storage.upload_to_url(

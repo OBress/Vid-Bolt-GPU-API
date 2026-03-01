@@ -87,18 +87,11 @@ async def batch_generate_images(
             detail=f"Batch size {len(body.items)} exceeds maximum of {BatchManager.MAX_IMAGE_BATCH_SIZE}"
         )
     
-    # Get generator
-    if settings.mock_mode:
-        from app.dependencies import get_generator
-        generator = get_generator(settings)
-    else:
-        generator = model_manager.get_image_generator()
-    
     try:
         batch_info = await batch_manager.submit_image_generation_batch(
             batch_id=body.batch_id,
             items=body.items,
-            generator=generator,
+            model_manager=model_manager,
             storage=storage,
             webhook_url=body.webhook_url,
             webhook_secret=body.webhook_secret,
@@ -153,18 +146,11 @@ async def batch_edit_images(
             detail=f"Batch size {len(body.items)} exceeds maximum of {BatchManager.MAX_IMAGE_BATCH_SIZE}"
         )
     
-    # Get generator
-    if settings.mock_mode:
-        from app.dependencies import get_generator
-        generator = get_generator(settings)
-    else:
-        generator = model_manager.get_image_editor()
-    
     try:
         batch_info = await batch_manager.submit_image_editing_batch(
             batch_id=body.batch_id,
             items=body.items,
-            generator=generator,
+            model_manager=model_manager,
             storage=storage,
             webhook_url=body.webhook_url,
             webhook_secret=body.webhook_secret,
@@ -219,18 +205,11 @@ async def batch_generate_videos(
             detail=f"Batch size {len(body.items)} exceeds maximum of {BatchManager.MAX_VIDEO_BATCH_SIZE}"
         )
     
-    # Get generator
-    if settings.mock_mode:
-        from app.dependencies import get_generator
-        generator = get_generator(settings)
-    else:
-        generator = model_manager.get_video_generator()
-    
     try:
         batch_info = await batch_manager.submit_video_generation_batch(
             batch_id=body.batch_id,
             items=body.items,
-            generator=generator,
+            model_manager=model_manager,
             storage=storage,
             webhook_url=body.webhook_url,
             webhook_secret=body.webhook_secret,
