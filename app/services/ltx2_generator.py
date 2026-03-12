@@ -150,7 +150,7 @@ class LTX2Generator(VideoGenerator):
             import torch
             from ltx_pipelines.distilled import DistilledPipeline
             from ltx_pipelines.keyframe_interpolation import KeyframeInterpolationPipeline
-            from ltx_core.loader import LoraPathStrengthAndSDOps
+            from ltx_core.loader import LTXV_LORA_COMFY_RENAMING_MAP, LoraPathStrengthAndSDOps
         except ImportError as e:
             raise ImportError(
                 "LTX-2 packages are required. Install with: "
@@ -165,20 +165,21 @@ class LTX2Generator(VideoGenerator):
         distilled_lora = LoraPathStrengthAndSDOps(
             path=str(distilled_lora_path.absolute()),
             strength=1.0,
+            sd_ops=LTXV_LORA_COMFY_RENAMING_MAP,
         )
         logger.info(f"Distilled LoRA: {distilled_lora_path.name} (strength=1.0)")
 
         # DistilledPipeline for I2V generation (1 keyframe)
         # Uses latent replacement conditioning - exact keyframe preservation
+        # NOTE: FP8 weights are pre-baked in the checkpoint, so no runtime quantization needed
         logger.info("Loading DistilledPipeline for single-keyframe I2V generation...")
         try:
             distilled_pipeline = DistilledPipeline(
-                checkpoint_path=str(checkpoint_path.absolute()),
+                distilled_checkpoint_path=str(checkpoint_path.absolute()),
                 spatial_upsampler_path=str(spatial_upsampler_path.absolute()),
                 gemma_root=str(gemma_root.absolute()),
                 loras=[distilled_lora],  # Apply distilled LoRA to dev model
                 device=device,
-                fp8transformer=self.settings.ltx2_fp8_enabled,
             )
         except Exception:
             logger.exception("Failed to initialize DistilledPipeline")
@@ -187,8 +188,8 @@ class LTX2Generator(VideoGenerator):
         
         # KeyframeInterpolationPipeline for 2-keyframe requests
         # Uses guiding latents conditioning - smoother transitions between keyframes
-        # Share all components from DistilledPipeline to save ~60% VRAM
-        logger.info("Initializing KeyframeInterpolationPipeline with shared components...")
+        # The new API shares models automatically via ModelLedger registry
+        logger.info("Initializing KeyframeInterpolationPipeline...")
         try:
             keyframe_pipeline = KeyframeInterpolationPipeline(
                 checkpoint_path=str(checkpoint_path.absolute()),
@@ -197,20 +198,11 @@ class LTX2Generator(VideoGenerator):
                 gemma_root=str(gemma_root.absolute()),
                 loras=[],  # No extra LoRAs beyond distilled
                 device=device,
-                fp8transformer=self.settings.ltx2_fp8_enabled,
-                # Share all components from DistilledPipeline (VRAM optimization)
-                shared_text_encoder=distilled_pipeline.text_encoder,
-                shared_video_encoder=distilled_pipeline.video_encoder,
-                shared_transformer=distilled_pipeline.transformer,
-                shared_spatial_upsampler=distilled_pipeline.spatial_upsampler,
-                shared_video_decoder=distilled_pipeline.video_decoder,
-                shared_audio_decoder=distilled_pipeline.audio_decoder,
-                shared_vocoder=distilled_pipeline.vocoder,
             )
         except Exception:
             logger.exception("Failed to initialize KeyframeInterpolationPipeline")
             raise
-        logger.info("KeyframeInterpolationPipeline initialized with shared components")
+        logger.info("KeyframeInterpolationPipeline initialized")
 
         self.components = LTX2Components(
             distilled_pipeline=distilled_pipeline,
@@ -300,26 +292,34 @@ class LTX2Generator(VideoGenerator):
         """Patch model_ledger to cache and reuse model instances.
         
         The upstream LTX-2 model_ledger creates new model instances on each call.
-        This patches the text_encoder() method to return the already-loaded instance
-        from DistilledPipeline, preventing race conditions during concurrent video
-        generation AND avoiding loading the text encoder twice.
+        We force the text encoder to be built once and then cache it, preventing
+        race conditions during concurrent video generation AND avoiding loading
+        the text encoder twice (~18GB VRAM savings).
         """
         distilled = self.components.distilled_pipeline
         
-        # Use the already-loaded text encoder from DistilledPipeline.__init__
-        # This avoids loading it twice (which wastes ~18GB VRAM!)
         logger.info("Patching text encoder for thread-safe concurrent access...")
         
         try:
-            # The text encoder is already loaded at distilled.text_encoder
-            # We just patch model_ledger to return it instead of loading a new one
-            cached_text_encoder = distilled.text_encoder
+            # Build the text encoder once using the model_ledger
+            cached_text_encoder = distilled.model_ledger.text_encoder()
             
             def cached_text_encoder_fn():
                 return cached_text_encoder
             
+            # Patch both pipelines' model_ledger to return the cached instance
             distilled.model_ledger.text_encoder = cached_text_encoder_fn
-            logger.info("  Patched model_ledger.text_encoder() to reuse existing instance")
+            
+            # Also patch keyframe pipeline if it has its own model_ledger
+            keyframe = self.components.keyframe_pipeline
+            if hasattr(keyframe, 'stage_1_model_ledger'):
+                keyframe.stage_1_model_ledger.text_encoder = cached_text_encoder_fn
+                if hasattr(keyframe, 'stage_2_model_ledger'):
+                    keyframe.stage_2_model_ledger.text_encoder = cached_text_encoder_fn
+                logger.info("  Patched both DistilledPipeline and KeyframeInterpolationPipeline model_ledgers")
+            else:
+                logger.info("  Patched DistilledPipeline model_ledger")
+            
             logger.info("Text encoder caching enabled - concurrent generation is now thread-safe")
             
         except Exception as e:
@@ -782,7 +782,8 @@ class LTX2Generator(VideoGenerator):
         else:
             # Two keyframes: use KeyframeInterpolationPipeline with distilled schedule
             # This uses guiding latents for smoother transitions between start/end frames
-            logger.info("Using KeyframeInterpolationPipeline for 2-keyframe interpolation (8-step distilled mode)")
+            from ltx_core.components.guiders import MultiModalGuiderParams
+            logger.info("Using KeyframeInterpolationPipeline for 2-keyframe interpolation")
             video_chunks, audio = self.components.keyframe_pipeline(
                 prompt=params.prompt,
                 negative_prompt=params.negative_prompt or "",
@@ -791,12 +792,12 @@ class LTX2Generator(VideoGenerator):
                 width=params.width,
                 num_frames=num_frames,
                 frame_rate=params.frame_rate,
-                num_inference_steps=8,  # Placeholder, ignored when use_distilled_schedule=True
-                cfg_guidance_scale=1.0,  # Placeholder, ignored when use_distilled_schedule=True
+                num_inference_steps=8,
+                video_guider_params=MultiModalGuiderParams(cfg_scale=1.0),
+                audio_guider_params=MultiModalGuiderParams(cfg_scale=1.0),
                 images=images,
                 tiling_config=tiling_config,
                 enhance_prompt=params.enhance_prompt,
-                use_distilled_schedule=True,  # Enable 8-step fast mode
             )
 
         # Consolidate video chunks into a single tensor for cropping/trimming
