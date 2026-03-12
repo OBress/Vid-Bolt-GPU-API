@@ -73,26 +73,43 @@ After both parts complete, you should see your GPU in both:
 - `nvidia-smi` (host)
 - `docker run --rm --gpus all nvidia/cuda:12.8.0-base-ubuntu22.04 nvidia-smi` (container)
 
-## Part 3: setup repos and env
+## Part 3: Setup repos, env, and auto-deploy
 
+```bash
 git clone https://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@github.com/OBress/Vid-Bolt-GPU-API.git
 
 cd Vid-Bolt-GPU-API
 
-# shouldn't need this anymore cause models are in repo but if not
-
-make setup-repos
-
 cp .env.example .env
 nano .env
 
-## Part 4: build & run
+# Install auto-deploy service (runs on every VM boot)
+sudo cp scripts/auto-deploy.sh /usr/local/bin/vidbolt-auto-deploy
+sudo chmod +x /usr/local/bin/vidbolt-auto-deploy
+sudo cp scripts/vidbolt-deploy.service /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable vidbolt-deploy.service
+```
 
-sudo git pull
-sudo docker system prune -a
+## Part 4: Initial build & run
+
+```bash
 sudo docker compose build --no-cache
 sudo docker compose up -d
 sudo docker compose logs -f
+```
+
+After this, the VM will **automatically check for updates on every boot**.
+If new commits are found, it pulls, rebuilds, and starts. If already up to
+date, it just starts the app. No manual SSH needed for deploys — just push
+to GitHub and restart the VM (or let GCP auto-restart it).
+
+```bash
+# Check deploy logs
+sudo journalctl -u vidbolt-deploy.service
+# or
+sudo tail -f /var/log/vidbolt-deploy.log
+```
 
 # SSH in
 

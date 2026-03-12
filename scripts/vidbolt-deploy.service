@@ -1,0 +1,17 @@
+[Unit]
+Description=Vid-Bolt GPU API - auto-update and start on boot
+After=network-online.target docker.service
+Wants=network-online.target
+Requires=docker.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/vidbolt-auto-deploy
+WorkingDirectory=/home/ubuntu/Vid-Bolt-GPU-API
+RemainAfterExit=true
+StandardOutput=journal+console
+StandardError=journal+console
+TimeoutStartSec=1800
+
+[Install]
+WantedBy=multi-user.target

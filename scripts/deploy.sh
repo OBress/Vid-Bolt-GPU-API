@@ -116,6 +116,22 @@ if [ "$BUILD_ONLY" = true ]; then
 fi
 
 # =============================================================================
+# Install Auto-Deploy Service (runs on every VM boot)
+# =============================================================================
+echo -e "${YELLOW}[3.5/5] Installing auto-deploy service...${NC}"
+
+if [ -f "$SCRIPT_DIR/auto-deploy.sh" ] && [ -f "$SCRIPT_DIR/vidbolt-deploy.service" ]; then
+    sudo cp "$SCRIPT_DIR/auto-deploy.sh" /usr/local/bin/vidbolt-auto-deploy
+    sudo chmod +x /usr/local/bin/vidbolt-auto-deploy
+    sudo cp "$SCRIPT_DIR/vidbolt-deploy.service" /etc/systemd/system/
+    sudo systemctl daemon-reload
+    sudo systemctl enable vidbolt-deploy.service 2>/dev/null
+    echo -e "  ${GREEN}✓ Auto-deploy enabled (checks for updates on every VM boot)${NC}"
+else
+    echo -e "  ${YELLOW}⚠ Auto-deploy scripts not found, skipping${NC}"
+fi
+
+# =============================================================================
 # Download Models
 # =============================================================================
 if [ "$SKIP_MODELS" = false ]; then
