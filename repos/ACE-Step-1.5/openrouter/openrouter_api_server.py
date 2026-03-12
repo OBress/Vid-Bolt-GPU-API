@@ -3,9 +3,9 @@
 Provides OpenAI Chat Completions API format for text-to-music generation.
 
 Endpoints:
-- GET  /api/v1/models       List available models with pricing
-- POST /v1/chat/completions Generate music from text prompt
-- GET  /health              Health check
+- GET  /v1/models            List available models with pricing
+- POST /v1/chat/completions  Generate music from text prompt
+- GET  /health               Health check
 
 Usage:
     python -m openrouter.openrouter_api_server --host 0.0.0.0 --port 8002
@@ -20,11 +20,12 @@ import functools
 import json
 import os
 import sys
+import tempfile
 import time
 import traceback
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import asynccontextmanager
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Union
 
 # Add parent directory to path for imports
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -46,12 +47,13 @@ from acestep.inference import (
     generate_music,
     format_sample,
 )
+from acestep.constants import TASK_INSTRUCTIONS
 
 # =============================================================================
 # Constants
 # =============================================================================
 
-MODEL_ID = "acemusic/acestep-v1.5-turbo"
+MODEL_ID = "acemusic/acestep-v15-turbo"
 MODEL_NAME = "ACE-Step"
 MODEL_CREATED = 1706688000  # Unix timestamp
 
@@ -97,29 +99,53 @@ async def verify_api_key(authorization: Optional[str] = Header(None)):
 
 class ChatMessage(BaseModel):
     role: str = "user"
-    content: str = ""
+    content: Union[str, List[Dict[str, Any]]] = ""
+
+
+class AudioConfig(BaseModel):
+    """Audio generation configuration."""
+    duration: Optional[float] = None
+    format: str = "mp3"
+    bpm: Optional[int] = None
+    key_scale: Optional[str] = None
+    time_signature: Optional[str] = None
+    vocal_language: Optional[str] = None
+    instrumental: Optional[bool] = None
 
 
 class ChatCompletionRequest(BaseModel):
     model: str = MODEL_ID
     messages: List[ChatMessage] = Field(default_factory=list)
     modalities: List[str] = Field(default=["audio"])
+    audio_config: Optional[AudioConfig] = None
     stream: bool = False  # Enable streaming response
     temperature: float = 0.85
     top_p: float = 0.9
     max_tokens: Optional[int] = None
-    # ACE-Step specific parameters (optional)
-    lyrics: str = ""
-    duration: Optional[float] = None
-    bpm: Optional[int] = None
-    vocal_language: str = "en"
-    instrumental: bool = False
-    # LM / CoT control parameters
+    seed: Optional[Union[int, str]] = Field(default=None, description="Seed(s) for reproducibility. Comma-separated for batch (e.g. '42,123,456')")
+    # ACE-Step specific parameters
     thinking: bool = False
-    use_cot_metas: bool = True
+    guidance_scale: Optional[float] = None
+    batch_size: Optional[int] = None
+    lyrics: str = ""
+    sample_mode: bool = False
+    use_format: bool = False
     use_cot_caption: bool = True
     use_cot_language: bool = True
-    use_format: bool = True
+    use_cot_metas: Optional[bool] = None
+    # Task type
+    task_type: str = "text2music"
+    # Audio editing parameters
+    repainting_start: float = 0.0
+    repainting_end: Optional[float] = None
+    audio_cover_strength: float = 1.0
+    # Extended fields for ComfyUI node compatibility
+    audio_codes: str = ""
+    cover_noise_strength: float = 0.0
+    inference_steps: int = 8
+    infer_method: str = "ode"
+    lm_cfg_scale: float = 2.0
+    top_k: int = 0
 
 
 class AudioUrlContent(BaseModel):
@@ -136,7 +162,8 @@ class AudioOutputItem(BaseModel):
 class ResponseMessage(BaseModel):
     role: str = "assistant"
     content: Optional[str] = None
-    audio: Optional[List[AudioOutputItem]] = None  # OpenRouter format: list of audio items
+    audio: Optional[List[AudioOutputItem]] = None
+    audio_codes: Optional[str] = None
 
 
 class Choice(BaseModel):
@@ -274,9 +301,27 @@ def _extract_tagged_content(text: str) -> tuple[str, str, str]:
     return prompt, lyrics, remaining
 
 
-def _extract_prompt_and_lyrics(messages: List[ChatMessage]) -> tuple[str, str, str]:
+def _base64_to_temp_file(b64_data: str, audio_format: str = "mp3") -> str:
+    """Save base64 audio data to temporary file."""
+    if "," in b64_data:
+        b64_data = b64_data.split(",", 1)[1]
+
+    audio_bytes = base64.b64decode(b64_data)
+    suffix = f".{audio_format}" if not audio_format.startswith(".") else audio_format
+    fd, path = tempfile.mkstemp(suffix=suffix, prefix="openrouter_audio_")
+    os.close(fd)
+
+    with open(path, "wb") as f:
+        f.write(audio_bytes)
+
+    return path
+
+
+def _extract_prompt_and_lyrics(messages: List[ChatMessage]) -> tuple[str, str, str, List[str]]:
     """
-    Extract prompt (caption), lyrics, and sample_query from messages.
+    Extract prompt (caption), lyrics, sample_query, and audio paths from messages.
+
+    Supports multimodal content (text + input_audio blocks).
 
     Processing logic:
     1. If <prompt> and/or <lyrics> tags present: extract tagged content
@@ -284,39 +329,65 @@ def _extract_prompt_and_lyrics(messages: List[ChatMessage]) -> tuple[str, str, s
        - If text looks like lyrics -> set as lyrics
        - If text doesn't look like lyrics -> set as sample_query (for LLM sample mode)
 
+    Multiple input_audio blocks are collected in order (like multiple images).
+    The caller routes them to src_audio / reference_audio based on task_type.
+
     Returns:
-        (prompt, lyrics, sample_query)
+        (prompt, lyrics, sample_query, audio_paths)
     """
     prompt = ""
     lyrics = ""
     sample_query = ""
+    audio_paths: List[str] = []
+    has_tags = False
 
     # Get the last user message
     for msg in reversed(messages):
         if msg.role == "user" and msg.content:
-            content = msg.content.strip()
+            # Handle multimodal content (list of parts)
+            if isinstance(msg.content, list):
+                text_parts = []
+                for part in msg.content:
+                    if isinstance(part, dict):
+                        part_type = part.get("type", "")
+                        if part_type == "text":
+                            text_parts.append(part.get("text", "").strip())
+                        elif part_type == "input_audio":
+                            audio_data = part.get("input_audio", {})
+                            if isinstance(audio_data, dict):
+                                b64_data = audio_data.get("data", "")
+                                audio_format = audio_data.get("format", "mp3")
+                                if b64_data:
+                                    try:
+                                        path = _base64_to_temp_file(b64_data, audio_format)
+                                        audio_paths.append(path)
+                                    except Exception:
+                                        pass
+                content = "\n".join(text_parts).strip()
+            else:
+                content = msg.content.strip()
+
+            if not content:
+                break
 
             # Try to extract tagged content first
             tagged_prompt, tagged_lyrics, remaining = _extract_tagged_content(content)
 
             if tagged_prompt is not None or tagged_lyrics is not None:
-                # Tags found - use tagged content
+                has_tags = True
                 prompt = tagged_prompt or ""
                 lyrics = tagged_lyrics or ""
-                # If there's remaining text and no prompt, use remaining as prompt
                 if remaining and not prompt:
                     prompt = remaining
             else:
                 # No tags - use heuristic detection
                 if _looks_like_lyrics(content):
-                    # Looks like lyrics
                     lyrics = content
                 else:
-                    # Doesn't look like lyrics - use as sample_query for LLM
-                    sample_query = content
+                    prompt = content
             break
 
-    return prompt, lyrics, sample_query
+    return prompt, lyrics, sample_query, audio_paths
 
 
 def _read_audio_as_base64(file_path: str) -> str:
@@ -354,9 +425,6 @@ def _format_lm_content(result: Dict[str, Any]) -> str:
     If LM was used, returns formatted metadata and lyrics.
     Otherwise returns a simple success message.
     """
-    if not result.get("lm_used"):
-        return "Music generated successfully."
-
     metadata = result.get("metadata", {})
     lyrics = result.get("lyrics", "")
 
@@ -471,6 +539,7 @@ def create_app() -> FastAPI:
         use_flash_attention = _env_bool("ACESTEP_USE_FLASH_ATTENTION", True)
         offload_to_cpu = _env_bool("ACESTEP_OFFLOAD_TO_CPU", False)
         offload_dit_to_cpu = _env_bool("ACESTEP_OFFLOAD_DIT_TO_CPU", False)
+        compile_model = _env_bool("ACESTEP_COMPILE_MODEL", False)
 
         # Initialize DiT model
         print(f"[OpenRouter API] Loading DiT model: {config_path}")
@@ -479,7 +548,7 @@ def create_app() -> FastAPI:
             config_path=config_path,
             device=device,
             use_flash_attention=use_flash_attention,
-            compile_model=False,
+            compile_model=compile_model,
             offload_to_cpu=offload_to_cpu,
             offload_dit_to_cpu=offload_dit_to_cpu,
         )
@@ -506,7 +575,7 @@ def create_app() -> FastAPI:
                 backend=backend,
                 device=device,
                 offload_to_cpu=lm_offload,
-                dtype=handler.dtype,
+                dtype=None,
             )
             app.state._llm_initialized = lm_ok
             if lm_ok:
@@ -535,7 +604,7 @@ def create_app() -> FastAPI:
     # Endpoints
     # -------------------------------------------------------------------------
     
-    @app.get("/api/v1/models", response_model=ModelsResponse)
+    @app.get("/v1/models", response_model=ModelsResponse)
     async def list_models(_: None = Depends(verify_api_key)) -> ModelsResponse:
         """List available models with capabilities and pricing."""
         return ModelsResponse(
@@ -545,8 +614,8 @@ def create_app() -> FastAPI:
                     name=MODEL_NAME,
                     created=MODEL_CREATED,
                     description="High-performance text-to-music generation model. Supports multiple styles, lyrics input, and various audio durations.",
-                    input_modalities=["text"],
-                    output_modalities=["audio"],
+                    input_modalities=["text", "audio"],
+                    output_modalities=["audio", "text"],
                     context_length=4096,
                     pricing={
                         "prompt": PRICING_PROMPT,
@@ -576,16 +645,57 @@ def create_app() -> FastAPI:
         if not app.state._initialized:
             raise HTTPException(status_code=503, detail="Model not initialized")
 
-        # Extract prompt, lyrics, and sample_query from messages
-        prompt, lyrics_from_msg, sample_query = _extract_prompt_and_lyrics(request.messages)
+        # Extract prompt, lyrics, sample_query, and audio paths from messages
+        prompt, lyrics_from_msg, sample_query, audio_paths = _extract_prompt_and_lyrics(request.messages)
+
+        # When lyrics or sample_mode is explicitly provided, the message text role
+        # is already known — skip auto-detection results.
+        if request.lyrics or request.sample_mode:
+            raw_text = prompt or sample_query or ""
+            if request.lyrics:
+                # lyrics provided → message text is the prompt
+                prompt = raw_text
+                lyrics_from_msg = ""
+                sample_query = ""
+            else:
+                # sample_mode → message text is the sample_query
+                prompt = ""
+                lyrics_from_msg = ""
+                sample_query = raw_text
+
         lyrics = request.lyrics or lyrics_from_msg
 
         # Validate input
-        if not prompt and not lyrics and not sample_query:
+        if not prompt and not lyrics and not sample_query and not audio_paths:
             raise HTTPException(status_code=400, detail="No input provided in messages")
 
+        # Resolve audio_config parameters
+        audio_config = request.audio_config or AudioConfig()
+        resolved_vocal_language = audio_config.vocal_language or "en"
+        resolved_instrumental = audio_config.instrumental if audio_config.instrumental is not None else (not lyrics)
+        resolved_duration = audio_config.duration
+        resolved_bpm = audio_config.bpm
+        resolved_key_scale = audio_config.key_scale or ""
+        resolved_time_signature = audio_config.time_signature or ""
+
+        # Route audio paths based on task_type.
+        # cover / repaint / lego / extract / complete:
+        #   audio[0] → src_audio, audio[1] → reference_audio
+        # text2music (default):
+        #   audio[0] → reference_audio
+        reference_audio_path = None
+        src_audio_path = None
+        _SRC_AUDIO_TASK_TYPES = {"cover", "repaint", "lego", "extract", "complete"}
+        if audio_paths:
+            if request.task_type in _SRC_AUDIO_TASK_TYPES:
+                src_audio_path = audio_paths[0]
+                if len(audio_paths) > 1:
+                    reference_audio_path = audio_paths[1]
+            else:
+                reference_audio_path = audio_paths[0]
+
         # Determine if instrumental
-        instrumental = request.instrumental or not lyrics
+        instrumental = resolved_instrumental
 
         # Generate unique IDs
         completion_id = f"chatcmpl-{os.urandom(8).hex()}"
@@ -611,7 +721,7 @@ def create_app() -> FastAPI:
                     sample_result, status_msg = llm.create_sample_from_query(
                         query=sample_query,
                         instrumental=instrumental,
-                        vocal_language=request.vocal_language,
+                        vocal_language=resolved_vocal_language,
                         temperature=request.temperature,
                         top_p=request.top_p,
                     )
@@ -627,7 +737,7 @@ def create_app() -> FastAPI:
                             "duration": sample_result.get("duration"),
                             "keyscale": sample_result.get("keyscale"),
                             "timesignature": sample_result.get("timesignature"),
-                            "language": sample_result.get("language") or request.vocal_language,
+                            "language": sample_result.get("language") or resolved_vocal_language,
                         }
                         print(f"[OpenRouter API] Sample mode: {status_msg}")
                 except Exception as e:
@@ -639,12 +749,12 @@ def create_app() -> FastAPI:
                 # Format mode: use format_sample to enhance caption and lyrics
                 try:
                     user_metadata = {}
-                    if request.bpm is not None:
-                        user_metadata["bpm"] = request.bpm
-                    if request.duration:
-                        user_metadata["duration"] = float(request.duration)
-                    if request.vocal_language and request.vocal_language != "unknown":
-                        user_metadata["language"] = request.vocal_language
+                    if resolved_bpm is not None:
+                        user_metadata["bpm"] = resolved_bpm
+                    if resolved_duration:
+                        user_metadata["duration"] = float(resolved_duration)
+                    if resolved_vocal_language and resolved_vocal_language != "unknown":
+                        user_metadata["language"] = resolved_vocal_language
 
                     format_result = format_sample(
                         llm_handler=llm,
@@ -663,11 +773,11 @@ def create_app() -> FastAPI:
                         lm_result["format_has_duration"] = bool(format_result.duration)
                         lm_result["metadata"] = {
                             "caption": lm_result["prompt"],
-                            "bpm": format_result.bpm or request.bpm,
-                            "duration": format_result.duration or request.duration,
+                            "bpm": format_result.bpm or resolved_bpm,
+                            "duration": format_result.duration or resolved_duration,
                             "keyscale": format_result.keyscale or None,
                             "timesignature": format_result.timesignature or None,
-                            "language": format_result.language or request.vocal_language,
+                            "language": format_result.language or resolved_vocal_language,
                         }
                         print(f"[OpenRouter API] Format mode: {format_result.status_message}")
                     else:
@@ -686,24 +796,49 @@ def create_app() -> FastAPI:
             gen_lyrics = lm_result["lyrics"]
             gen_instrumental = lm_result["instrumental"]
 
-            # Use metadata from LM/format if available, fallback to request params
+            # Use metadata from LM/format if available, fallback to audio_config params
             lm_meta = lm_result.get("metadata", {})
-            gen_bpm = lm_meta.get("bpm") or request.bpm
-            gen_duration = lm_meta.get("duration") or (request.duration if request.duration else -1.0)
-            gen_keyscale = lm_meta.get("keyscale") or ""
-            gen_timesignature = lm_meta.get("timesignature") or ""
-            gen_language = lm_meta.get("language") or request.vocal_language
+            gen_bpm = lm_meta.get("bpm") or resolved_bpm
+            gen_duration = lm_meta.get("duration") or (resolved_duration if resolved_duration else -1.0)
+            gen_keyscale = lm_meta.get("keyscale") or resolved_key_scale
+            gen_timesignature = lm_meta.get("timesignature") or resolved_time_signature
+            gen_language = lm_meta.get("language") or resolved_vocal_language
 
-            # If sample/format already generated duration, skip Phase 1 CoT metas
             is_sample_mode = bool(sample_query and lm_result.get("lm_used"))
             format_has_duration = lm_result.get("format_has_duration", False)
 
-            # Default timesteps for turbo model (8 steps)
             default_timesteps = [0.97, 0.76, 0.615, 0.5, 0.395, 0.28, 0.18, 0.085, 0.0]
 
-            # Build generation parameters
+            task_instruction = TASK_INSTRUCTIONS.get(request.task_type, TASK_INSTRUCTIONS["text2music"])
+
+            no_lm_task = request.task_type in ("cover", "repaint")
+
+            # Auto-convert src_audio to codes for cover mode when no codes provided
+            resolved_audio_codes = request.audio_codes
+            if (src_audio_path and not resolved_audio_codes
+                    and request.task_type == "cover"):
+                try:
+                    codes_str = h.convert_src_audio_to_codes(src_audio_path)
+                    if codes_str and not codes_str.startswith("❌"):
+                        resolved_audio_codes = codes_str
+                        print(f"[OpenRouter API] Auto-converted src_audio to {len(codes_str)} chars of audio codes")
+                except Exception as e:
+                    print(f"[OpenRouter API] Warning: auto audio2code failed: {e}")
+
+            resolved_thinking = False if no_lm_task else request.thinking
+            resolved_cot_caption = False if no_lm_task else request.use_cot_caption
+            resolved_cot_language = False if no_lm_task else request.use_cot_language
+            if request.use_cot_metas is not None:
+                resolved_cot_metas = False if no_lm_task else request.use_cot_metas
+            else:
+                resolved_cot_metas = False if no_lm_task else (not is_sample_mode and not format_has_duration)
+
             params = GenerationParams(
-                task_type="text2music",
+                task_type=request.task_type,
+                instruction=task_instruction,
+                reference_audio=reference_audio_path,
+                src_audio=src_audio_path,
+                audio_codes=resolved_audio_codes,
                 caption=gen_prompt,
                 lyrics=gen_lyrics,
                 instrumental=gen_instrumental,
@@ -712,21 +847,49 @@ def create_app() -> FastAPI:
                 keyscale=gen_keyscale,
                 timesignature=gen_timesignature,
                 duration=gen_duration if gen_duration else -1.0,
-                inference_steps=8,
-                guidance_scale=7.0,
+                inference_steps=request.inference_steps,
+                infer_method=request.infer_method,
+                guidance_scale=request.guidance_scale if request.guidance_scale is not None else 7.0,
                 lm_temperature=request.temperature,
+                lm_cfg_scale=request.lm_cfg_scale,
                 lm_top_p=request.top_p,
-                thinking=request.thinking,
-                use_cot_metas=request.use_cot_metas and not is_sample_mode and not format_has_duration,
-                use_cot_caption=request.use_cot_caption,
-                use_cot_language=request.use_cot_language,
+                lm_top_k=request.top_k,
+                thinking=resolved_thinking,
+                use_cot_metas=resolved_cot_metas,
+                use_cot_caption=resolved_cot_caption,
+                use_cot_language=resolved_cot_language,
+                use_constrained_decoding=True,
                 timesteps=default_timesteps,
+                repainting_start=request.repainting_start,
+                repainting_end=request.repainting_end if request.repainting_end is not None else -1,
+                audio_cover_strength=request.audio_cover_strength,
+                cover_noise_strength=request.cover_noise_strength,
             )
 
+            # Resolve seed(s): parse into Optional[List[int]] for GenerationConfig.seeds
+            use_random_seed = request.seed is None
+            resolved_seeds = None
+            if request.seed is not None:
+                if isinstance(request.seed, int):
+                    resolved_seeds = [request.seed]
+                elif isinstance(request.seed, str):
+                    resolved_seeds = []
+                    for s in request.seed.split(","):
+                        s = s.strip()
+                        if s:
+                            try:
+                                resolved_seeds.append(int(s))
+                            except ValueError:
+                                pass
+                    if not resolved_seeds:
+                        resolved_seeds = None
+                        use_random_seed = True
+
             config = GenerationConfig(
-                batch_size=1,
-                use_random_seed=True,
-                audio_format="mp3",
+                batch_size=request.batch_size or 1,
+                use_random_seed=use_random_seed,
+                seeds=resolved_seeds,
+                audio_format=audio_config.format or "mp3",
             )
 
             result = generate_music(
@@ -753,26 +916,34 @@ def create_app() -> FastAPI:
             if not metadata:
                 metadata = {
                     "caption": gen_prompt,
-                    "bpm": request.bpm,
-                    "duration": request.duration,
+                    "bpm": resolved_bpm,
+                    "duration": resolved_duration,
                     "keyscale": None,
                     "timesignature": None,
-                    "language": request.vocal_language,
+                    "language": resolved_vocal_language,
                     "instrumental": gen_instrumental,
                 }
 
-            # Extract LM metadata from result if available
-            lm_metadata = result.extra_outputs.get("lm_metadata", {}) if hasattr(result, 'extra_outputs') else {}
+            # Extract LM metadata and audio codes from result if available
+            extra = result.extra_outputs if hasattr(result, 'extra_outputs') and result.extra_outputs else {}
+            lm_metadata = extra.get("lm_metadata", {})
             if lm_metadata:
                 for key in ["caption", "bpm", "duration", "keyscale", "timesignature", "language"]:
                     if lm_metadata.get(key):
                         metadata[key] = lm_metadata.get(key)
+
+            output_audio_codes = extra.get("audio_codes", "")
+            if not output_audio_codes and result.audios:
+                output_audio_codes = result.audios[0].get("params", {}).get("audio_codes", "")
+            if not output_audio_codes:
+                output_audio_codes = resolved_audio_codes or ""
 
             return {
                 "audio_path": audio_path,
                 "lyrics": gen_lyrics,
                 "metadata": metadata,
                 "lm_used": lm_result.get("lm_used", False),
+                "audio_codes": output_audio_codes,
             }
 
         # Handle streaming mode
@@ -938,6 +1109,7 @@ def create_app() -> FastAPI:
                         role="assistant",
                         content=text_content,
                         audio=audio_list,
+                        audio_codes=result.get("audio_codes") or None,
                     ),
                     finish_reason="stop",
                 )
@@ -959,7 +1131,7 @@ def create_app() -> FastAPI:
             "service": "ACE-Step OpenRouter API",
             "version": "1.0",
         }
-    
+
     return app
 
 

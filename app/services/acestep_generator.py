@@ -78,6 +78,7 @@ class ACEStepGenerator(MusicGenerator):
                 project_root=project_root,
                 config_path=config_path,
                 device="cuda",
+                use_flash_attention=True,
             )
             if not success:
                 raise RuntimeError(f"DiT initialization failed: {status_msg}")

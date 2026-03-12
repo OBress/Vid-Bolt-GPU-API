@@ -25,7 +25,7 @@ REM By default, LLM is auto-enabled/disabled based on GPU VRAM:
 REM   - <=6GB VRAM: LLM disabled (DiT-only mode)
 REM   - >6GB VRAM: LLM enabled
 REM Values: auto (default), true (force enable), false (force disable)
-REM set ACESTEP_INIT_LLM=auto
+set ACESTEP_INIT_LLM=auto
 REM set ACESTEP_INIT_LLM=true
 REM set ACESTEP_INIT_LLM=false
 
@@ -33,47 +33,87 @@ REM LM model path (optional, only used when LLM is enabled)
 REM Available models: acestep-5Hz-lm-0.6B, acestep-5Hz-lm-1.7B, acestep-5Hz-lm-4B
 REM set LM_MODEL_PATH=--lm-model-path acestep-5Hz-lm-0.6B
 
-REM Update check settings (for portable package users with PortableGit)
-REM Check for updates from GitHub before starting
-set CHECK_UPDATE=false
-REM set CHECK_UPDATE=true
+REM Update check on startup (set to false to disable)
+set CHECK_UPDATE=true
+REM set CHECK_UPDATE=false
+
+REM Skip model loading at startup (models will be lazy-loaded on first request)
+REM Set to true to start server quickly without loading models
+REM set ACESTEP_NO_INIT=false
+REM set ACESTEP_NO_INIT=true
 
 REM ==================== Launch ====================
 
-REM Check for updates if enabled
-if /i "%CHECK_UPDATE%"=="true" (
-    echo Checking for updates...
-    echo.
+REM ==================== Startup Update Check ====================
+if /i not "%CHECK_UPDATE%"=="true" goto :SkipUpdateCheck
 
-    if exist "%~dp0check_update.bat" (
-        if exist "%~dp0PortableGit\bin\git.exe" (
-            call "%~dp0check_update.bat"
-            set UPDATE_CHECK_RESULT=!ERRORLEVEL!
-
-            if !UPDATE_CHECK_RESULT! EQU 1 (
-                echo.
-                echo [Error] Update check failed.
-                echo Continuing with startup...
-                echo.
-            ) else if !UPDATE_CHECK_RESULT! EQU 2 (
-                echo.
-                echo [Info] Update check skipped (network timeout^).
-                echo Continuing with startup...
-                echo.
-            )
-
-            REM Wait a moment before starting
-            timeout /t 2 /nobreak >nul
-        ) else (
-            echo [Info] PortableGit not found, skipping update check.
-            echo To enable update checks, install PortableGit in the PortableGit folder.
-            echo.
+REM Find git: try PortableGit first, then system git
+set "UPDATE_GIT_CMD="
+if exist "%~dp0PortableGit\bin\git.exe" (
+    set "UPDATE_GIT_CMD=%~dp0PortableGit\bin\git.exe"
+) else (
+    where git >nul 2>&1
+    if !ERRORLEVEL! EQU 0 (
+        for /f "tokens=*" %%i in ('where git 2^>nul') do (
+            if not defined UPDATE_GIT_CMD set "UPDATE_GIT_CMD=%%i"
         )
-    ) else (
-        echo [Info] check_update.bat not found, skipping update check.
-        echo.
     )
 )
+if not defined UPDATE_GIT_CMD goto :SkipUpdateCheck
+
+cd /d "%~dp0"
+"!UPDATE_GIT_CMD!" rev-parse --git-dir >nul 2>&1
+if !ERRORLEVEL! NEQ 0 goto :SkipUpdateCheck
+
+echo [Update] Checking for updates...
+
+for /f "tokens=*" %%i in ('"!UPDATE_GIT_CMD!" rev-parse --abbrev-ref HEAD 2^>nul') do set UPDATE_BRANCH=%%i
+if "!UPDATE_BRANCH!"=="" set UPDATE_BRANCH=main
+for /f "tokens=*" %%i in ('"!UPDATE_GIT_CMD!" rev-parse --short HEAD 2^>nul') do set UPDATE_LOCAL=%%i
+
+"!UPDATE_GIT_CMD!" fetch origin --quiet 2>nul
+if !ERRORLEVEL! NEQ 0 (
+    echo [Update] Network unreachable, skipping.
+    echo.
+    goto :SkipUpdateCheck
+)
+
+for /f "tokens=*" %%i in ('"!UPDATE_GIT_CMD!" rev-parse --short origin/!UPDATE_BRANCH! 2^>nul') do set UPDATE_REMOTE=%%i
+
+if "!UPDATE_REMOTE!"=="" goto :SkipUpdateCheck
+if "!UPDATE_LOCAL!"=="!UPDATE_REMOTE!" (
+    echo [Update] Already up to date ^(!UPDATE_LOCAL!^).
+    echo.
+    goto :SkipUpdateCheck
+)
+
+echo.
+echo ========================================
+echo   Update available!
+echo ========================================
+echo   Current: !UPDATE_LOCAL!  -^>  Latest: !UPDATE_REMOTE!
+echo.
+echo   Recent changes:
+"!UPDATE_GIT_CMD!" --no-pager log --oneline HEAD..origin/!UPDATE_BRANCH! 2>nul
+echo.
+
+set /p UPDATE_NOW="Update now before starting? (Y/N): "
+if /i "!UPDATE_NOW!"=="Y" (
+    if exist "%~dp0check_update.bat" (
+        call "%~dp0check_update.bat"
+    ) else (
+        echo Pulling latest changes...
+        "!UPDATE_GIT_CMD!" pull --ff-only origin !UPDATE_BRANCH! 2>nul
+        if !ERRORLEVEL! NEQ 0 (
+            echo [Update] Update failed. Please update manually.
+        )
+    )
+) else (
+    echo [Update] Skipped. Run check_update.bat to update later.
+)
+echo.
+
+:SkipUpdateCheck
 
 echo Starting ACE-Step REST API Server...
 echo API will be available at: http://%HOST%:%PORT%
@@ -81,11 +121,11 @@ echo API Documentation: http://%HOST%:%PORT%/docs
 echo.
 
 REM Auto-detect Python environment
-if exist "%~dp0python_embeded\python.exe" (
+if exist "%~dp0python_embedded\python.exe" (
     echo [Environment] Using embedded Python...
 
     REM Build command with optional parameters
-    set "PYTHON_EXE=%~dp0python_embeded\python.exe"
+    set "PYTHON_EXE=%~dp0python_embedded\python.exe"
     set "SCRIPT_PATH=%~dp0acestep\api_server.py"
     set "CMD=--host %HOST% --port %PORT%"
     if not "%API_KEY%"=="" set "CMD=!CMD! %API_KEY%"
@@ -105,7 +145,7 @@ if exist "%~dp0python_embeded\python.exe" (
         echo ========================================
         echo.
         echo ACE-Step requires either:
-        echo   1. python_embeded directory ^(portable package^)
+        echo   1. python_embedded directory ^(portable package^)
         echo   2. uv package manager
         echo.
         echo Would you like to install uv now? ^(Recommended^)
@@ -202,18 +242,25 @@ if exist "%~dp0python_embeded\python.exe" (
 
         if !ERRORLEVEL! NEQ 0 (
             echo.
-            echo ========================================
-            echo [Error] Failed to setup environment
-            echo ========================================
+            echo [Retry] Online sync failed, retrying in offline mode...
             echo.
-            echo Please check the error messages above.
-            echo You may need to:
-            echo   1. Check your internet connection
-            echo   2. Ensure you have enough disk space
-            echo   3. Try running: uv sync manually
-            echo.
-            pause
-            exit /b 1
+            uv sync --offline
+
+            if !ERRORLEVEL! NEQ 0 (
+                echo.
+                echo ========================================
+                echo [Error] Failed to setup environment
+                echo ========================================
+                echo.
+                echo Both online and offline modes failed.
+                echo Please check:
+                echo   1. Your internet connection ^(required for first-time setup^)
+                echo   2. Ensure you have enough disk space
+                echo   3. Try running: uv sync manually
+                echo.
+                pause
+                exit /b 1
+            )
         )
 
         echo.
@@ -227,12 +274,33 @@ if exist "%~dp0python_embeded\python.exe" (
     echo.
 
     REM Build command with optional parameters
-    set "CMD=uv run acestep-api --host %HOST% --port %PORT%"
-    if not "%API_KEY%"=="" set "CMD=!CMD! %API_KEY%"
-    if not "%DOWNLOAD_SOURCE%"=="" set "CMD=!CMD! %DOWNLOAD_SOURCE%"
-    if not "%LM_MODEL_PATH%"=="" set "CMD=!CMD! %LM_MODEL_PATH%"
+    set "ACESTEP_ARGS=acestep-api --host %HOST% --port %PORT%"
+    if not "%API_KEY%"=="" set "ACESTEP_ARGS=!ACESTEP_ARGS! %API_KEY%"
+    if not "%DOWNLOAD_SOURCE%"=="" set "ACESTEP_ARGS=!ACESTEP_ARGS! %DOWNLOAD_SOURCE%"
+    if not "%LM_MODEL_PATH%"=="" set "ACESTEP_ARGS=!ACESTEP_ARGS! %LM_MODEL_PATH%"
 
-    !CMD!
+    uv run !ACESTEP_ARGS!
+    if !ERRORLEVEL! NEQ 0 (
+        echo.
+        echo [Retry] Online dependency resolution failed, retrying in offline mode...
+        echo.
+        uv run --offline !ACESTEP_ARGS!
+        if !ERRORLEVEL! NEQ 0 (
+            echo.
+            echo ========================================
+            echo [Error] Failed to start ACE-Step API Server
+            echo ========================================
+            echo.
+            echo Both online and offline modes failed.
+            echo Please check:
+            echo   1. Your internet connection ^(for first-time setup^)
+            echo   2. If dependencies were previously installed ^(offline mode requires a prior successful install^)
+            echo   3. Try running: uv sync --offline
+            echo.
+            pause
+            exit /b 1
+        )
+    )
 )
 
 pause

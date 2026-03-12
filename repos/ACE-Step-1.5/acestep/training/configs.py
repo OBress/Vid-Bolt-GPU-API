@@ -5,7 +5,7 @@ Contains dataclasses for LoRA and training configurations.
 """
 
 from dataclasses import dataclass, field
-from typing import List, Optional
+from typing import List
 
 
 @dataclass
@@ -39,11 +39,48 @@ class LoRAConfig:
 
 
 @dataclass
+class LoKRConfig:
+    """Configuration for LoKr (Low-Rank Kronecker) training."""
+
+    linear_dim: int = 64
+    linear_alpha: int = 128
+    factor: int = -1
+    decompose_both: bool = False
+    use_tucker: bool = False
+    use_scalar: bool = False
+    weight_decompose: bool = False
+    target_modules: List[str] = field(default_factory=lambda: [
+        "q_proj", "k_proj", "v_proj", "o_proj"
+    ])
+    full_matrix: bool = False
+    bypass_mode: bool = False
+    rs_lora: bool = False
+    unbalanced_factorization: bool = False
+
+    def to_dict(self):
+        """Convert to dictionary for LyCORIS config."""
+        return {
+            "linear_dim": self.linear_dim,
+            "linear_alpha": self.linear_alpha,
+            "factor": self.factor,
+            "decompose_both": self.decompose_both,
+            "use_tucker": self.use_tucker,
+            "use_scalar": self.use_scalar,
+            "weight_decompose": self.weight_decompose,
+            "target_modules": self.target_modules,
+            "full_matrix": self.full_matrix,
+            "bypass_mode": self.bypass_mode,
+            "rs_lora": self.rs_lora,
+            "unbalanced_factorization": self.unbalanced_factorization,
+        }
+
+
+@dataclass
 class TrainingConfig:
     """Configuration for LoRA training process.
     
     Training uses:
-    - BFloat16 precision (only supported precision)
+    - Device-aware mixed precision (bf16 on CUDA/XPU, fp16 on MPS, fp32 on CPU)
     - Discrete timesteps from turbo shift=3.0 schedule (8 steps)
     - Randomly samples one of 8 timesteps per training step:
       [1.0, 0.9545, 0.9, 0.8333, 0.75, 0.6429, 0.5, 0.3]
@@ -59,7 +96,7 @@ class TrainingConfig:
         warmup_steps: Number of warmup steps for learning rate scheduler
         weight_decay: Weight decay for optimizer
         max_grad_norm: Maximum gradient norm for clipping
-        mixed_precision: Always "bf16" (only supported precision)
+        mixed_precision: Preferred precision mode for logging/config tracking
         seed: Random seed for reproducibility
         output_dir: Directory to save checkpoints and logs
     """
@@ -74,17 +111,29 @@ class TrainingConfig:
     warmup_steps: int = 100
     weight_decay: float = 0.01
     max_grad_norm: float = 1.0
-    mixed_precision: str = "bf16"  # Fixed: only bf16 supported
+    mixed_precision: str = "bf16"
+    use_fp8: bool = False
+    gradient_checkpointing: bool = False
     seed: int = 42
     output_dir: str = "./lora_output"
     
     # Data loading
     num_workers: int = 4
     pin_memory: bool = True
+    prefetch_factor: int = 2
+    persistent_workers: bool = True
+    pin_memory_device: str = ""
     
     # Logging
     log_every_n_steps: int = 10
-    
+
+    # Validation (for loss curve and best-checkpoint tracking)
+    val_split: float = 0.0
+
+    def __post_init__(self) -> None:
+        if not 0.0 <= self.val_split < 1.0:
+            raise ValueError("val_split must be in [0.0, 1.0).")
+
     def to_dict(self):
         """Convert to dictionary."""
         return {
@@ -99,9 +148,15 @@ class TrainingConfig:
             "weight_decay": self.weight_decay,
             "max_grad_norm": self.max_grad_norm,
             "mixed_precision": self.mixed_precision,
+            "use_fp8": self.use_fp8,
+            "gradient_checkpointing": self.gradient_checkpointing,
             "seed": self.seed,
             "output_dir": self.output_dir,
             "num_workers": self.num_workers,
             "pin_memory": self.pin_memory,
+            "prefetch_factor": self.prefetch_factor,
+            "persistent_workers": self.persistent_workers,
+            "pin_memory_device": self.pin_memory_device,
             "log_every_n_steps": self.log_every_n_steps,
+            "val_split": self.val_split,
         }

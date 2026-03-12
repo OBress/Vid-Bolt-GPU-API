@@ -12,8 +12,10 @@ import tempfile
 from typing import Optional, Union, List, Dict, Any, Tuple
 from dataclasses import dataclass, field, asdict
 from loguru import logger
+import torch
 
-from acestep.audio_utils import AudioSaver, generate_uuid_from_params
+
+from acestep.audio_utils import AudioSaver, apply_fade, generate_uuid_from_params, normalize_audio, get_lora_weights_hash
 
 # HuggingFace Space environment detection
 IS_HUGGINGFACE_SPACE = os.environ.get("SPACE_ID") is not None
@@ -49,6 +51,12 @@ class GenerationParams:
         timesignature: Time signature (2 for '2/4', 3 for '3/4', 4 for '4/4', 6 for '6/8'). Leave empty for auto-detection.
         vocal_language: Language code for vocals, e.g., "en", "zh", "ja", or "unknown". see acestep/constants.py:VALID_LANGUAGES
         duration: Target audio length in seconds. If <0 or None, model chooses automatically. 10 ~ 600
+        
+        # Audio Post-Processing
+        enable_normalization: Whether to apply loudness normalization to the output audio.
+        normalization_db: Target loudness in dB for normalization (e.g., -1.0 for -1 dBFS peak).
+        latent_shift: Additive shift applied to DiT latents before VAE decode (default 0, no shift).
+        latent_rescale: Multiplicative rescale applied to DiT latents before VAE decode (default 1.0, no rescale).
         
         # Generation Parameters
         inference_steps: Number of diffusion steps (e.g., 8 for turbo, 32–100 for base model).
@@ -95,6 +103,7 @@ class GenerationParams:
 
     # Text Inputs
     caption: str = ""
+    global_caption: str = ""  # Global/song-level caption for SFT-stems lego tasks
     lyrics: str = ""
     instrumental: bool = False
 
@@ -104,6 +113,16 @@ class GenerationParams:
     keyscale: str = ""
     timesignature: str = ""
     duration: float = -1.0
+
+    # Audio Post-Processing
+    enable_normalization: bool = True
+    normalization_db: float = -1.0
+    fade_in_duration: float = 0.0   # Fade in duration in seconds. 0 = no fade in.
+    fade_out_duration: float = 0.0  # Fade out duration in seconds. 0 = no fade out.
+
+    # Latent Post-Processing (before VAE decode)
+    latent_shift: float = 0.0       # Additive shift on DiT latents. Default 0 = no shift.
+    latent_rescale: float = 1.0     # Multiplicative rescale on DiT latents. Default 1.0 = no rescale.
 
     # Advanced Settings
     inference_steps: int = 8
@@ -120,7 +139,9 @@ class GenerationParams:
 
     repainting_start: float = 0.0
     repainting_end: float = -1
+    chunk_mask_mode: str = "auto"  # "explicit" = 0/1 mask from repaint range; "auto" = all 2.0 (model decides)
     audio_cover_strength: float = 1.0
+    cover_noise_strength: float = 0.0  # 0=pure noise (no cover), 1=closest to src audio
 
     # 5Hz Language Model Parameters
     thinking: bool = True
@@ -162,7 +183,7 @@ class GenerationConfig:
             - int: Single seed value (will be converted to list and padded)
         lm_batch_chunk_size: Batch chunk size for LM processing
         constrained_decoding_debug: Whether to enable constrained decoding debug
-        audio_format: Output audio format, one of "mp3", "wav", "flac". Default: "flac"
+        audio_format: Output audio format, one of "mp3", "wav", "flac", "wav32", "opus", "aac". Default: "flac"
     """
     batch_size: int = 2
     allow_lm_batch: bool = False
@@ -552,10 +573,18 @@ def generate_music(
             if params.use_cot_language:
                 dit_input_vocal_language = lm_generated_metadata.get("vocal_language", dit_input_vocal_language)
 
+        # Repaint/cover: no LM run, so conditioning must come from params (caption + lyrics from GUI).
+        if params.task_type in ("repaint", "cover"):
+            dit_input_caption = params.caption or dit_input_caption
+            dit_input_lyrics = params.lyrics if params.lyrics is not None else dit_input_lyrics
+            logger.info(f"[generate_music] Repaint/Cover task: using params.caption='{params.caption}', params.lyrics='{params.lyrics}'")
+            logger.info(f"[generate_music] Final inputs: dit_input_caption='{dit_input_caption}', dit_input_lyrics='{dit_input_lyrics}'")
+
         # Phase 2: DiT music generation
         # Use seed_for_generation (from config.seed or params.seed) instead of params.seed for actual generation
         result = dit_handler.generate_music(
             captions=dit_input_caption,
+            global_caption=params.global_caption,
             lyrics=dit_input_lyrics,
             bpm=bpm,
             key_scale=key_scale,
@@ -568,12 +597,15 @@ def generate_music(
             reference_audio=params.reference_audio,
             audio_duration=audio_duration,
             batch_size=config.batch_size if config.batch_size is not None else 1,
-            src_audio=params.src_audio,
+            # text2music (Custom mode) never uses src_audio; force None to
+            # prevent stale UI values from leaking into generation.
+            src_audio=None if params.task_type == "text2music" else params.src_audio,
             audio_code_string=audio_code_string_to_use,
             repainting_start=params.repainting_start,
             repainting_end=params.repainting_end,
             instruction=params.instruction,
             audio_cover_strength=params.audio_cover_strength,
+            cover_noise_strength=params.cover_noise_strength,
             task_type=params.task_type,
             use_adg=params.use_adg,
             cfg_interval_start=params.cfg_interval_start,
@@ -581,6 +613,9 @@ def generate_music(
             shift=params.shift,
             infer_method=params.infer_method,
             timesteps=params.timesteps,
+            latent_shift=params.latent_shift,
+            latent_rescale=params.latent_rescale,
+            chunk_mask_mode=getattr(params, "chunk_mask_mode", "auto"),
             progress=progress,
         )
 
@@ -624,16 +659,58 @@ def generate_music(
             # Update audio-specific values
             audio_params["seed"] = seed_list[idx] if idx < len(seed_list) else None
 
-            # Add audio codes if batch mode
+            # Add LM-generated audio codes (only if non-empty, to preserve
+            # user-provided codes when LM was used only for CoT metas)
             if lm_generated_audio_codes_list and idx < len(lm_generated_audio_codes_list):
-                audio_params["audio_codes"] = lm_generated_audio_codes_list[idx]
+                lm_code = lm_generated_audio_codes_list[idx]
+                if lm_code and str(lm_code).strip():
+                    audio_params["audio_codes"] = lm_code
+
+            # Add LoRA state to params for UUID generation (ensures different UUIDs when only LoRA state changes)
+            audio_params["lora_loaded"] = dit_handler.lora_loaded
+            audio_params["use_lora"] = dit_handler.use_lora
+            audio_params["lora_scale"] = dit_handler.lora_scale
+            audio_params["lora_weights_hash"] = get_lora_weights_hash(dit_handler)
 
             # Get audio tensor and metadata
             audio_tensor = dit_audio.get("tensor")
             sample_rate = dit_audio.get("sample_rate", 48000)
 
+            # --- NORMALIZATION & LOGGING ---
+            if params.enable_normalization and params.normalization_db <= 0.0:
+                 try:
+                     peak_before = torch.max(torch.abs(audio_tensor)).item()
+                     logger.info(f"[Normalization] Audio {idx} BEFORE: Peak={peak_before:.4f}, Target={params.normalization_db}dB")
+                     
+                     audio_tensor = normalize_audio(audio_tensor, params.normalization_db)
+                     
+                     peak_after = torch.max(torch.abs(audio_tensor)).item()
+                     logger.info(f"[Normalization] Audio {idx} AFTER: Peak={peak_after:.4f}")
+                     
+                     # Update the tensor in the dict so downstream uses the normalized version ??
+                     # Actually we use audio_tensor variable below, so it's fine.
+                 except Exception as e:
+                     logger.error(f"Normalization failed: {e}")
+            # -------------------------------
+
+            # --- FADE IN / FADE OUT ---
+            if params.fade_in_duration > 0.0 or params.fade_out_duration > 0.0:
+                try:
+                    fade_in_samples = round(params.fade_in_duration * sample_rate)
+                    fade_out_samples = round(params.fade_out_duration * sample_rate)
+                    audio_tensor = apply_fade(audio_tensor, fade_in_samples, fade_out_samples)
+                    logger.info(
+                        f"[Fade] Audio {idx}: fade_in={params.fade_in_duration:.2f}s "
+                        f"({fade_in_samples} samples), fade_out={params.fade_out_duration:.2f}s "
+                        f"({fade_out_samples} samples)"
+                    )
+                except Exception as e:
+                    logger.error(f"Fade application failed: {e}")
+            # --------------------------
+
             # Generate UUID for this audio (moved from handler)
             batch_seed = seed_list[idx] if idx < len(seed_list) else seed_list[0] if seed_list else -1
+
             audio_code_str = lm_generated_audio_codes_list[idx] if (
                 lm_generated_audio_codes_list and idx < len(lm_generated_audio_codes_list)) else audio_code_string_to_use
             if isinstance(audio_code_str, list):
@@ -644,8 +721,12 @@ def generate_music(
             # Save audio file (handled outside handler)
             audio_path = None
             if audio_tensor is not None and save_dir is not None:
+
                 try:
-                    audio_file = os.path.join(save_dir, f"{audio_key}.{audio_format}")
+                    # Handle wav32 special case for extension
+                    file_ext = "wav" if audio_format == "wav32" else audio_format
+                    audio_file = os.path.join(save_dir, f"{audio_key}.{file_ext}")
+                    
                     audio_path = audio_saver.save_audio(audio_tensor,
                                                         audio_file,
                                                         sample_rate=sample_rate,

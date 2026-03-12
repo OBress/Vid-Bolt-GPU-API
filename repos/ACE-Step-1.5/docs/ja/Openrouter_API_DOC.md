@@ -11,9 +11,10 @@
 - [認証](#認証)
 - [エンドポイント一覧](#エンドポイント一覧)
   - [POST /v1/chat/completions - 音楽生成](#1-音楽生成)
-  - [GET /api/v1/models - モデル一覧](#2-モデル一覧)
+  - [GET /v1/models - モデル一覧](#2-モデル一覧)
   - [GET /health - ヘルスチェック](#3-ヘルスチェック)
 - [入力モード](#入力モード)
+- [オーディオ入力](#オーディオ入力)
 - [ストリーミングレスポンス](#ストリーミングレスポンス)
 - [リクエスト例](#リクエスト例)
 - [エラーコード](#エラーコード)
@@ -44,38 +45,78 @@ API キーが未設定の場合、認証は不要です。
 
 | フィールド | 型 | 必須 | デフォルト | 説明 |
 |---|---|---|---|---|
-| `model` | string | いいえ | `"acemusic/acestep-v1.5-turbo"` | モデル ID |
+| `model` | string | いいえ | 自動 | モデル ID（`/v1/models` から取得） |
 | `messages` | array | **はい** | - | チャットメッセージリスト。[入力モード](#入力モード)を参照 |
 | `stream` | boolean | いいえ | `false` | ストリーミングレスポンスを有効にする。[ストリーミングレスポンス](#ストリーミングレスポンス)を参照 |
+| `audio_config` | object | いいえ | `null` | オーディオ生成設定。下記参照 |
 | `temperature` | float | いいえ | `0.85` | LM サンプリング温度 |
 | `top_p` | float | いいえ | `0.9` | LM nucleus sampling パラメータ |
-| `lyrics` | string | いいえ | `""` | 歌詞を直接指定（messages から解析された歌詞より優先） |
-| `duration` | float | いいえ | `null` | オーディオの長さ（秒）。省略時は LM が自動決定 |
-| `bpm` | integer | いいえ | `null` | テンポ（BPM）。省略時は LM が自動決定 |
-| `vocal_language` | string | いいえ | `"en"` | ボーカル言語コード（例: `"zh"`, `"en"`, `"ja"`） |
-| `instrumental` | boolean | いいえ | `false` | インストゥルメンタル（ボーカルなし）で生成するかどうか |
+| `seed` | int \| string | いいえ | `null` | ランダムシード。`batch_size > 1` の場合、カンマ区切りで複数指定可能（例: `"42,123,456"`） |
+| `lyrics` | string | いいえ | `""` | 歌詞を直接指定（messages から解析された歌詞より優先）。設定時、messages テキストは prompt として扱われる |
+| `sample_mode` | boolean | いいえ | `false` | LLM sample モードを有効化。messages テキストが sample_query として LLM に渡され、prompt/lyrics が自動生成される |
 | `thinking` | boolean | いいえ | `false` | LLM の thinking モード（深い推論）を有効にする |
-| `use_cot_metas` | boolean | いいえ | `true` | CoT で BPM・長さ・キー・拍子などのメタ情報を自動生成する |
+| `use_format` | boolean | いいえ | `false` | ユーザーが prompt/lyrics を提供した場合、LLM でフォーマット・強化する |
 | `use_cot_caption` | boolean | いいえ | `true` | CoT で音楽説明文を書き換え・強化する |
 | `use_cot_language` | boolean | いいえ | `true` | CoT でボーカル言語を自動検出する |
-| `use_format` | boolean | いいえ | `true` | ユーザーが prompt/lyrics を直接提供した場合、LLM でフォーマット・強化する |
+| `guidance_scale` | float | いいえ | `7.0` | Classifier-free guidance scale |
+| `batch_size` | int | いいえ | `1` | 生成するオーディオの数 |
+| `task_type` | string | いいえ | `"text2music"` | タスクタイプ。[オーディオ入力](#オーディオ入力)を参照 |
+| `repainting_start` | float | いいえ | `0.0` | repaint 領域の開始位置（秒） |
+| `repainting_end` | float | いいえ | `null` | repaint 領域の終了位置（秒） |
+| `audio_cover_strength` | float | いいえ | `1.0` | カバー強度（0.0〜1.0） |
 
-> **LM パラメータに関する補足:** `use_format` はユーザーが明示的に prompt/lyrics を提供した場合（タグモードまたは歌詞モード）に適用され、LLM による説明文と歌詞のフォーマット強化を行います。`use_cot_*` パラメータはオーディオ生成段階の Phase 1 CoT 推論を制御します。`use_format` または sample モードで既に duration が生成されている場合、`use_cot_metas` は重複を避けるため自動的にスキップされます。
+#### audio_config オブジェクト
+
+| フィールド | 型 | デフォルト | 説明 |
+|---|---|---|---|
+| `duration` | float | `null` | オーディオの長さ（秒）。省略時は LM が自動決定 |
+| `bpm` | integer | `null` | テンポ（BPM）。省略時は LM が自動決定 |
+| `vocal_language` | string | `"en"` | ボーカル言語コード（例: `"zh"`, `"en"`, `"ja"`） |
+| `instrumental` | boolean | `null` | インストゥルメンタル（ボーカルなし）かどうか。省略時は歌詞に基づき自動判定 |
+| `format` | string | `"mp3"` | 出力オーディオフォーマット |
+| `key_scale` | string | `null` | 調号（例: `"C major"`） |
+| `time_signature` | string | `null` | 拍子（例: `"4/4"`） |
+
+> **messages テキストの意味はモードにより異なります：**
+> - `lyrics` を設定 → messages テキスト = caption
+> - `sample_mode: true` を設定 → messages テキスト = sample_query（LLM にすべて生成させる）
+> - どちらも未設定 → 自動検出：タグがあればタグモード、歌詞らしければ歌詞モード、それ以外は caption としてそのまま生成に使用
 
 #### messages フォーマット
+
+プレーンテキストとマルチモーダル（テキスト＋オーディオ）の2つの形式をサポート：
+
+**プレーンテキスト：**
+
+```json
+{
+  "messages": [
+    {"role": "user", "content": "入力内容"}
+  ]
+}
+```
+
+**マルチモーダル（オーディオ入力あり）：**
 
 ```json
 {
   "messages": [
     {
       "role": "user",
-      "content": "入力内容"
+      "content": [
+        {"type": "text", "text": "この曲をカバーして"},
+        {
+          "type": "input_audio",
+          "input_audio": {
+            "data": "<base64 オーディオデータ>",
+            "format": "mp3"
+          }
+        }
+      ]
     }
   ]
 }
 ```
-
-`role` は `"user"` に設定し、`content` にテキスト入力を指定します。システムは content の内容に基づいて入力モードを自動判定します。詳細は[入力モード](#入力モード)を参照してください。
 
 ---
 
@@ -86,7 +127,7 @@ API キーが未設定の場合、認証は不要です。
   "id": "chatcmpl-a1b2c3d4e5f6g7h8",
   "object": "chat.completion",
   "created": 1706688000,
-  "model": "acemusic/acestep-v1.5-turbo",
+  "model": "acemusic/acestep-v15-turbo",
   "choices": [
     {
       "index": 0,
@@ -113,15 +154,15 @@ API キーが未設定の場合、認証は不要です。
 }
 ```
 
-**レスポンスフィールド説明:**
+**レスポンスフィールド説明：**
 
-| フィールド | 説明 |
+| フィールド | 説�� |
 |---|---|
 | `choices[0].message.content` | LM が生成したテキスト情報。Metadata（Caption/BPM/Duration/Key/Time Signature/Language）と Lyrics を含む。LM が関与していない場合は `"Music generated successfully."` を返す |
 | `choices[0].message.audio` | オーディオデータ配列。各項目に `type`（`"audio_url"`）と `audio_url.url`（Base64 Data URL、形式: `data:audio/mpeg;base64,...`）を含む |
 | `choices[0].finish_reason` | `"stop"` は正常完了を示す |
 
-**オーディオのデコード方法:**
+**オーディオのデコード方法：**
 
 `audio_url.url` の値は Data URL 形式です: `data:audio/mpeg;base64,<base64_data>`
 
@@ -152,7 +193,7 @@ audio.play();
 
 ### 2. モデル一覧
 
-**GET** `/api/v1/models`
+**GET** `/v1/models`
 
 利用可能なモデル情報を返します。
 
@@ -162,18 +203,14 @@ audio.play();
 {
   "data": [
     {
-      "id": "acemusic/acestep-v1.5-turbo",
+      "id": "acemusic/acestep-v15-turbo",
       "name": "ACE-Step",
       "created": 1706688000,
-      "description": "High-performance text-to-music generation model...",
-      "input_modalities": ["text"],
-      "output_modalities": ["audio"],
+      "description": "High-performance text-to-music generation model. Supports multiple styles, lyrics input, and various audio durations.",
+      "input_modalities": ["text", "audio"],
+      "output_modalities": ["audio", "text"],
       "context_length": 4096,
-      "pricing": {
-        "prompt": "0",
-        "completion": "0",
-        "request": "0"
-      },
+      "pricing": {"prompt": "0", "completion": "0", "request": "0"},
       "supported_sampling_parameters": ["temperature", "top_p"]
     }
   ]
@@ -200,7 +237,7 @@ audio.play();
 
 ## 入力モード
 
-システムは最後の `user` メッセージの内容に基づいて、入力モードを自動選択します：
+システムは最後の `user` メッセージの内容に基づいて入力モードを自動選択します。`lyrics` または `sample_mode` フィールドで明示的に指定することも可能です。
 
 ### モード 1: タグモード（推奨）
 
@@ -211,16 +248,20 @@ audio.play();
   "messages": [
     {
       "role": "user",
-      "content": "<prompt>A gentle acoustic ballad in C major, 80 BPM, female vocal</prompt>\n<lyrics>[Verse 1]\nSunlight through the window\nA brand new day begins\n\n[Chorus]\nWe are the dreamers\nWe are the light</lyrics>"
+      "content": "<prompt>A gentle acoustic ballad in C major, female vocal</prompt>\n<lyrics>[Verse 1]\nSunlight through the window\nA brand new day begins\n\n[Chorus]\nWe are the dreamers\nWe are the light</lyrics>"
     }
-  ]
+  ],
+  "audio_config": {
+    "duration": 30,
+    "vocal_language": "en"
+  }
 }
 ```
 
 - `<prompt>...</prompt>` — 音楽のスタイル・シーンの説明（キャプション）
 - `<lyrics>...</lyrics>` — 歌詞の内容
 - どちらか一方のタグだけでも使用可能
-- `use_format=true` の場合、LLM が prompt と lyrics を自動的に強化
+- `use_format: true` の場合、LLM が prompt と lyrics を自動的に強化
 
 ### モード 2: 自然言語モード（サンプルモード）
 
@@ -229,19 +270,20 @@ audio.play();
 ```json
 {
   "messages": [
-    {
-      "role": "user",
-      "content": "夏と旅行をテーマにした明るい日本語のポップソングを作ってください"
-    }
-  ]
+    {"role": "user", "content": "夏と旅行をテーマにした明るい日本語のポップソングを作ってください"}
+  ],
+  "sample_mode": true,
+  "audio_config": {
+    "vocal_language": "ja"
+  }
 }
 ```
 
-**トリガー条件:** メッセージにタグが含まれず、歌詞らしくない内容（`[Verse]`/`[Chorus]` などのマーカーがない、行数が少ない、または1行が長い）の場合。
+トリガー条件：`sample_mode: true`、またはメッセージにタグが含まれず歌詞らしくない内容の場合に自動トリガー。
 
 ### モード 3: 歌詞のみモード
 
-構造マーカー付きの歌詞を直��渡すと、システムが自動認識します：
+構造マーカー付きの歌詞を直接渡すと、システムが自動認識します：
 
 ```json
 {
@@ -250,25 +292,116 @@ audio.play();
       "role": "user",
       "content": "[Verse 1]\nWalking down the street\nFeeling the beat\n\n[Chorus]\nDance with me tonight\nUnder the moonlight"
     }
-  ]
+  ],
+  "audio_config": {"duration": 30}
 }
 ```
 
-**トリガー条件:** メッセージに `[Verse]`、`[Chorus]` などのマーカーが含まれている、または複数行の短いテキスト構造を持つ場合。
+トリガー条件：メッセージに `[Verse]`、`[Chorus]` などのマーカーが含まれている、または複数行の短いテキスト構造を持つ場合。
 
-### インストゥルメンタルモード
+### モード 4: 歌詞 + Prompt 分離
 
-`instrumental: true` を設定するか、歌詞に `[inst]` を指定します：
+`lyrics` フィールドで歌詞を直接渡し、messages テキストは自動的に prompt として扱われます：
 
 ```json
 {
-  "instrumental": true,
+  "messages": [
+    {"role": "user", "content": "Energetic EDM with heavy bass drops"}
+  ],
+  "lyrics": "[Verse 1]\nFeel the rhythm in your soul\nLet the music take control\n\n[Drop]\n(instrumental break)",
+  "audio_config": {
+    "bpm": 128,
+    "duration": 60
+  }
+}
+```
+
+### インストゥルメンタルモード
+
+`audio_config.instrumental: true` を設定：
+
+```json
+{
+  "messages": [
+    {"role": "user", "content": "<prompt>Epic orchestral cinematic score, dramatic and powerful</prompt>"}
+  ],
+  "audio_config": {
+    "instrumental": true,
+    "duration": 30
+  }
+}
+```
+
+---
+
+## オーディオ入力
+
+マルチモーダル messages でオーディオファイル（base64 エンコード）を渡すことで、cover、repaint などのタスクに使用できます。
+
+### task_type タイプ
+
+| task_type | 説明 | オーディオ入力 |
+|---|---|---|
+| `text2music` | テキストから音楽生成（デフォルト） | 任意（reference として） |
+| `cover` | カバー/スタイル変換 | src_audio が必要 |
+| `repaint` | 部分的なリペイント | src_audio が必要 |
+| `lego` | オーディオ接合 | src_audio が必要 |
+| `extract` | オーディオ抽出 | src_audio が必要 |
+| `complete` | オーディオ続き生成 | src_audio が必要 |
+
+### オーディオルーティングルール
+
+複数の `input_audio` ブロックは順番に異なるパラメータにルーティングされます（複数画像アップロードと同様）：
+
+| task_type | audio[0] | audio[1] |
+|---|---|---|
+| `text2music` | reference_audio（スタイル参照） | - |
+| `cover/repaint/lego/extract/complete` | src_audio（編集対象オーディオ） | reference_audio（任意のスタイル参照） |
+
+### オーディオ入力の例
+
+**Cover タスク（カバー）：**
+
+```json
+{
   "messages": [
     {
       "role": "user",
-      "content": "<prompt>Epic orchestral cinematic score, dramatic and powerful</prompt>"
+      "content": [
+        {"type": "text", "text": "<prompt>Jazz style cover with saxophone</prompt>"},
+        {
+          "type": "input_audio",
+          "input_audio": {"data": "<base64 元オーディオ>", "format": "mp3"}
+        }
+      ]
     }
-  ]
+  ],
+  "task_type": "cover",
+  "audio_cover_strength": 0.8,
+  "audio_config": {"duration": 30}
+}
+```
+
+**Repaint タスク（部分リペイント）：**
+
+```json
+{
+  "messages": [
+    {
+      "role": "user",
+      "content": [
+        {"type": "text", "text": "<prompt>Replace with guitar solo</prompt>"},
+        {
+          "type": "input_audio",
+          "input_audio": {"data": "<base64 元オーディオ>", "format": "mp3"}
+        }
+      ]
+    }
+  ],
+  "task_type": "repaint",
+  "repainting_start": 10.0,
+  "repainting_end": 20.0,
+  "audio_config": {"duration": 30}
 }
 ```
 
@@ -283,7 +416,7 @@ audio.play();
 各イベントは `data: ` で始まり、JSON が続き、二重改行 `\n\n` で終了します：
 
 ```
-data: {"id":"chatcmpl-xxx","object":"chat.completion.chunk","created":1706688000,"model":"acemusic/acestep-v1.5-turbo","choices":[{"index":0,"delta":{...},"finish_reason":null}]}
+data: {"id":"chatcmpl-xxx","object":"chat.completion.chunk","created":1706688000,"model":"acemusic/acestep-v15-turbo","choices":[{"index":0,"delta":{...},"finish_reason":null}]}
 
 ```
 
@@ -292,24 +425,24 @@ data: {"id":"chatcmpl-xxx","object":"chat.completion.chunk","created":1706688000
 | フェーズ | delta の内容 | 説明 |
 |---|---|---|
 | 1. 初期化 | `{"role":"assistant","content":""}` | 接続の確立 |
-| 2. LM コンテンツ（任意） | `{"content":"## Metadata\n..."}` | LM が生成したメタデータと歌詞 |
+| 2. LM コンテンツ | `{"content":"\n\n## Metadata\n..."}` | LM 使用時に metadata と lyrics を送信 |
 | 3. ハートビート | `{"content":"."}` | オーディオ生成中に2秒ごとに送信（接続維持） |
-| 4. オーディオデータ | `{"audio":[{"type":"audio_url","audio_url":{"url":"data:..."}}]}` | 生成されたオーディオ |
+| 4. オーディオデータ | `{"audio":[{"type":"audio_url","audio_url":{"url":"data:..."}}]}` | オーディオ base64 データ |
 | 5. 完了 | `finish_reason: "stop"` | 生成完了 |
 | 6. 終了 | `data: [DONE]` | ストリーム終了マーカー |
 
 ### ストリーミングレスポンス例
 
 ```
-data: {"id":"chatcmpl-abc123","object":"chat.completion.chunk","created":1706688000,"model":"acemusic/acestep-v1.5-turbo","choices":[{"index":0,"delta":{"role":"assistant","content":""},"finish_reason":null}]}
+data: {"id":"chatcmpl-abc123","object":"chat.completion.chunk","created":1706688000,"model":"acemusic/acestep-v15-turbo","choices":[{"index":0,"delta":{"role":"assistant","content":""},"finish_reason":null}]}
 
-data: {"id":"chatcmpl-abc123","object":"chat.completion.chunk","created":1706688000,"model":"acemusic/acestep-v1.5-turbo","choices":[{"index":0,"delta":{"content":"\n\n## Metadata\n**Caption:** Upbeat pop\n**BPM:** 120"},"finish_reason":null}]}
+data: {"id":"chatcmpl-abc123","object":"chat.completion.chunk","created":1706688000,"model":"acemusic/acestep-v15-turbo","choices":[{"index":0,"delta":{"content":"\n\n## Metadata\n**Caption:** Upbeat pop\n**BPM:** 120"},"finish_reason":null}]}
 
-data: {"id":"chatcmpl-abc123","object":"chat.completion.chunk","created":1706688000,"model":"acemusic/acestep-v1.5-turbo","choices":[{"index":0,"delta":{"content":"."},"finish_reason":null}]}
+data: {"id":"chatcmpl-abc123","object":"chat.completion.chunk","created":1706688000,"model":"acemusic/acestep-v15-turbo","choices":[{"index":0,"delta":{"content":"."},"finish_reason":null}]}
 
-data: {"id":"chatcmpl-abc123","object":"chat.completion.chunk","created":1706688000,"model":"acemusic/acestep-v1.5-turbo","choices":[{"index":0,"delta":{"audio":[{"type":"audio_url","audio_url":{"url":"data:audio/mpeg;base64,..."}}]},"finish_reason":null}]}
+data: {"id":"chatcmpl-abc123","object":"chat.completion.chunk","created":1706688000,"model":"acemusic/acestep-v15-turbo","choices":[{"index":0,"delta":{"audio":[{"type":"audio_url","audio_url":{"url":"data:audio/mpeg;base64,..."}}]},"finish_reason":null}]}
 
-data: {"id":"chatcmpl-abc123","object":"chat.completion.chunk","created":1706688000,"model":"acemusic/acestep-v1.5-turbo","choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}
+data: {"id":"chatcmpl-abc123","object":"chat.completion.chunk","created":1706688000,"model":"acemusic/acestep-v15-turbo","choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}
 
 data: [DONE]
 
@@ -323,7 +456,9 @@ import httpx
 
 with httpx.stream("POST", "http://127.0.0.1:8002/v1/chat/completions", json={
     "messages": [{"role": "user", "content": "明るいギター曲を生成してください"}],
-    "stream": True
+    "sample_mode": True,
+    "stream": True,
+    "audio_config": {"instrumental": True}
 }) as response:
     content_parts = []
     audio_url = None
@@ -360,7 +495,9 @@ const response = await fetch("http://127.0.0.1:8002/v1/chat/completions", {
   headers: { "Content-Type": "application/json" },
   body: JSON.stringify({
     messages: [{ role: "user", content: "明るいギター曲を生成してください" }],
-    stream: true
+    sample_mode: true,
+    stream: true,
+    audio_config: { instrumental: true }
   })
 });
 
@@ -401,7 +538,8 @@ curl -X POST http://127.0.0.1:8002/v1/chat/completions \
     "messages": [
       {"role": "user", "content": "故郷と思い出についての優しい日本語のフォークソング"}
     ],
-    "vocal_language": "ja"
+    "sample_mode": true,
+    "audio_config": {"vocal_language": "ja"}
   }'
 ```
 
@@ -417,9 +555,11 @@ curl -X POST http://127.0.0.1:8002/v1/chat/completions \
         "content": "<prompt>Energetic EDM track with heavy bass drops and synth leads</prompt><lyrics>[Verse 1]\nFeel the rhythm in your soul\nLet the music take control\n\n[Drop]\n(instrumental break)</lyrics>"
       }
     ],
-    "bpm": 128,
-    "duration": 60,
-    "vocal_language": "en"
+    "audio_config": {
+      "bpm": 128,
+      "duration": 60,
+      "vocal_language": "en"
+    }
   }'
 ```
 
@@ -435,10 +575,11 @@ curl -X POST http://127.0.0.1:8002/v1/chat/completions \
         "content": "<prompt>Peaceful piano solo, slow tempo, jazz harmony</prompt>"
       }
     ],
-    "instrumental": true,
-    "use_format": false,
     "use_cot_caption": false,
-    "duration": 45
+    "audio_config": {
+      "instrumental": true,
+      "duration": 45
+    }
   }'
 ```
 
@@ -452,32 +593,26 @@ curl -X POST http://127.0.0.1:8002/v1/chat/completions \
     "messages": [
       {"role": "user", "content": "誕生日おめでとうの歌を作ってください"}
     ],
+    "sample_mode": true,
     "stream": true
   }'
 ```
 
-### 例 5: 全パラメータ指定
+### 例 5: マルチシード バッチ生成
 
 ```bash
 curl -X POST http://127.0.0.1:8002/v1/chat/completions \
   -H "Content-Type: application/json" \
   -d '{
     "messages": [
-      {
-        "role": "user",
-        "content": "<prompt>Dreamy lo-fi hip hop beat with vinyl crackle</prompt><lyrics>[inst]</lyrics>"
-      }
+      {"role": "user", "content": "<prompt>Lo-fi hip hop beat</prompt>"}
     ],
-    "temperature": 0.9,
-    "top_p": 0.95,
-    "bpm": 85,
-    "duration": 30,
-    "instrumental": true,
-    "thinking": false,
-    "use_cot_metas": true,
-    "use_cot_caption": true,
-    "use_cot_language": false,
-    "use_format": true
+    "batch_size": 3,
+    "seed": "42,123,456",
+    "audio_config": {
+      "instrumental": true,
+      "duration": 30
+    }
   }'
 ```
 
@@ -489,8 +624,10 @@ curl -X POST http://127.0.0.1:8002/v1/chat/completions \
 |---|---|
 | 400 | リクエスト形式が不正、または有効な入力がない |
 | 401 | API キーが未指定、または無効 |
+| 429 | サービスがビジー状態、キューが満杯 |
 | 500 | 音楽生成中に内部エラーが発生 |
 | 503 | モデルがまだ初期化されていない |
+| 504 | 生成タイムアウト |
 
 エラーレスポンス形式：
 
@@ -515,3 +652,5 @@ curl -X POST http://127.0.0.1:8002/v1/chat/completions \
 | `ACESTEP_DEVICE` | `auto` | 推論デバイス |
 | `ACESTEP_LM_MODEL_PATH` | `acestep-5Hz-lm-0.6B` | LLM モデルパス |
 | `ACESTEP_LM_BACKEND` | `vllm` | LLM 推論バックエンド |
+| `ACESTEP_QUEUE_MAXSIZE` | `200` | タスクキューの最大容量 |
+| `ACESTEP_GENERATION_TIMEOUT` | `600` | 非ストリーミングリクエストのタイムアウト（秒） |

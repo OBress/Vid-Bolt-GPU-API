@@ -104,6 +104,29 @@ EOF
     echo -e "${GREEN}[Startup] ACE-Step 1.5 models downloaded successfully!${NC}"
 fi
 
+# Download 4B LM model for highest quality Chain-of-Thought reasoning
+# The unified ACE-Step/Ace-Step1.5 repo only includes the 1.7B LM;
+# the 4B model lives in a separate HuggingFace repo.
+ACESTEP_LM4B_CHECK="$ACESTEP_CKPT_DIR/acestep-5Hz-lm-4B/config.json"
+if [ -f "$ACESTEP_LM4B_CHECK" ]; then
+    echo -e "${GREEN}[Startup] ACE-Step 4B LM model found${NC}"
+else
+    echo -e "${YELLOW}[Startup] ACE-Step 4B LM model not found - downloading from HuggingFace...${NC}"
+    echo -e "  This is a one-time download (~8GB)"
+
+    python3 << 'EOF'
+from huggingface_hub import snapshot_download
+print("[Startup] Downloading acestep-5Hz-lm-4B (~8GB)...")
+snapshot_download(
+    repo_id="ACE-Step/acestep-5Hz-lm-4B",
+    local_dir="/app/repos/ACE-Step-1.5/checkpoints/acestep-5Hz-lm-4B",
+)
+print("[Startup] 4B LM model download complete!")
+EOF
+
+    echo -e "${GREEN}[Startup] ACE-Step 4B LM model downloaded!${NC}"
+fi
+
 # =============================================================================
 # Start the application
 # =============================================================================
