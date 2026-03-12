@@ -27,18 +27,20 @@ from torch.optim.lr_scheduler import (
 from torch.utils.data import DataLoader
 from torchvision.transforms import functional as F  # noqa: N812
 
+from ltx_core.text_encoders.gemma import convert_to_additive_mask
 from ltx_trainer import logger
 from ltx_trainer.config import LtxTrainerConfig
 from ltx_trainer.config_display import print_config
 from ltx_trainer.datasets import PrecomputedDataset
+from ltx_trainer.gpu_utils import free_gpu_memory, free_gpu_memory_context, get_gpu_memory_gb
 from ltx_trainer.hf_hub_utils import push_to_hub
+from ltx_trainer.model_loader import load_embeddings_processor, load_text_encoder
 from ltx_trainer.model_loader import load_model as load_ltx_model
-from ltx_trainer.model_loader import load_text_encoder
 from ltx_trainer.progress import TrainingProgress
 from ltx_trainer.quantization import quantize_model
 from ltx_trainer.timestep_samplers import SAMPLERS
 from ltx_trainer.training_strategies import get_training_strategy
-from ltx_trainer.utils import get_gpu_memory_gb, open_image_as_srgb, save_image
+from ltx_trainer.utils import open_image_as_srgb, save_image
 from ltx_trainer.validation_sampler import CachedPromptEmbeddings, GenerationConfig, ValidationSampler
 from ltx_trainer.video_utils import read_video, save_video
 
@@ -308,9 +310,22 @@ class LtxvTrainer:
         """Perform a single training step using the configured strategy."""
         # Apply embedding connectors to transform pre-computed text embeddings
         conditions = batch["conditions"]
-        video_embeds, audio_embeds, attention_mask = self._text_encoder._run_connectors(
-            conditions["prompt_embeds"], conditions["prompt_attention_mask"]
+
+        if "video_prompt_embeds" in conditions:
+            # New format: separate video/audio features from precompute()
+            video_features = conditions["video_prompt_embeds"]
+            audio_features = conditions.get("audio_prompt_embeds")
+        else:
+            # Legacy format: single prompt_embeds tensor — duplicate for both modalities
+            video_features = conditions["prompt_embeds"]
+            audio_features = conditions["prompt_embeds"]
+
+        mask = conditions["prompt_attention_mask"]
+        additive_mask = convert_to_additive_mask(mask, video_features.dtype)
+        video_embeds, audio_embeds, attention_mask = self._embeddings_processor.create_embeddings(
+            video_features, audio_features, additive_mask
         )
+
         conditions["video_prompt_embeds"] = video_embeds
         conditions["audio_prompt_embeds"] = audio_embeds
         conditions["prompt_attention_mask"] = attention_mask
@@ -330,27 +345,29 @@ class LtxvTrainer:
 
         return loss
 
+    @free_gpu_memory_context(after=True)
     def _load_text_encoder_and_cache_embeddings(self) -> list[CachedPromptEmbeddings] | None:
-        """Load text encoder, computes and returns validation embeddings."""
+        """Load text encoder + embeddings processor, compute and cache validation embeddings."""
 
         # This method:
-        #   1. Loads the text encoder on GPU
-        #   2. If validation prompts are configured, computes and caches their embeddings
-        #   3. Unloads the heavy Gemma model while keeping the lightweight embedding connectors
-        #   The text encoder is kept (as self._text_encoder) but with model/tokenizer/feature_extractor
-        #   set to None. Only the embedding connectors remain for use during training.
+        #   1. Loads the pure Gemma text encoder on GPU
+        #   2. Loads the embeddings processor (feature extractor + connectors)
+        #   3. If validation prompts are configured, computes and caches their embeddings
+        #   4. Unloads the Gemma model entirely, keeps the embeddings processor for training
 
-        # Load text encoder on GPU
+        # Load text encoder (pure Gemma LLM) on GPU
         logger.debug("Loading text encoder...")
-        if self._config.acceleration.load_text_encoder_in_8bit:
-            logger.warning(
-                "⚠️  load_text_encoder_in_8bit is set to True but 8-bit text encoder loading "
-                "is not currently implemented. The text encoder will be loaded in bfloat16 precision."
-            )
-
-        self._text_encoder = load_text_encoder(
-            checkpoint_path=self._config.model.model_path,
+        text_encoder = load_text_encoder(
             gemma_model_path=self._config.model.text_encoder_path,
+            device="cuda",
+            dtype=torch.bfloat16,
+            load_in_8bit=self._config.acceleration.load_text_encoder_in_8bit,
+        )
+
+        # Load embeddings processor (feature extractor + connectors)
+        logger.debug("Loading embeddings processor...")
+        self._embeddings_processor = load_embeddings_processor(
+            checkpoint_path=self._config.model.model_path,
             device="cuda",
             dtype=torch.bfloat16,
         )
@@ -362,23 +379,26 @@ class LtxvTrainer:
             cached_embeddings = []
             with torch.inference_mode():
                 for prompt in self._config.validation.prompts:
-                    v_ctx_pos, a_ctx_pos, _ = self._text_encoder(prompt)
-                    v_ctx_neg, a_ctx_neg, _ = self._text_encoder(self._config.validation.negative_prompt)
+                    pos_hs, pos_mask = text_encoder.encode(prompt)
+                    pos_out = self._embeddings_processor.process_hidden_states(pos_hs, pos_mask)
+
+                    neg_hs, neg_mask = text_encoder.encode(self._config.validation.negative_prompt)
+                    neg_out = self._embeddings_processor.process_hidden_states(neg_hs, neg_mask)
 
                     cached_embeddings.append(
                         CachedPromptEmbeddings(
-                            video_context_positive=v_ctx_pos.cpu(),
-                            audio_context_positive=a_ctx_pos.cpu(),
-                            video_context_negative=v_ctx_neg.cpu() if v_ctx_neg is not None else None,
-                            audio_context_negative=a_ctx_neg.cpu() if a_ctx_neg is not None else None,
+                            video_context_positive=pos_out.video_encoding.cpu(),
+                            audio_context_positive=pos_out.audio_encoding.cpu(),
+                            video_context_negative=neg_out.video_encoding.cpu(),
+                            audio_context_negative=(
+                                neg_out.audio_encoding.cpu() if neg_out.audio_encoding is not None else None
+                            ),
                         )
                     )
 
-        # Unload heavy components to free VRAM, keeping only the embedding connectors
-        self._text_encoder.model = None
-        self._text_encoder.tokenizer = None
-        self._text_encoder.feature_extractor_linear = None
-        torch.cuda.empty_cache()
+        # Unload Gemma model and feature extractor, keep only connectors for training
+        del text_encoder
+        self._embeddings_processor.feature_extractor = None
 
         logger.debug("Validation prompt embeddings cached. Gemma model unloaded")
         return cached_embeddings
@@ -416,7 +436,7 @@ class LtxvTrainer:
         self._scheduler = components.scheduler
         self._audio_vae = components.audio_vae_decoder
         self._vocoder = components.vocoder
-        # Note: self._text_encoder was set in _load_text_encoder_and_cache_embeddings
+        # Note: self._embeddings_processor was set in _load_text_encoder_and_cache_embeddings
 
         # Determine initial dtype based on training mode.
         # Note: For FSDP + LoRA, we'll cast to FP32 later in _prepare_models_for_training()
@@ -428,7 +448,7 @@ class LtxvTrainer:
             if self._config.model.training_mode == "full":
                 raise ValueError("Quantization is not supported in full training mode.")
 
-            logger.warning(f"Quantizing model with precision: {self._config.acceleration.quantization}")
+            logger.info(f'Quantizing model with "{self._config.acceleration.quantization}". This may take a while...')
             self._transformer = quantize_model(
                 self._transformer,
                 precision=self._config.acceleration.quantization,
@@ -724,6 +744,7 @@ class LtxvTrainer:
 
     # Note: Use @torch.no_grad() instead of @torch.inference_mode() to avoid FSDP inplace update errors after validation
     @torch.no_grad()
+    @free_gpu_memory_context(after=True)
     def _sample_videos(self, progress: TrainingProgress) -> list[Path] | None:
         """Run validation by generating videos from validation prompts."""
         use_images = self._config.validation.images is not None
@@ -731,10 +752,9 @@ class LtxvTrainer:
         generate_audio = self._config.validation.generate_audio
         inference_steps = self._config.validation.inference_steps
 
-        # Free up GPU memory before validation sampling.
-        # Zero gradients and empty the cache to reclaim memory.
+        # Zero gradients and free GPU memory to reclaim memory before validation sampling
         self._optimizer.zero_grad(set_to_none=True)
-        torch.cuda.empty_cache()
+        free_gpu_memory()
 
         # Start sampling progress tracking
         sampling_ctx = progress.start_sampling(
@@ -798,6 +818,7 @@ class LtxvTrainer:
                 seed=self._config.validation.seed,
                 condition_image=condition_image,
                 reference_video=reference_video,
+                reference_downscale_factor=self._config.validation.reference_downscale_factor,
                 generate_audio=generate_audio,
                 include_reference_in_output=self._config.validation.include_reference_in_output,
                 cached_embeddings=cached_embeddings,
@@ -824,15 +845,12 @@ class LtxvTrainer:
                         output_path=output_path,
                         fps=self._config.validation.frame_rate,
                         audio=audio,
-                        audio_sample_rate=self._vocoder.output_sample_rate if audio is not None else None,
+                        audio_sample_rate=self._vocoder.output_sampling_rate if audio is not None else None,
                     )
                 video_paths.append(output_path)
 
         # Clean up progress tasks
         sampling_ctx.cleanup()
-
-        # Clear GPU cache after validation
-        torch.cuda.empty_cache()
 
         rel_outputs_path = output_dir.relative_to(self._config.output_dir)
         logger.info(f"🎥 Validation samples for step {self._global_step} saved in {rel_outputs_path}")
@@ -873,6 +891,9 @@ class LtxvTrainer:
 
         save_dir.mkdir(exist_ok=True, parents=True)
 
+        # Determine save precision
+        save_dtype = torch.bfloat16 if self._config.checkpoints.precision == "bfloat16" else torch.float32
+
         # For LoRA: extract only adapter weights; for full: use as-is
         if is_lora:
             unwrapped = self._accelerator.unwrap_model(self._transformer, keep_torch_compile=False)
@@ -885,9 +906,18 @@ class LtxvTrainer:
             # Convert to ComfyUI-compatible format (add "diffusion_model." prefix)
             state_dict = {f"diffusion_model.{k}": v for k, v in state_dict.items()}
 
-            # Save to disk
-            save_file(state_dict, saved_weights_path)
+            # Cast to configured precision
+            state_dict = {k: v.to(save_dtype) if isinstance(v, Tensor) else v for k, v in state_dict.items()}
+
+            # Build metadata for safetensors file
+            metadata = self._build_checkpoint_metadata()
+
+            # Save to disk with metadata
+            save_file(state_dict, saved_weights_path, metadata=metadata)
         else:
+            # Cast to configured precision
+            full_state_dict = {k: v.to(save_dtype) if isinstance(v, Tensor) else v for k, v in full_state_dict.items()}
+
             # Save to disk
             self._accelerator.save(full_state_dict, saved_weights_path)
 
@@ -909,6 +939,21 @@ class LtxvTrainer:
                     logger.info(f"Removed old checkpoints: {old_checkpoint}")
             # Update the list to only contain kept checkpoints
             self._checkpoint_paths = self._checkpoint_paths[-self._config.checkpoints.keep_last_n :]
+
+    def _build_checkpoint_metadata(self) -> dict[str, str]:
+        """Build metadata dictionary for safetensors checkpoint.
+        Delegates to the training strategy to get strategy-specific metadata
+        that downstream inference pipelines may need.
+        Returns:
+            Dictionary of string key-value pairs for safetensors metadata.
+            Values are converted to strings for safetensors compatibility.
+        """
+        raw_metadata = self._training_strategy.get_checkpoint_metadata()
+        # Convert all values to strings for safetensors compatibility
+        metadata = {k: str(v) for k, v in raw_metadata.items()}
+        if metadata:
+            logger.info(f"Saving checkpoint metadata: {metadata}")
+        return metadata
 
     def _save_config(self) -> None:
         """Save the training configuration as a YAML file in the output directory."""

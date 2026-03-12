@@ -115,17 +115,17 @@ class LTX2Generator(VideoGenerator):
         checkpoint_path = Path(self.settings.ltx2_checkpoint_path)
         if not checkpoint_path.exists():
             raise FileNotFoundError(
-                f"LTX-2 checkpoint not found at {checkpoint_path.absolute()}. "
-                f"Download with: huggingface-cli download Lightricks/LTX-2 "
-                f"ltx-2-19b-distilled-fp8.safetensors --local-dir {checkpoint_path.parent}"
+                f"LTX-2.3 checkpoint not found at {checkpoint_path.absolute()}. "
+                f"Download with: huggingface-cli download Lightricks/LTX-2.3-fp8 "
+                f"ltx-2.3-22b-dev-fp8.safetensors --local-dir {checkpoint_path.parent}"
             )
 
         spatial_upsampler_path = Path(self.settings.ltx2_spatial_upsampler_path)
         if not spatial_upsampler_path.exists():
             raise FileNotFoundError(
-                f"LTX-2 spatial upsampler not found at {spatial_upsampler_path.absolute()}. "
-                f"Download with: huggingface-cli download Lightricks/LTX-2 "
-                f"ltx-2-spatial-upscaler-x2-1.0.safetensors --local-dir {spatial_upsampler_path.parent}"
+                f"LTX-2.3 spatial upsampler not found at {spatial_upsampler_path.absolute()}. "
+                f"Download with: huggingface-cli download Lightricks/LTX-2.3 "
+                f"ltx-2.3-spatial-upscaler-x2-1.0.safetensors --local-dir {spatial_upsampler_path.parent}"
             )
 
         gemma_root = Path(self.settings.ltx2_gemma_root)
@@ -136,7 +136,15 @@ class LTX2Generator(VideoGenerator):
                 f"--local-dir {gemma_root}"
             )
 
-        logger.info(f"Loading LTX-2 pipelines from {checkpoint_path}")
+        distilled_lora_path = Path(self.settings.ltx2_distilled_lora_path)
+        if not distilled_lora_path.exists():
+            raise FileNotFoundError(
+                f"LTX-2.3 distilled LoRA not found at {distilled_lora_path.absolute()}. "
+                f"Download with: huggingface-cli download Lightricks/LTX-2.3 "
+                f"ltx-2.3-22b-distilled-lora-384.safetensors --local-dir {distilled_lora_path.parent}"
+            )
+
+        logger.info(f"Loading LTX-2.3 pipelines from {checkpoint_path}")
 
         try:
             import torch
@@ -152,6 +160,14 @@ class LTX2Generator(VideoGenerator):
         # Initialize device for all pipelines
         device = torch.device(self.settings.ltx2_device)
 
+        # Prepare distilled LoRA for the dev model
+        # This converts the dev model into distilled-equivalent at inference time
+        distilled_lora = LoraPathStrengthAndSDOps(
+            path=str(distilled_lora_path.absolute()),
+            strength=1.0,
+        )
+        logger.info(f"Distilled LoRA: {distilled_lora_path.name} (strength=1.0)")
+
         # DistilledPipeline for I2V generation (1 keyframe)
         # Uses latent replacement conditioning - exact keyframe preservation
         logger.info("Loading DistilledPipeline for single-keyframe I2V generation...")
@@ -160,7 +176,7 @@ class LTX2Generator(VideoGenerator):
                 checkpoint_path=str(checkpoint_path.absolute()),
                 spatial_upsampler_path=str(spatial_upsampler_path.absolute()),
                 gemma_root=str(gemma_root.absolute()),
-                loras=[],  # No extra LoRAs
+                loras=[distilled_lora],  # Apply distilled LoRA to dev model
                 device=device,
                 fp8transformer=self.settings.ltx2_fp8_enabled,
             )
@@ -176,10 +192,10 @@ class LTX2Generator(VideoGenerator):
         try:
             keyframe_pipeline = KeyframeInterpolationPipeline(
                 checkpoint_path=str(checkpoint_path.absolute()),
-                distilled_lora=[],  # Already using distilled checkpoint
+                distilled_lora=[distilled_lora],  # Apply distilled LoRA to dev model
                 spatial_upsampler_path=str(spatial_upsampler_path.absolute()),
                 gemma_root=str(gemma_root.absolute()),
-                loras=[],  # No extra LoRAs
+                loras=[],  # No extra LoRAs beyond distilled
                 device=device,
                 fp8transformer=self.settings.ltx2_fp8_enabled,
                 # Share all components from DistilledPipeline (VRAM optimization)
@@ -1030,7 +1046,7 @@ class LTX2Generator(VideoGenerator):
         """Get the current status of the generator."""
         return {
             "generator_type": "LTX2Generator",
-            "model": "LTX-2-19b-dev + Distilled LoRA",
+            "model": "LTX-2.3-22b-dev-fp8 + Distilled LoRA",
             "is_loaded": self.is_loaded,
             "dry_run": self.dry_run,
             "checkpoint_path": self.settings.ltx2_checkpoint_path,

@@ -162,7 +162,7 @@ class ModelManager:
         if lx2v_loaded:
             loaded_models.append("qwen-image-edit-2511")
         if ltx2_loaded:
-            loaded_models.append("ltx-2-19b")
+            loaded_models.append("ltx-2.3-22b")
         if self._acestep_generator and self._acestep_generator._loaded:
             loaded_models.append("ace-step-1.5")
             
@@ -554,7 +554,7 @@ class ModelManager:
             self._ltx2_generator = LTX2Generator(self._settings)
         
         if not self._ltx2_generator._loaded:
-            logger.info("Loading LTX-2 19B (DistilledPipeline)...")
+            logger.info("Loading LTX-2.3 22B (DistilledPipeline)...")
             await asyncio.to_thread(self._ltx2_generator.load_models)
 
     async def _unload_ltx2(self) -> None:
