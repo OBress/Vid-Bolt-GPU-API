@@ -67,5 +67,5 @@ websockets==15.0.1
 win32_setctime==1.2.0
 
 # Audio Generation
-# NOTE: audiocraft and acestep are installed directly in Dockerfile
+# NOTE: acestep is installed directly in Dockerfile
 # (they require system-level FFmpeg dev libraries for PyAV compilation)

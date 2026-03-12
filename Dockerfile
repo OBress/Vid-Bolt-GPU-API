@@ -35,7 +35,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     curl \
     wget \
     pkg-config \
-    # FFmpeg dev headers for PyAV (audiocraft dependency)
+    # FFmpeg dev headers for PyAV / video pipeline
     libavformat-dev \
     libavcodec-dev \
     libavdevice-dev \
@@ -100,16 +100,6 @@ RUN pip install --no-cache-dir -e /app/repos/LightX2V || echo "LightX2V installa
 # sgl-kernel for FP8 quantized inference (provides sgl_per_token_quant_fp8, fp8_scaled_mm)
 RUN pip install --no-cache-dir sgl-kernel || echo "sgl-kernel installation skipped"
 
-# AudioCraft (for AudioGen sound effects) - vendored locally for version stability
-# Install without dependencies to avoid torch/torchvision/torchaudio version conflicts
-# NOTE: xformers is NOT installed (incompatible with Blackwell GPUs).
-# We patched audiocraft/modules/transformer.py to make xformers optional.
-# AudioCraft defaults to 'torch' SDPA backend which works without xformers.
-COPY repos/audiocraft /app/repos/audiocraft
-RUN pip install --no-cache-dir --no-deps -e /app/repos/audiocraft && \
-    pip install --no-cache-dir av einops flashy hydra-core hydra_colorlog julius \
-    num2words "numpy<2.0.0" sentencepiece spacy==3.7.6 huggingface_hub tqdm \
-    demucs librosa soundfile gradio torchmetrics encodec protobuf pesq pystoi torchdiffeq
 
 # ACE-Step 1.5 (for music generation) - vendored locally for version stability
 # Split into separate RUN steps to ensure failures are visible (not swallowed by || echo)
@@ -166,9 +156,7 @@ RUN pip install --no-cache-dir ninja && \
 # Upgrade core libraries for Blackwell GPU compatibility (Issue #10)
 RUN pip install --no-cache-dir --upgrade transformers peft diffusers accelerate
 
-# Pin numpy<2.0.0 AFTER all upgrades — audiocraft's C extensions are compiled
-# against numpy 1.x and crash with "numpy.dtype size changed" if numpy 2.x loads
-RUN pip install --no-cache-dir "numpy<2.0.0"
+
 
 # =============================================================================
 # Environment Configuration
