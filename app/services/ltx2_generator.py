@@ -227,7 +227,7 @@ class LTX2Generator(VideoGenerator):
                         m.weight.data.to(torch.float8_e4m3fn),
                         requires_grad=False,
                     )
-                    _replace_fwd_with_upcast(m)
+                    _replace_fwd_with_upcast(m, with_stochastic_rounding=True)
             return model
 
         FP8_DOWNCAST_UPCAST = ModuleOps(
@@ -334,7 +334,7 @@ class LTX2Generator(VideoGenerator):
                     width=256,
                     num_frames=9,  # Minimum valid: 1 + 8*1 = 9
                     frame_rate=24.0,
-                    images=[ImageConditioningInput(path=str(warmup_path), frame_idx=0, strength=1.0)],
+                    images=[ImageConditioningInput(path=str(warmup_path), frame_idx=0, strength=1.0, crf=0)],  # crf=0: skip lossy compression
                     tiling_config=tiling_config,
                     enhance_prompt=False,
                 )
@@ -819,7 +819,7 @@ class LTX2Generator(VideoGenerator):
             image_path = Path(self._temp_dir.name) / f"{params.job_id}_keyframe_{idx}.png"
             input_image.save(image_path, format="PNG")
             from ltx_pipelines.utils.args import ImageConditioningInput
-            images.append(ImageConditioningInput(path=str(image_path), frame_idx=frame_idx, strength=strength))
+            images.append(ImageConditioningInput(path=str(image_path), frame_idx=frame_idx, strength=strength, crf=0))  # crf=0: skip lossy compression
 
         
         # Configure tiling for video decoding
