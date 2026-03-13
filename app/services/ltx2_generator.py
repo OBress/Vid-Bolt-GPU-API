@@ -179,7 +179,6 @@ class LTX2Generator(VideoGenerator):
                 gemma_root=str(gemma_root.absolute()),
                 loras=[distilled_lora],  # Apply distilled LoRA to dev model
                 device=device,
-                quantization=fp8_quantization,
             )
         except Exception:
             logger.exception("Failed to initialize DistilledPipeline")
@@ -198,7 +197,6 @@ class LTX2Generator(VideoGenerator):
                 gemma_root=str(gemma_root.absolute()),
                 loras=[],  # No extra LoRAs beyond distilled
                 device=device,
-                quantization=fp8_quantization,
             )
         except Exception:
             logger.exception("Failed to initialize KeyframeInterpolationPipeline")
