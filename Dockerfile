@@ -45,8 +45,6 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libavfilter-dev \
     # Audio I/O for soundfile/librosa (ACE-Step dependency)
     libsndfile1-dev \
-    # TensorRT-LLM system dependency (OpenMPI for distributed inference)
-    libopenmpi-dev \
     && rm -rf /var/lib/apt/lists/* \
     && apt-get clean
 
@@ -159,8 +157,6 @@ RUN pip install --no-cache-dir ninja && \
 RUN pip install --no-cache-dir --upgrade peft diffusers accelerate \
     && pip install --no-cache-dir "transformers>=4.57,<4.58"
 
-# TensorRT-LLM for native FP8 inference (LTX-2 FP8Linear uses cuBLAS scaled-mm)
-RUN pip install --no-cache-dir tensorrt_llm || echo "tensorrt_llm installation skipped (will fall back to FP8 cast)"
 
 
 
