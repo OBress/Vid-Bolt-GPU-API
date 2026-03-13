@@ -154,7 +154,8 @@ RUN pip install --no-cache-dir ninja && \
 # PyTorch native SDPA is used instead (automatic fallback in all libraries)
 
 # Upgrade core libraries for Blackwell GPU compatibility (Issue #10)
-RUN pip install --no-cache-dir --upgrade transformers peft diffusers accelerate
+RUN pip install --no-cache-dir --upgrade peft diffusers accelerate \
+    && pip install --no-cache-dir "transformers>=4.52,<4.53"
 
 
 
