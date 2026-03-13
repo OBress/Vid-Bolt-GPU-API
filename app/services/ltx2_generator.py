@@ -275,6 +275,7 @@ class LTX2Generator(VideoGenerator):
                 tiling_config = TilingConfig.default()
                 
                 # Warmup DistilledPipeline
+                from ltx_pipelines.utils.args import ImageConditioningInput
                 video_chunks, audio = self.components.distilled_pipeline(
                     prompt="warmup",
                     seed=42,
@@ -282,7 +283,7 @@ class LTX2Generator(VideoGenerator):
                     width=256,
                     num_frames=9,  # Minimum valid: 1 + 8*1 = 9
                     frame_rate=24.0,
-                    images=[(str(warmup_path), 0, 1.0)],
+                    images=[ImageConditioningInput(path=str(warmup_path), frame_idx=0, strength=1.0)],
                     tiling_config=tiling_config,
                     enhance_prompt=False,
                 )
