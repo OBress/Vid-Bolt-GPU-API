@@ -54,10 +54,10 @@ safetensors==0.7.0
 six==1.17.0
 starlette==0.50.0
 sympy==1.14.0
-tokenizers>=0.21,<0.22
+tokenizers>=0.21
 torch==2.9.1
 tqdm==4.67.1
-transformers>=4.52,<4.53
+transformers>=4.57,<4.58
 typing-inspection==0.4.2
 typing_extensions==4.15.0
 urllib3==2.6.2

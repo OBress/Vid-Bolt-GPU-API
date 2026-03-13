@@ -155,7 +155,7 @@ RUN pip install --no-cache-dir ninja && \
 
 # Upgrade core libraries for Blackwell GPU compatibility (Issue #10)
 RUN pip install --no-cache-dir --upgrade peft diffusers accelerate \
-    && pip install --no-cache-dir "transformers>=4.52,<4.53"
+    && pip install --no-cache-dir "transformers>=4.57,<4.58"
 
 
 
