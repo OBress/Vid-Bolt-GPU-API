@@ -679,14 +679,13 @@ class LTX2Generator(VideoGenerator):
         import torch
         from ltx_core.model.video_vae import TilingConfig, get_video_chunks_number
         from ltx_pipelines.utils.media_io import encode_video
-        from ltx_pipelines.utils.constants import AUDIO_SAMPLE_RATE
 
         # Wrap entire generation in inference_mode to match official LTX-2 CLI pattern
         # This ensures encode_video (which iterates the video generator) runs in the same context
         with torch.no_grad():
             return self._generate_sync_inner(
                 params, num_frames, seed, target_width, target_height,
-                TilingConfig, get_video_chunks_number, encode_video, AUDIO_SAMPLE_RATE
+                TilingConfig, get_video_chunks_number, encode_video
             )
 
     def _generate_sync_inner(
@@ -699,7 +698,6 @@ class LTX2Generator(VideoGenerator):
         TilingConfig,
         get_video_chunks_number,
         encode_video,
-        AUDIO_SAMPLE_RATE,
     ) -> tuple[bytes, bool]:
         """Inner implementation of _generate_sync - runs inside inference_mode context."""
 
@@ -841,7 +839,7 @@ class LTX2Generator(VideoGenerator):
             audio = self._trim_audio(
                 audio,
                 target_duration=params.duration_seconds,
-                sample_rate=AUDIO_SAMPLE_RATE
+                sample_rate=audio.sampling_rate
             )
 
         # Encode to MP4 with audio
@@ -854,7 +852,6 @@ class LTX2Generator(VideoGenerator):
             video=video_tensor,
             fps=params.frame_rate,
             audio=audio,
-            audio_sample_rate=AUDIO_SAMPLE_RATE,
             output_path=str(output_path),
             video_chunks_number=video_chunks_number,
         )
