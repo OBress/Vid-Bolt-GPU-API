@@ -151,9 +151,6 @@ class LTX2Generator(VideoGenerator):
             from ltx_pipelines.distilled import DistilledPipeline
             from ltx_pipelines.keyframe_interpolation import KeyframeInterpolationPipeline
             from ltx_core.loader import LTXV_LORA_COMFY_RENAMING_MAP, LoraPathStrengthAndSDOps
-            from ltx_core.quantization import QuantizationPolicy
-            from ltx_core.quantization.fp8_scaled_mm import FP8_TRANSPOSE_SD_OPS
-            from ltx_core.quantization.fp8_cast import UPCAST_DURING_INFERENCE
         except ImportError as e:
             raise ImportError(
                 "LTX-2 packages are required. Install with: "
@@ -171,18 +168,6 @@ class LTX2Generator(VideoGenerator):
             sd_ops=LTXV_LORA_COMFY_RENAMING_MAP,
         )
         logger.info(f"Distilled LoRA: {distilled_lora_path.name} (strength=1.0)")
-
-        # FP8 quantization policy for the dev-fp8 checkpoint
-        # The FP8 checkpoint stores weights in [out, in] format with per-tensor scales.
-        # FP8_TRANSPOSE_SD_OPS transposes them to [in, out] so LoRA fusion works correctly.
-        # UPCAST_DURING_INFERENCE patches nn.Linear.forward to upcast FP8→bf16 for compute.
-        # Weights stay stored in FP8 (~19GB VRAM), compute is bf16.
-        # NOTE: Native FP8 matmul (fp8_scaled_mm) requires TensorRT-LLM which needs CUDA 13.1+
-        fp8_quantization = QuantizationPolicy(
-            sd_ops=FP8_TRANSPOSE_SD_OPS,
-            module_ops=(UPCAST_DURING_INFERENCE,),
-        )
-        logger.info("Using FP8 quantization (transpose + upcast-during-inference)")
 
         # DistilledPipeline for I2V generation (1 keyframe)
         # Uses latent replacement conditioning - exact keyframe preservation
