@@ -746,6 +746,8 @@ class JobManager:
             True if this was an OOM error (for triggering aggressive cleanup)
         """
         logger.error(f"Job {job.job_id} failed: {error_msg}")
+        import traceback
+        logger.error(f"Job {job.job_id} full traceback:\n{traceback.format_exc()}")
         
         # Check for OOM
         is_oom = False

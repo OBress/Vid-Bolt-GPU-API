@@ -285,7 +285,7 @@ class LTX2Generator(VideoGenerator):
             logger.info("LTX-2 warmup complete - GPU tensors loaded and kernels compiled")
             
         except Exception as e:
-            logger.warning(f"LTX-2 warmup failed (non-fatal): {e}")
+            logger.warning(f"LTX-2 warmup failed (non-fatal): {e}", exc_info=True)
             # Warmup failure is non-fatal - first real inference will just be slow
 
     def _patch_model_ledger_caching(self) -> None:
