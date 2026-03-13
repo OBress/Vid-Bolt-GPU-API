@@ -151,6 +151,9 @@ class LTX2Generator(VideoGenerator):
             from ltx_pipelines.distilled import DistilledPipeline
             from ltx_pipelines.keyframe_interpolation import KeyframeInterpolationPipeline
             from ltx_core.loader import LTXV_LORA_COMFY_RENAMING_MAP, LoraPathStrengthAndSDOps
+            from ltx_core.quantization import QuantizationPolicy
+            from ltx_core.quantization.fp8_scaled_mm import FP8_TRANSPOSE_SD_OPS, FP8_PREPARE_MODULE_OPS
+            from ltx_core.quantization.fp8_cast import UPCAST_DURING_INFERENCE
         except ImportError as e:
             raise ImportError(
                 "LTX-2 packages are required. Install with: "
@@ -169,9 +172,26 @@ class LTX2Generator(VideoGenerator):
         )
         logger.info(f"Distilled LoRA: {distilled_lora_path.name} (strength=1.0)")
 
+        # FP8 quantization policy for the dev-fp8 checkpoint
+        # The FP8 checkpoint stores weights in [out, in] format with per-tensor scales.
+        # FP8_TRANSPOSE_SD_OPS transposes them to [in, out] so LoRA fusion works correctly,
+        # and FP8_PREPARE_MODULE_OPS replaces nn.Linear with FP8Linear for efficient inference.
+        # We try fp8_scaled_mm first (uses TensorRT-LLM for fastest inference),
+        # falling back to a custom policy with upcast-during-inference if unavailable.
+        try:
+            fp8_quantization = QuantizationPolicy.fp8_scaled_mm()
+            logger.info("Using FP8 scaled-mm quantization (TensorRT-LLM)")
+        except ImportError:
+            # TensorRT-LLM not available — use FP8 transpose + upcast during inference
+            # This transposes weights correctly for LoRA fusion and upcasts at runtime
+            fp8_quantization = QuantizationPolicy(
+                sd_ops=FP8_TRANSPOSE_SD_OPS,
+                module_ops=(UPCAST_DURING_INFERENCE,),
+            )
+            logger.info("Using FP8 upcast quantization (no TensorRT-LLM)")
+
         # DistilledPipeline for I2V generation (1 keyframe)
         # Uses latent replacement conditioning - exact keyframe preservation
-        # NOTE: FP8 weights are pre-baked in the checkpoint, so no runtime quantization needed
         logger.info("Loading DistilledPipeline for single-keyframe I2V generation...")
         try:
             distilled_pipeline = DistilledPipeline(
@@ -180,6 +200,7 @@ class LTX2Generator(VideoGenerator):
                 gemma_root=str(gemma_root.absolute()),
                 loras=[distilled_lora],  # Apply distilled LoRA to dev model
                 device=device,
+                quantization=fp8_quantization,
             )
         except Exception:
             logger.exception("Failed to initialize DistilledPipeline")
@@ -198,6 +219,7 @@ class LTX2Generator(VideoGenerator):
                 gemma_root=str(gemma_root.absolute()),
                 loras=[],  # No extra LoRAs beyond distilled
                 device=device,
+                quantization=fp8_quantization,
             )
         except Exception:
             logger.exception("Failed to initialize KeyframeInterpolationPipeline")
