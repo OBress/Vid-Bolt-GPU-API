@@ -172,24 +172,75 @@ class LTX2Generator(VideoGenerator):
         )
         logger.info(f"Distilled LoRA: {distilled_lora_path.name} (strength=1.0)")
 
-        # FP8 quantization: strip .weight_scale/.input_scale keys from the pre-quantized
-        # checkpoint. These keys force _fuse_delta_with_scaled_fp8 which assumes cuBLAS
-        # [in,out] layout (for Hopper FP8Linear + TRT-LLM). By stripping them, LoRA fusion
-        # uses _fuse_delta_with_cast_fp8 instead (Triton kernel, standard [out,in] layout).
-        # UPCAST_DURING_INFERENCE patches nn.Linear.forward to upcast FP8→bf16 for compute.
-        def _drop_scale_key(key: str, value: torch.Tensor) -> list:
-            return []  # Drop this key entirely
+        # FP8 quantization for pre-quantized checkpoint + LoRA fusion:
+        # 1. SD ops: dequantize FP8→bf16 using per-tensor scales at load time
+        # 2. LoRA fusion runs in bf16 (standard path, correct shapes)
+        # 3. Module ops: downcast fused bf16 weights back to FP8, patch forward for upcast
+        # Result: ~19GB VRAM with correct values
 
-        fp8_strip_scales = (
-            SDOps("fp8_strip_scale_keys")
-            .with_kv_operation(_drop_scale_key, key_prefix="", key_suffix=".weight_scale")
-            .with_kv_operation(_drop_scale_key, key_prefix="", key_suffix=".input_scale")
+        from ltx_core.loader.sd_ops import SDOps, KeyValueOperationResult
+        from ltx_core.loader.module_ops import ModuleOps
+        from ltx_core.quantization.fp8_cast import _replace_fwd_with_upcast
+        from ltx_core.model.transformer.model import LTXModel
+
+        # Mutable closure to handle key ordering in safetensors
+        # (.weight sorts before .weight_scale, so weight arrives first)
+        _pending_fp8 = {}
+
+        def _dequant_fp8_with_scale(key: str, value: torch.Tensor) -> list:
+            if key.endswith(".weight_scale"):
+                # Scale arrived — check if weight is already pending
+                weight_key = key[:-len("_scale")]  # "x.weight_scale" → "x.weight"
+                if weight_key in _pending_fp8:
+                    fp8_w = _pending_fp8.pop(weight_key)
+                    dequant = fp8_w.to(torch.bfloat16) * value
+                    return [KeyValueOperationResult(weight_key, dequant)]
+                else:
+                    _pending_fp8[key] = value  # Store scale for later
+                    return []
+
+            if key.endswith(".input_scale"):
+                return []  # Drop input_scale keys entirely
+
+            if key.endswith(".weight") and value.dtype == torch.float8_e4m3fn:
+                # FP8 weight — check if scale already arrived
+                scale_key = key + "_scale"
+                if scale_key in _pending_fp8:
+                    scale = _pending_fp8.pop(scale_key)
+                    dequant = value.to(torch.bfloat16) * scale
+                    return [KeyValueOperationResult(key, dequant)]
+                else:
+                    _pending_fp8[key] = value  # Store weight, wait for scale
+                    return []
+
+            return [KeyValueOperationResult(key, value)]
+
+        fp8_dequant_sd_ops = SDOps("fp8_dequant_to_bf16").with_kv_operation(
+            _dequant_fp8_with_scale, key_prefix="", key_suffix=""
         )
+
+        # Module ops: after load_state_dict, downcast bf16→FP8 and patch forward
+        def _downcast_and_patch_forward(model: torch.nn.Module) -> torch.nn.Module:
+            for m in model.modules():
+                if isinstance(m, torch.nn.Linear) and m.weight.dtype == torch.bfloat16:
+                    m.weight = torch.nn.Parameter(
+                        m.weight.data.to(torch.float8_e4m3fn),
+                        requires_grad=False,
+                    )
+                    _replace_fwd_with_upcast(m)
+            return model
+
+        FP8_DOWNCAST_UPCAST = ModuleOps(
+            name="fp8_downcast_and_upcast_inference",
+            matcher=lambda model: isinstance(model, LTXModel),
+            mutator=_downcast_and_patch_forward,
+        )
+
         fp8_policy = QuantizationPolicy(
-            sd_ops=fp8_strip_scales,
-            module_ops=(UPCAST_DURING_INFERENCE,),
+            sd_ops=fp8_dequant_sd_ops,
+            module_ops=(FP8_DOWNCAST_UPCAST,),
         )
-        logger.info("Using FP8 quantization (strip-scales + upcast-during-inference)")
+        logger.info("Using FP8 quantization (dequant→fuse→recast, ~19GB VRAM)")
 
         # DistilledPipeline for I2V generation (1 keyframe)
         # Uses latent replacement conditioning - exact keyframe preservation
