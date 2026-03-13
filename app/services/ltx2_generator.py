@@ -864,7 +864,6 @@ class LTX2Generator(VideoGenerator):
             audio = self._trim_audio(
                 audio,
                 target_duration=params.duration_seconds,
-                sample_rate=audio.sampling_rate
             )
 
         # Encode to MP4 with audio
@@ -936,17 +935,26 @@ class LTX2Generator(VideoGenerator):
 
     def _trim_audio(
         self,
-        audio: "torch.Tensor",
+        audio,
         target_duration: float,
-        sample_rate: int,
-    ) -> "torch.Tensor":
-        """Trim audio tensor to target duration."""
-        target_samples = int(target_duration * sample_rate)
+    ):
+        """Trim Audio object's waveform to target duration.
         
-        # Audio shape: (Samples, Channels) or (Samples,)
-        if audio.shape[0] > target_samples:
-            logger.info(f"Trimming audio tensor from {audio.shape[0]} to {target_samples} samples")
-            audio = audio[:target_samples]
+        Args:
+            audio: ltx_core.types.Audio dataclass with .waveform and .sampling_rate
+            target_duration: target duration in seconds
+        Returns:
+            Audio object with trimmed waveform
+        """
+        from dataclasses import replace as dc_replace
+        target_samples = int(target_duration * audio.sampling_rate)
+        waveform = audio.waveform
+        
+        # Waveform shape: (Samples,) or (Samples, Channels)
+        if waveform.shape[0] > target_samples:
+            logger.info(f"Trimming audio waveform from {waveform.shape[0]} to {target_samples} samples")
+            waveform = waveform[:target_samples]
+            return dc_replace(audio, waveform=waveform)
             
         return audio
 
