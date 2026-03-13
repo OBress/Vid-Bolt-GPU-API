@@ -152,8 +152,8 @@ class LTX2Generator(VideoGenerator):
             from ltx_pipelines.keyframe_interpolation import KeyframeInterpolationPipeline
             from ltx_core.loader import LTXV_LORA_COMFY_RENAMING_MAP, LoraPathStrengthAndSDOps
             from ltx_core.quantization import QuantizationPolicy
-            from ltx_core.quantization.fp8_scaled_mm import FP8_TRANSPOSE_SD_OPS
             from ltx_core.quantization.fp8_cast import UPCAST_DURING_INFERENCE
+            from ltx_core.loader.sd_ops import SDOps, KeyValueOperationResult
         except ImportError as e:
             raise ImportError(
                 "LTX-2 packages are required. Install with: "
@@ -172,14 +172,25 @@ class LTX2Generator(VideoGenerator):
         )
         logger.info(f"Distilled LoRA: {distilled_lora_path.name} (strength=1.0)")
 
-        # FP8 quantization policy for pre-quantized FP8 checkpoint:
-        # FP8_TRANSPOSE_SD_OPS transposes weights so LoRA fusion shapes match.
-        # UPCAST_DURING_INFERENCE keeps weights in FP8 VRAM, computes in bf16.
+        # Custom FP8 transpose op that covers ALL transformer blocks.
+        # The repo's FP8_TRANSPOSE_SD_OPS excludes blocks 0, 43-47 (for Hopper FP8Linear).
+        # Since we use UPCAST_DURING_INFERENCE (all layers stay nn.Linear), we need ALL
+        # FP8 weights transposed for correct LoRA fusion.
+        def _transpose_all_fp8_weights(key: str, value: torch.Tensor) -> list:
+            if not key.endswith(".weight") or value.dim() != 2 or value.dtype != torch.float8_e4m3fn:
+                return [KeyValueOperationResult(key, value)]
+            return [KeyValueOperationResult(key, value.t())]
+
+        fp8_transpose_all = SDOps("fp8_transpose_all_weights").with_kv_operation(
+            _transpose_all_fp8_weights,
+            key_prefix="transformer_blocks.",
+            key_suffix=".weight",
+        )
         fp8_policy = QuantizationPolicy(
-            sd_ops=FP8_TRANSPOSE_SD_OPS,
+            sd_ops=fp8_transpose_all,
             module_ops=(UPCAST_DURING_INFERENCE,),
         )
-        logger.info("Using FP8 quantization (transpose + upcast-during-inference)")
+        logger.info("Using FP8 quantization (transpose-all + upcast-during-inference)")
 
         # DistilledPipeline for I2V generation (1 keyframe)
         # Uses latent replacement conditioning - exact keyframe preservation
