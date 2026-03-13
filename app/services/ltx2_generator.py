@@ -151,6 +151,9 @@ class LTX2Generator(VideoGenerator):
             from ltx_pipelines.distilled import DistilledPipeline
             from ltx_pipelines.keyframe_interpolation import KeyframeInterpolationPipeline
             from ltx_core.loader import LTXV_LORA_COMFY_RENAMING_MAP, LoraPathStrengthAndSDOps
+            from ltx_core.quantization import QuantizationPolicy
+            from ltx_core.quantization.fp8_scaled_mm import FP8_TRANSPOSE_SD_OPS
+            from ltx_core.quantization.fp8_cast import UPCAST_DURING_INFERENCE
         except ImportError as e:
             raise ImportError(
                 "LTX-2 packages are required. Install with: "
@@ -169,6 +172,15 @@ class LTX2Generator(VideoGenerator):
         )
         logger.info(f"Distilled LoRA: {distilled_lora_path.name} (strength=1.0)")
 
+        # FP8 quantization policy for pre-quantized FP8 checkpoint:
+        # FP8_TRANSPOSE_SD_OPS transposes weights so LoRA fusion shapes match.
+        # UPCAST_DURING_INFERENCE keeps weights in FP8 VRAM, computes in bf16.
+        fp8_policy = QuantizationPolicy(
+            sd_ops=FP8_TRANSPOSE_SD_OPS,
+            module_ops=(UPCAST_DURING_INFERENCE,),
+        )
+        logger.info("Using FP8 quantization (transpose + upcast-during-inference)")
+
         # DistilledPipeline for I2V generation (1 keyframe)
         # Uses latent replacement conditioning - exact keyframe preservation
         logger.info("Loading DistilledPipeline for single-keyframe I2V generation...")
@@ -179,6 +191,7 @@ class LTX2Generator(VideoGenerator):
                 gemma_root=str(gemma_root.absolute()),
                 loras=[distilled_lora],  # Apply distilled LoRA to dev model
                 device=device,
+                quantization=fp8_policy,
             )
         except Exception:
             logger.exception("Failed to initialize DistilledPipeline")
@@ -197,6 +210,7 @@ class LTX2Generator(VideoGenerator):
                 gemma_root=str(gemma_root.absolute()),
                 loras=[],  # No extra LoRAs beyond distilled
                 device=device,
+                quantization=fp8_policy,
             )
         except Exception:
             logger.exception("Failed to initialize KeyframeInterpolationPipeline")
