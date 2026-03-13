@@ -767,7 +767,8 @@ class LTX2Generator(VideoGenerator):
 
             image_path = Path(self._temp_dir.name) / f"{params.job_id}_keyframe_{idx}.png"
             input_image.save(image_path, format="PNG")
-            images.append((str(image_path), frame_idx, strength))
+            from ltx_pipelines.utils.args import ImageConditioningInput
+            images.append(ImageConditioningInput(path=str(image_path), frame_idx=frame_idx, strength=strength))
 
         
         # Configure tiling for video decoding
