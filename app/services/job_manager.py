@@ -460,7 +460,7 @@ class JobManager:
                     megapixels = (width * height) / 1_000_000
                     activation_gb_per_video = 5.0 + (megapixels * 10.0)  # ~26GB at 1920x1088
                     
-                    # Get available VRAM beyond cached models (~64GB empirical baseline)
+                    # Get available VRAM beyond cached transformer (~27GB baseline)
                     try:
                         import torch
                         if torch.cuda.is_available():
@@ -859,9 +859,9 @@ class JobManager:
                     if mode == VRAMLoadMode.IMAGE_EDITING:
                         expected_limit = 45.0  # 5 instances * ~7-8GB
                     elif mode == VRAMLoadMode.VIDEO_GENERATION:
-                        expected_limit = 66.0  # Empirical: cached transformer+text_encoder+pipeline state = ~64GB
+                        expected_limit = 35.0  # Cached transformer (~22GB) + overhead
                     elif mode == VRAMLoadMode.ALL:
-                        expected_limit = 75.0  # LightX2V + LTX-2 (no Z-Image)
+                        expected_limit = 55.0  # LightX2V (~19GB) + cached transformer (~22GB) + overhead
 
                 # Model weights should be within expected limit. If higher, something's leaking.
                 if allocated > expected_limit:
@@ -907,9 +907,9 @@ class JobManager:
                 if mode == VRAMLoadMode.IMAGE_EDITING:
                     expected_limit = 45.0
                 elif mode == VRAMLoadMode.VIDEO_GENERATION:
-                    expected_limit = 66.0  # Empirical: cached transformer+text_encoder+pipeline state = ~64GB
+                    expected_limit = 35.0  # Cached transformer (~22GB) + overhead
                 elif mode == VRAMLoadMode.ALL:
-                    expected_limit = 75.0
+                    expected_limit = 55.0  # LightX2V (~19GB) + cached transformer (~22GB) + overhead
             
             tolerance = expected_limit * 1.1  # 10% headroom
             

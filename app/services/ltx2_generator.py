@@ -369,33 +369,32 @@ class LTX2Generator(VideoGenerator):
             # Warmup failure is non-fatal - first real inference will just be slow
 
     def _patch_model_ledger_caching(self) -> None:
-        """Cache ONLY the heavy models that must be shared across concurrent calls.
+        """Cache ONLY the transformer; serialize text_encoder access with a Lock.
         
         The upstream pipeline was designed for a load/unload lifecycle:
           1. Load text_encoder → encode prompts → free text_encoder
           2. Load transformer + video_encoder → denoise → free both
           3. Load video_decoder + audio_decoder + vocoder → decode → free all
         
-        This means peak VRAM = max(one stage), NOT sum(all stages).
+        Peak VRAM = max(one stage), NOT sum(all stages).
         
-        We cache ONLY the models that would create expensive duplicates
-        under concurrent access:
-          - transformer (~19GB FP8) — the big one
-          - text_encoder (~18GB Gemma) — also huge
-          - embeddings_processor (~0.1GB) — thread-safety
+        We cache ONLY the transformer because it's used in every denoising
+        step and would create an expensive (~22GB) duplicate under concurrency.
         
-        Smaller models (video_encoder, video_decoder, spatial_upsampler,
-        audio_decoder, vocoder) cycle as designed — they load for their
-        stage and get freed, keeping VRAM lean between stages.
+        text_encoder (~24GB Gemma BF16) and embeddings_processor (~0.1GB) are
+        NOT cached — they load/free per-call as the pipeline designed.
+        A threading.Lock prevents concurrent calls from creating duplicate
+        24GB text_encoder copies.
         
-        Expected baseline: ~38GB (vs ~67GB when caching everything)
-        At 1920x1088: ~38GB base + ~26GB activations = ~64GB peak
-        → room for 2 concurrent videos
+        Expected baseline: ~22GB (transformer only) + ~5GB overhead = ~27GB
+        vs previous: ~64GB with text_encoder cached
         """
+        import threading
+        
         distilled = self.components.distilled_pipeline
         ledger = distilled.model_ledger
         
-        logger.info("Caching critical models (transformer + text_encoder + embeddings_processor)...")
+        logger.info("Caching transformer only (text_encoder will load/free per-call)...")
         
         try:
             import torch
@@ -406,45 +405,51 @@ class LTX2Generator(VideoGenerator):
             
             logger.info(f"  VRAM before caching: {_vram_gb():.1f}GB")
             
-            # Cache ONLY the 3 models that cause duplicate-copy OOM issues
-            cached_text_encoder = ledger.text_encoder()
-            logger.info(f"  VRAM after text_encoder: {_vram_gb():.1f}GB")
-            
-            cached_embeddings_processor = ledger.gemma_embeddings_processor()
-            logger.info(f"  VRAM after embeddings_processor: {_vram_gb():.1f}GB")
-            
+            # Cache ONLY the transformer (used every denoising step)
             cached_transformer = ledger.transformer()
             logger.info(f"  VRAM after transformer: {_vram_gb():.1f}GB")
             
-            # Create cached factory functions
-            def _text_encoder(): return cached_text_encoder
-            def _embeddings_processor(): return cached_embeddings_processor
+            # Create cached factory for transformer
             def _transformer(): return cached_transformer
             
+            # Serialize text_encoder and embeddings_processor access
+            # to prevent concurrent calls from creating duplicate 24GB copies
+            _text_encoder_lock = threading.Lock()
+            _original_text_encoder = ledger.text_encoder
+            _original_embeddings = ledger.gemma_embeddings_processor
+            
+            def _locked_text_encoder():
+                """Load text_encoder with lock — prevents duplicate 24GB copies."""
+                with _text_encoder_lock:
+                    return _original_text_encoder()
+            
+            def _locked_embeddings():
+                """Load embeddings_processor with lock."""
+                with _text_encoder_lock:
+                    return _original_embeddings()
+            
             # Patch distilled pipeline's model_ledger
-            # NOTE: video_encoder, video_decoder, spatial_upsampler, audio_decoder,
-            # vocoder are NOT cached — they cycle as the pipeline designed
-            ledger.text_encoder = _text_encoder
-            ledger.gemma_embeddings_processor = _embeddings_processor
+            ledger.text_encoder = _locked_text_encoder
+            ledger.gemma_embeddings_processor = _locked_embeddings
             ledger.transformer = _transformer
             
             # Patch keyframe pipeline's model_ledgers too
             keyframe = self.components.keyframe_pipeline
             if hasattr(keyframe, 'stage_1_model_ledger'):
-                keyframe.stage_1_model_ledger.text_encoder = _text_encoder
-                keyframe.stage_1_model_ledger.gemma_embeddings_processor = _embeddings_processor
+                keyframe.stage_1_model_ledger.text_encoder = _locked_text_encoder
+                keyframe.stage_1_model_ledger.gemma_embeddings_processor = _locked_embeddings
                 keyframe.stage_1_model_ledger.transformer = _transformer
                 if hasattr(keyframe, 'stage_2_model_ledger'):
-                    keyframe.stage_2_model_ledger.text_encoder = _text_encoder
-                    keyframe.stage_2_model_ledger.gemma_embeddings_processor = _embeddings_processor
+                    keyframe.stage_2_model_ledger.text_encoder = _locked_text_encoder
+                    keyframe.stage_2_model_ledger.gemma_embeddings_processor = _locked_embeddings
                     keyframe.stage_2_model_ledger.transformer = _transformer
                 logger.info("  Patched DistilledPipeline + KeyframeInterpolationPipeline model_ledgers")
             else:
                 logger.info("  Patched DistilledPipeline model_ledger")
             
             logger.info(
-                "Selective caching enabled — transformer/text_encoder/embeddings_processor "
-                "shared, other models cycle per-call as designed"
+                f"Transformer cached (~22GB FP8). text_encoder/embeddings_processor "
+                f"load-per-call with Lock. VRAM baseline: {_vram_gb():.1f}GB"
             )
             
         except Exception as e:
