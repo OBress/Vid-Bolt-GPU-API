@@ -25,6 +25,9 @@ router = APIRouter(
 
 settings = get_settings()
 
+# Maximum LoRA file size: 500 MB (SafeTensors LoRAs are typically 50-200 MB)
+MAX_LORA_SIZE_BYTES = 500 * 1024 * 1024
+
 
 def _sanitize_lora_name(name: str) -> str:
     """Sanitize LoRA name to prevent path traversal.
@@ -119,14 +122,24 @@ async def upload_lora(
         )
     
     try:
+        # Read content with size limit to prevent disk exhaustion
+        content = await file.read()
+        if len(content) > MAX_LORA_SIZE_BYTES:
+            raise HTTPException(
+                status_code=413,
+                detail=f"LoRA file too large ({len(content) / (1024*1024):.0f} MB). Maximum is {MAX_LORA_SIZE_BYTES // (1024*1024)} MB.",
+            )
+        
         with open(file_path, "wb") as buffer:
-            shutil.copyfileobj(file.file, buffer)
+            buffer.write(content)
             
-        logger.info(f"Uploaded LoRA: {filename}")
+        logger.info(f"Uploaded LoRA: {filename} ({len(content) / (1024*1024):.1f} MB)")
         return JSONResponse(
             status_code=201,
             content={"status": "success", "message": f"LoRA {filename} uploaded successfully"},
         )
+    except HTTPException:
+        raise  # Re-raise size limit errors as-is
     except Exception as e:
         logger.error(f"Failed to upload LoRA {filename}: {e}")
         raise HTTPException(status_code=500, detail=f"Failed to upload file: {str(e)}")

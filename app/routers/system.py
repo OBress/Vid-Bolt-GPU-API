@@ -35,7 +35,6 @@ class SystemInfo(BaseModel):
     os_version: str
     python_version: str
     cpu_count: int
-    hostname: str
 
 
 class ModeInfo(BaseModel):
@@ -151,7 +150,6 @@ def get_system_info() -> SystemInfo:
         os_version=platform.release(),
         python_version=platform.python_version(),
         cpu_count=os.cpu_count() or 1,
-        hostname=platform.node(),
     )
 
 

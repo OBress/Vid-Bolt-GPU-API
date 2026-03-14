@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hmac
 from typing import TYPE_CHECKING, Annotated, Union, Optional
 from app.services.interfaces import BaseModelGenerator, ImageGenerator, ImageEditor, VideoGenerator
 
@@ -45,7 +46,7 @@ def verify_api_key(
     if not x_api_key:
         raise MissingAPIKeyError()
 
-    if x_api_key != settings.api_key:
+    if not hmac.compare_digest(x_api_key, settings.api_key):
         raise InvalidAPIKeyError()
 
     return x_api_key

@@ -32,7 +32,6 @@ class TestSystemStatusEndpoint:
         assert "os_version" in system
         assert "python_version" in system
         assert "cpu_count" in system
-        assert "hostname" in system
         
         # Check concurrency limits
         limits = data["concurrency_limits"]

@@ -191,8 +191,9 @@ with placeholder outputs instead of using actual GPU processing.
     """,
     version=__version__,
     lifespan=lifespan,
-    docs_url="/docs",
-    redoc_url="/redoc",
+    # Disable API docs in production (mock_mode=false) to avoid exposing schema
+    docs_url="/docs" if settings.mock_mode else None,
+    redoc_url="/redoc" if settings.mock_mode else None,
 )
 
 # Configure CORS

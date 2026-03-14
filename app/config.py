@@ -16,6 +16,7 @@ from functools import lru_cache
 from typing import Literal, Optional
 
 from pathlib import Path
+from pydantic import model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -157,6 +158,16 @@ class Settings(BaseSettings):
 
     # Optimization settings
     ltx2_use_fp8_text_encoder: bool = True  # Use FP8 quantized text encoder
+
+    @model_validator(mode="after")
+    def validate_production_api_key(self):
+        """Reject empty API key in production (mock_mode=false)."""
+        if not self.mock_mode and not self.api_key:
+            raise ValueError(
+                "API_KEY must be set when MOCK_MODE=false. "
+                "Generate one with: openssl rand -hex 64"
+            )
+        return self
 
     # ==========================================================================
     # Computed properties exposing hardcoded config
