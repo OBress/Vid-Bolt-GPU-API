@@ -398,15 +398,23 @@ class LTX2Generator(VideoGenerator):
         logger.info("Caching critical models (transformer + text_encoder + embeddings_processor)...")
         
         try:
+            import torch
+            def _vram_gb():
+                if torch.cuda.is_available():
+                    return torch.cuda.memory_allocated() / (1024**3)
+                return 0.0
+            
+            logger.info(f"  VRAM before caching: {_vram_gb():.1f}GB")
+            
             # Cache ONLY the 3 models that cause duplicate-copy OOM issues
             cached_text_encoder = ledger.text_encoder()
-            cached_embeddings_processor = ledger.gemma_embeddings_processor()
-            cached_transformer = ledger.transformer()
+            logger.info(f"  VRAM after text_encoder: {_vram_gb():.1f}GB")
             
-            logger.info(
-                "  Built and cached: text_encoder (~18GB), "
-                "embeddings_processor (~0.1GB), transformer (~19GB)"
-            )
+            cached_embeddings_processor = ledger.gemma_embeddings_processor()
+            logger.info(f"  VRAM after embeddings_processor: {_vram_gb():.1f}GB")
+            
+            cached_transformer = ledger.transformer()
+            logger.info(f"  VRAM after transformer: {_vram_gb():.1f}GB")
             
             # Create cached factory functions
             def _text_encoder(): return cached_text_encoder
