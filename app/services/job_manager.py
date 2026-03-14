@@ -452,38 +452,11 @@ class JobManager:
             if self._model_manager:
                 from app.services.model_manager import VRAMLoadMode
                 from app.config import InferenceConfig
-                if self._model_manager.current_mode == VRAMLoadMode.ALL:
-                    max_batch = 1  # ALL mode: limited VRAM headroom
-                else:
-                    # Calculate activation VRAM per video based on resolution
-                    # Empirical: 1920x1088 peaks at ~41GB with 35.4GB baseline = ~6GB activations
-                    # Tiled decode + staged model loading keep actual usage low.
-                    # Formula: 2GB base + 3GB per megapixel (conservative vs observed ~6GB)
-                    megapixels = (width * height) / 1_000_000
-                    activation_gb_per_video = 2.0 + (megapixels * 3.0)  # ~8.3GB at 1920x1088
-                    
-                    # Known baseline: transformer = 35.4GB. Use total GPU - baseline for headroom.
-                    transformer_baseline_gb = 35.4
-                    try:
-                        import torch
-                        if torch.cuda.is_available():
-                            total_gb = torch.cuda.get_device_properties(0).total_mem / (1024**3)
-                        else:
-                            total_gb = 95.0  # RTX Pro 6000 fallback
-                    except Exception:
-                        total_gb = 95.0
-                    
-                    # Available = total - transformer baseline - 15% safety margin
-                    available_gb = (total_gb - transformer_baseline_gb) * 0.85
-                    max_by_vram = max(1, int(available_gb / activation_gb_per_video))
-                    max_batch = min(max_by_vram, InferenceConfig.LTX2_MAX_CONCURRENT_VIDEOS)
-                    
-                    logger.info(
-                        f"Resolution {width}x{height}: ~{activation_gb_per_video:.1f}GB/video, "
-                        f"available: {available_gb:.1f}GB → batch {max_batch}"
-                    )
-            else:
-                max_batch = 1  # Fallback to safe default
+                # LTX-2 pipeline internally loads text_encoder (~24GB) per-call.
+                # With 35.4GB cached transformer on a 95GB GPU, there isn't
+                # enough headroom for 2 concurrent pipeline runs.
+                # Sequential processing is stable and fast (~20-30s/video at 1080p).
+                max_batch = 1
         else:
             # Unknown job type - return single job as fallback
             logger.warning(f"Unknown job type {job_type}, processing single job")
