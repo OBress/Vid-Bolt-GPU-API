@@ -460,7 +460,7 @@ class JobManager:
                     megapixels = (width * height) / 1_000_000
                     activation_gb_per_video = 5.0 + (megapixels * 10.0)  # ~26GB at 1920x1088
                     
-                    # Get available VRAM beyond cached models (~67GB baseline)
+                    # Get available VRAM beyond cached models (~64GB empirical baseline)
                     try:
                         import torch
                         if torch.cuda.is_available():
@@ -468,8 +468,10 @@ class JobManager:
                             allocated_gb = torch.cuda.memory_allocated() / (1024**3)
                             available_gb = (total_gb - allocated_gb) * 0.85  # 15% safety
                         else:
+                            allocated_gb = 0.0
                             available_gb = 25.0
                     except Exception:
+                        allocated_gb = 0.0
                         available_gb = 25.0
                     
                     max_by_vram = max(1, int(available_gb / activation_gb_per_video))
@@ -478,7 +480,7 @@ class JobManager:
                     if max_batch < 2:
                         logger.info(
                             f"Resolution {width}x{height} needs ~{activation_gb_per_video:.1f}GB/video, "
-                            f"available: {available_gb:.1f}GB → sequential processing"
+                            f"allocated: {allocated_gb:.1f}GB, available: {available_gb:.1f}GB → sequential"
                         )
             else:
                 max_batch = 1  # Fallback to safe default
@@ -857,7 +859,7 @@ class JobManager:
                     if mode == VRAMLoadMode.IMAGE_EDITING:
                         expected_limit = 45.0  # 5 instances * ~7-8GB
                     elif mode == VRAMLoadMode.VIDEO_GENERATION:
-                        expected_limit = 45.0  # Cached transformer+text_encoder (~38GB) + headroom
+                        expected_limit = 66.0  # Empirical: cached transformer+text_encoder+pipeline state = ~64GB
                     elif mode == VRAMLoadMode.ALL:
                         expected_limit = 75.0  # LightX2V + LTX-2 (no Z-Image)
 
@@ -905,7 +907,7 @@ class JobManager:
                 if mode == VRAMLoadMode.IMAGE_EDITING:
                     expected_limit = 45.0
                 elif mode == VRAMLoadMode.VIDEO_GENERATION:
-                    expected_limit = 45.0  # Cached transformer+text_encoder (~38GB) + headroom
+                    expected_limit = 66.0  # Empirical: cached transformer+text_encoder+pipeline state = ~64GB
                 elif mode == VRAMLoadMode.ALL:
                     expected_limit = 75.0
             
