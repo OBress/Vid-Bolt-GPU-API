@@ -369,52 +369,93 @@ class LTX2Generator(VideoGenerator):
             # Warmup failure is non-fatal - first real inference will just be slow
 
     def _patch_model_ledger_caching(self) -> None:
-        """Patch model_ledger to cache and reuse model instances.
+        """Patch model_ledger to cache and reuse ALL model instances.
         
-        The upstream LTX-2 model_ledger creates new model instances on each call.
-        We force the text encoder AND embeddings processor to be built once and
-        then cached, preventing:
-        1. Race conditions during concurrent video generation
-        2. Loading the text encoder twice (~18GB VRAM savings)
-        3. OOM from allocating new embeddings processor instances when GPU is near capacity
+        The upstream LTX-2 model_ledger creates NEW model instances on each call
+        (see model_ledger.py docstring: "Models are not cached"). This means every
+        pipeline.__call__ loads a fresh transformer (~19GB), video_encoder, etc.
+        
+        With concurrent generation, N calls = N copies of the transformer in VRAM.
+        Even with sequential calls, the old copy must be freed before a new one loads.
+        
+        We build each model ONCE during warmup and patch model_ledger to return
+        the cached instances, so all calls (single or concurrent) share one set of
+        weights in VRAM.
         """
         distilled = self.components.distilled_pipeline
+        ledger = distilled.model_ledger
         
-        logger.info("Patching text encoder and embeddings processor for thread-safe concurrent access...")
+        logger.info("Caching all model_ledger models for concurrent access...")
         
         try:
-            # Build the text encoder and embeddings processor once using the model_ledger
-            cached_text_encoder = distilled.model_ledger.text_encoder()
-            cached_embeddings_processor = distilled.model_ledger.gemma_embeddings_processor()
+            # Build ALL heavy models once and cache them
+            cached_text_encoder = ledger.text_encoder()
+            cached_embeddings_processor = ledger.gemma_embeddings_processor()
+            cached_transformer = ledger.transformer()
+            cached_video_encoder = ledger.video_encoder()
+            cached_video_decoder = ledger.video_decoder()
+            cached_spatial_upsampler = ledger.spatial_upsampler()
+            cached_audio_decoder = ledger.audio_decoder()
+            cached_vocoder = ledger.vocoder()
             
-            def cached_text_encoder_fn():
-                return cached_text_encoder
+            logger.info(
+                "  Built and cached: text_encoder, embeddings_processor, "
+                "transformer, video_encoder, video_decoder, spatial_upsampler, "
+                "audio_decoder, vocoder"
+            )
             
-            def cached_embeddings_processor_fn():
-                return cached_embeddings_processor
+            # Create cached factory functions
+            def _text_encoder(): return cached_text_encoder
+            def _embeddings_processor(): return cached_embeddings_processor
+            def _transformer(): return cached_transformer
+            def _video_encoder(): return cached_video_encoder
+            def _video_decoder(): return cached_video_decoder
+            def _spatial_upsampler(): return cached_spatial_upsampler
+            def _audio_decoder(): return cached_audio_decoder
+            def _vocoder(): return cached_vocoder
             
-            # Patch both pipelines' model_ledger to return cached instances
-            distilled.model_ledger.text_encoder = cached_text_encoder_fn
-            distilled.model_ledger.gemma_embeddings_processor = cached_embeddings_processor_fn
+            # Patch distilled pipeline's model_ledger
+            ledger.text_encoder = _text_encoder
+            ledger.gemma_embeddings_processor = _embeddings_processor
+            ledger.transformer = _transformer
+            ledger.video_encoder = _video_encoder
+            ledger.video_decoder = _video_decoder
+            ledger.spatial_upsampler = _spatial_upsampler
+            ledger.audio_decoder = _audio_decoder
+            ledger.vocoder = _vocoder
             
-            # Also patch keyframe pipeline if it has its own model_ledger
+            # Patch keyframe pipeline's model_ledgers too
             keyframe = self.components.keyframe_pipeline
             if hasattr(keyframe, 'stage_1_model_ledger'):
-                keyframe.stage_1_model_ledger.text_encoder = cached_text_encoder_fn
-                keyframe.stage_1_model_ledger.gemma_embeddings_processor = cached_embeddings_processor_fn
+                for kf_ledger in [keyframe.stage_1_model_ledger]:
+                    kf_ledger.text_encoder = _text_encoder
+                    kf_ledger.gemma_embeddings_processor = _embeddings_processor
+                    kf_ledger.transformer = _transformer
+                    kf_ledger.video_encoder = _video_encoder
+                    kf_ledger.video_decoder = _video_decoder
+                    kf_ledger.spatial_upsampler = _spatial_upsampler
+                    kf_ledger.audio_decoder = _audio_decoder
+                    kf_ledger.vocoder = _vocoder
                 if hasattr(keyframe, 'stage_2_model_ledger'):
-                    keyframe.stage_2_model_ledger.text_encoder = cached_text_encoder_fn
-                    keyframe.stage_2_model_ledger.gemma_embeddings_processor = cached_embeddings_processor_fn
-                logger.info("  Patched both DistilledPipeline and KeyframeInterpolationPipeline model_ledgers")
+                    kf_ledger2 = keyframe.stage_2_model_ledger
+                    kf_ledger2.text_encoder = _text_encoder
+                    kf_ledger2.gemma_embeddings_processor = _embeddings_processor
+                    kf_ledger2.transformer = _transformer
+                    kf_ledger2.video_encoder = _video_encoder
+                    kf_ledger2.video_decoder = _video_decoder
+                    kf_ledger2.spatial_upsampler = _spatial_upsampler
+                    kf_ledger2.audio_decoder = _audio_decoder
+                    kf_ledger2.vocoder = _vocoder
+                logger.info("  Patched DistilledPipeline + KeyframeInterpolationPipeline model_ledgers")
             else:
                 logger.info("  Patched DistilledPipeline model_ledger")
             
-            logger.info("Text encoder + embeddings processor caching enabled - concurrent generation is now thread-safe")
+            logger.info("All models cached — concurrent calls now share VRAM weights")
             
         except Exception as e:
             logger.warning(f"Failed to patch model_ledger caching (non-fatal): {e}")
-            # If patching fails, concurrent generation may still have race conditions
-            # but single-threaded generation will still work
+            import traceback
+            traceback.print_exc()
 
 
 

@@ -62,7 +62,7 @@ class InferenceConfig:
     
     # Concurrency limits
     MAX_CONCURRENT_IMAGE_GENERATIONS = 2  # Across Z-Image + Qwen-Image-Edit
-    MAX_CONCURRENT_VIDEO_GENERATIONS = 3  # LTX-2 (QAT text encoder allows 3 concurrent in video-only mode)
+    MAX_CONCURRENT_VIDEO_GENERATIONS = 2  # LTX-2 (2 concurrent with shared cached models)
     
     # Z-Image settings (uses Diffusers ZImagePipeline)
     ZIMAGE_COMPILE = False  # Disabled: torch.compile inductor fails with dynamic shapes
@@ -98,7 +98,7 @@ class InferenceConfig:
     # LTX-2 Concurrent Generation Settings
     # Enables parallel video generation using shared pipeline (stateless architecture)
     LTX2_CONCURRENT_ENABLED = True  # Enable concurrent video generation
-    LTX2_MAX_CONCURRENT_VIDEOS = 3  # 3 concurrent videos in video-only mode (QAT text encoder)
+    LTX2_MAX_CONCURRENT_VIDEOS = 2  # 2 concurrent videos (shared cached models, safe on 95GB GPU)
     LTX2_CONCURRENT_VRAM_BUDGET_GB = 72.0  # VRAM available for activations (after base model)
     
     # ACE-Step (music) settings

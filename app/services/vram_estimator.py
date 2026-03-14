@@ -79,7 +79,7 @@ MAX_BATCH_SIZE_LTX2 = 1  # Sequential batching when concurrent disabled
 # video generation with a shared pipeline.
 
 LTX2_CONCURRENT_OVERHEAD_GB = 2.0      # Additional overhead per concurrent slot
-LTX2_MAX_CONCURRENT_VIDEOS = 3         # Max concurrent in VIDEO_GENERATION mode (FP8)
+LTX2_MAX_CONCURRENT_VIDEOS = 2         # Max concurrent in VIDEO_GENERATION mode (cached models)
 LTX2_CONCURRENT_VRAM_BUDGET_GB = 72.0  # Available VRAM after base model + safety
 LTX2_CONCURRENT_SAFETY_FACTOR = 0.9    # Use 90% of calculated capacity for safety
 
