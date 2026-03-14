@@ -69,6 +69,9 @@ class JobManager:
         self._worker_task: Optional[asyncio.Task] = None
         self._running = False
         
+        # OOM recovery: after OOM, limit batch size to 1 until a job succeeds
+        self._oom_recovery_mode = False
+        
         # Webhook service (set during startup)
         self._webhook_service = None
 
@@ -366,6 +369,10 @@ class JobManager:
                 self._cleanup_gpu_memory()
                 await asyncio.sleep(0.05)  # 50ms yield for GC to release thread references
                 
+                # VRAM health gate: wait for memory to stabilize before next batch
+                # This prevents cascading OOM when cleanup can't free leaked tensors
+                await self._wait_for_vram_headroom()
+                
             except asyncio.CancelledError:
                 break
             except Exception as e:
@@ -455,6 +462,11 @@ class JobManager:
             # Unknown job type - return single job as fallback
             logger.warning(f"Unknown job type {job_type}, processing single job")
             return [job_ids[0]], oldest_bucket_key
+        
+        # If in OOM recovery mode, cap batch to 1 until a job succeeds
+        if self._oom_recovery_mode:
+            max_batch = 1
+            logger.info("OOM recovery mode active: limiting batch to 1 job")
         
         # Select up to max_batch jobs
         batch_size = min(len(job_ids), max_batch)
@@ -675,8 +687,10 @@ class JobManager:
                 was_oom = self._handle_job_error(job, str(e), "GENERATION_FAILED")
                 is_oom = is_oom or was_oom
                 await self._send_webhook(job)
-            # If OOM, do aggressive cleanup
+            # If OOM, do aggressive cleanup and enter recovery mode
             if is_oom:
+                self._oom_recovery_mode = True
+                logger.warning("Entering OOM recovery mode: next batch will be limited to 1 job")
                 self._cleanup_gpu_memory(is_oom_recovery=True)
         finally:
             self._cleanup_gpu_memory()
@@ -732,8 +746,10 @@ class JobManager:
         except Exception as e:
             is_oom = self._handle_job_error(job, str(e), "GENERATION_FAILED")
             await self._send_webhook(job)
-            # If OOM, do aggressive cleanup
+            # If OOM, do aggressive cleanup and enter recovery mode
             if is_oom:
+                self._oom_recovery_mode = True
+                logger.warning("Entering OOM recovery mode: next batch will be limited to 1 job")
                 self._cleanup_gpu_memory(is_oom_recovery=True)
         finally:
             # Cleanup GPU memory after every job
@@ -845,6 +861,69 @@ class JobManager:
             gc.collect()
         except Exception as e:
             logger.warning(f"Failed to clean up GPU memory: {e}")
+
+    async def _wait_for_vram_headroom(self, max_attempts: int = 5) -> None:
+        """Wait until VRAM usage drops to acceptable levels before starting next batch.
+        
+        After a job completes, VRAM may still be elevated due to thread pool workers
+        holding tensor references. This method waits and retries GC until memory
+        returns to expected levels, preventing cascading OOM on subsequent batches.
+        """
+        try:
+            import torch
+            if not torch.cuda.is_available():
+                return
+            
+            # Determine expected VRAM limit based on current mode
+            expected_limit = 25.0  # Default
+            if self._model_manager:
+                mode = self._model_manager.current_mode
+                if mode == VRAMLoadMode.IMAGE_EDITING:
+                    expected_limit = 45.0
+                elif mode == VRAMLoadMode.VIDEO_GENERATION:
+                    expected_limit = 55.0
+                elif mode == VRAMLoadMode.ALL:
+                    expected_limit = 75.0
+            
+            tolerance = expected_limit * 1.1  # 10% headroom
+            
+            for attempt in range(max_attempts):
+                allocated_gb = torch.cuda.memory_allocated() / (1024**3)
+                
+                if allocated_gb <= tolerance:
+                    # VRAM is healthy
+                    if self._oom_recovery_mode:
+                        logger.info(
+                            f"VRAM recovered to {allocated_gb:.1f}GB "
+                            f"(limit: {expected_limit:.0f}GB), exiting OOM recovery mode"
+                        )
+                        self._oom_recovery_mode = False
+                    return
+                
+                logger.warning(
+                    f"VRAM still elevated: {allocated_gb:.1f}GB "
+                    f"(expected ≤{expected_limit:.0f}GB), "
+                    f"forcing cleanup (attempt {attempt + 1}/{max_attempts})"
+                )
+                gc.collect()
+                torch.cuda.synchronize()
+                torch.cuda.empty_cache()
+                await asyncio.sleep(1.0)  # Give GC time to release thread references
+            
+            # Exhausted attempts — enter OOM recovery mode
+            allocated_gb = torch.cuda.memory_allocated() / (1024**3)
+            if allocated_gb > tolerance:
+                logger.error(
+                    f"VRAM did not recover after {max_attempts} attempts "
+                    f"({allocated_gb:.1f}GB still allocated). "
+                    f"Entering OOM recovery mode (single-job batches)."
+                )
+                self._oom_recovery_mode = True
+                
+        except ImportError:
+            pass
+        except Exception as e:
+            logger.warning(f"VRAM headroom check failed: {e}")
 
     async def _send_webhook(self, job: JobInfo) -> None:
         """Send webhook for a completed/failed job.

@@ -372,35 +372,44 @@ class LTX2Generator(VideoGenerator):
         """Patch model_ledger to cache and reuse model instances.
         
         The upstream LTX-2 model_ledger creates new model instances on each call.
-        We force the text encoder to be built once and then cache it, preventing
-        race conditions during concurrent video generation AND avoiding loading
-        the text encoder twice (~18GB VRAM savings).
+        We force the text encoder AND embeddings processor to be built once and
+        then cached, preventing:
+        1. Race conditions during concurrent video generation
+        2. Loading the text encoder twice (~18GB VRAM savings)
+        3. OOM from allocating new embeddings processor instances when GPU is near capacity
         """
         distilled = self.components.distilled_pipeline
         
-        logger.info("Patching text encoder for thread-safe concurrent access...")
+        logger.info("Patching text encoder and embeddings processor for thread-safe concurrent access...")
         
         try:
-            # Build the text encoder once using the model_ledger
+            # Build the text encoder and embeddings processor once using the model_ledger
             cached_text_encoder = distilled.model_ledger.text_encoder()
+            cached_embeddings_processor = distilled.model_ledger.gemma_embeddings_processor()
             
             def cached_text_encoder_fn():
                 return cached_text_encoder
             
-            # Patch both pipelines' model_ledger to return the cached instance
+            def cached_embeddings_processor_fn():
+                return cached_embeddings_processor
+            
+            # Patch both pipelines' model_ledger to return cached instances
             distilled.model_ledger.text_encoder = cached_text_encoder_fn
+            distilled.model_ledger.gemma_embeddings_processor = cached_embeddings_processor_fn
             
             # Also patch keyframe pipeline if it has its own model_ledger
             keyframe = self.components.keyframe_pipeline
             if hasattr(keyframe, 'stage_1_model_ledger'):
                 keyframe.stage_1_model_ledger.text_encoder = cached_text_encoder_fn
+                keyframe.stage_1_model_ledger.gemma_embeddings_processor = cached_embeddings_processor_fn
                 if hasattr(keyframe, 'stage_2_model_ledger'):
                     keyframe.stage_2_model_ledger.text_encoder = cached_text_encoder_fn
+                    keyframe.stage_2_model_ledger.gemma_embeddings_processor = cached_embeddings_processor_fn
                 logger.info("  Patched both DistilledPipeline and KeyframeInterpolationPipeline model_ledgers")
             else:
                 logger.info("  Patched DistilledPipeline model_ledger")
             
-            logger.info("Text encoder caching enabled - concurrent generation is now thread-safe")
+            logger.info("Text encoder + embeddings processor caching enabled - concurrent generation is now thread-safe")
             
         except Exception as e:
             logger.warning(f"Failed to patch model_ledger caching (non-fatal): {e}")
