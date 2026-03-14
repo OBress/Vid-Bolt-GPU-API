@@ -369,32 +369,22 @@ class LTX2Generator(VideoGenerator):
             # Warmup failure is non-fatal - first real inference will just be slow
 
     def _patch_model_ledger_caching(self) -> None:
-        """Cache ONLY the transformer; serialize text_encoder access with a Lock.
+        """Cache transformer, text_encoder, and embeddings_processor in VRAM.
         
-        The upstream pipeline was designed for a load/unload lifecycle:
-          1. Load text_encoder → encode prompts → free text_encoder
-          2. Load transformer + video_encoder → denoise → free both
-          3. Load video_decoder + audio_decoder + vocoder → decode → free all
+        Since video generation is sequential (max_batch=1), all three heavy
+        models can be cached safely — no risk of duplicate copies.
         
-        Peak VRAM = max(one stage), NOT sum(all stages).
+        The pipeline's encode_prompts() does `del text_encoder; cleanup_memory()`
+        but this just drops the local reference. Our cached copy persists,
+        making subsequent calls instant (no disk→GPU reload).
         
-        We cache ONLY the transformer because it's used in every denoising
-        step and would create an expensive (~22GB) duplicate under concurrency.
-        
-        text_encoder (~24GB Gemma BF16) and embeddings_processor (~0.1GB) are
-        NOT cached — they load/free per-call as the pipeline designed.
-        A threading.Lock prevents concurrent calls from creating duplicate
-        24GB text_encoder copies.
-        
-        Expected baseline: ~22GB (transformer only) + ~5GB overhead = ~27GB
-        vs previous: ~64GB with text_encoder cached
+        Expected baseline: ~60GB (transformer ~35GB + text_encoder ~24GB + embeddings ~0.1GB)
+        Saves ~4-6 seconds per video vs load-per-call.
         """
-        import threading
-        
         distilled = self.components.distilled_pipeline
         ledger = distilled.model_ledger
         
-        logger.info("Caching transformer only (text_encoder will load/free per-call)...")
+        logger.info("Caching transformer + text_encoder + embeddings_processor...")
         
         try:
             import torch
@@ -405,51 +395,44 @@ class LTX2Generator(VideoGenerator):
             
             logger.info(f"  VRAM before caching: {_vram_gb():.1f}GB")
             
-            # Cache ONLY the transformer (used every denoising step)
+            # Cache all three heavy models
             cached_transformer = ledger.transformer()
             logger.info(f"  VRAM after transformer: {_vram_gb():.1f}GB")
             
-            # Create cached factory for transformer
+            cached_text_encoder = ledger.text_encoder()
+            logger.info(f"  VRAM after text_encoder: {_vram_gb():.1f}GB")
+            
+            cached_embeddings = ledger.gemma_embeddings_processor()
+            logger.info(f"  VRAM after embeddings_processor: {_vram_gb():.1f}GB")
+            
+            # Create cached factories — pipeline's del/cleanup_memory() just
+            # drops local refs; these closures keep the objects alive
             def _transformer(): return cached_transformer
-            
-            # Serialize text_encoder and embeddings_processor access
-            # to prevent concurrent calls from creating duplicate 24GB copies
-            _text_encoder_lock = threading.Lock()
-            _original_text_encoder = ledger.text_encoder
-            _original_embeddings = ledger.gemma_embeddings_processor
-            
-            def _locked_text_encoder():
-                """Load text_encoder with lock — prevents duplicate 24GB copies."""
-                with _text_encoder_lock:
-                    return _original_text_encoder()
-            
-            def _locked_embeddings():
-                """Load embeddings_processor with lock."""
-                with _text_encoder_lock:
-                    return _original_embeddings()
+            def _text_encoder(): return cached_text_encoder
+            def _embeddings(): return cached_embeddings
             
             # Patch distilled pipeline's model_ledger
-            ledger.text_encoder = _locked_text_encoder
-            ledger.gemma_embeddings_processor = _locked_embeddings
             ledger.transformer = _transformer
+            ledger.text_encoder = _text_encoder
+            ledger.gemma_embeddings_processor = _embeddings
             
             # Patch keyframe pipeline's model_ledgers too
             keyframe = self.components.keyframe_pipeline
             if hasattr(keyframe, 'stage_1_model_ledger'):
-                keyframe.stage_1_model_ledger.text_encoder = _locked_text_encoder
-                keyframe.stage_1_model_ledger.gemma_embeddings_processor = _locked_embeddings
                 keyframe.stage_1_model_ledger.transformer = _transformer
+                keyframe.stage_1_model_ledger.text_encoder = _text_encoder
+                keyframe.stage_1_model_ledger.gemma_embeddings_processor = _embeddings
                 if hasattr(keyframe, 'stage_2_model_ledger'):
-                    keyframe.stage_2_model_ledger.text_encoder = _locked_text_encoder
-                    keyframe.stage_2_model_ledger.gemma_embeddings_processor = _locked_embeddings
                     keyframe.stage_2_model_ledger.transformer = _transformer
+                    keyframe.stage_2_model_ledger.text_encoder = _text_encoder
+                    keyframe.stage_2_model_ledger.gemma_embeddings_processor = _embeddings
                 logger.info("  Patched DistilledPipeline + KeyframeInterpolationPipeline model_ledgers")
             else:
                 logger.info("  Patched DistilledPipeline model_ledger")
             
             logger.info(
-                f"Transformer cached (~22GB FP8). text_encoder/embeddings_processor "
-                f"load-per-call with Lock. VRAM baseline: {_vram_gb():.1f}GB"
+                f"All models cached. VRAM baseline: {_vram_gb():.1f}GB "
+                f"(saves ~4-6s/video vs load-per-call)"
             )
             
         except Exception as e:
