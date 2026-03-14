@@ -446,16 +446,40 @@ class JobManager:
                     other_models_loaded=False
                 )
         elif job_type == JobType.VIDEO_GENERATION:
-            # LTX-2: Mode-aware concurrency limits
-            # In ALL mode, limit to 1 video to preserve VRAM headroom
-            # In dedicated VIDEO mode, allow up to 3 concurrent
+            # LTX-2: Resolution-aware concurrency
+            # Cached models use ~67GB baseline. Each video needs activation VRAM
+            # that scales with resolution. Calculate how many actually fit.
             if self._model_manager:
                 from app.services.model_manager import VRAMLoadMode
                 from app.config import InferenceConfig
                 if self._model_manager.current_mode == VRAMLoadMode.ALL:
                     max_batch = 1  # ALL mode: limited VRAM headroom
                 else:
-                    max_batch = InferenceConfig.LTX2_MAX_CONCURRENT_VIDEOS  # Video-only: 3 concurrent
+                    # Calculate activation VRAM per video based on resolution
+                    # Empirical: 1920x1088 uses ~26GB activations, scales ~linearly with pixels
+                    megapixels = (width * height) / 1_000_000
+                    activation_gb_per_video = 5.0 + (megapixels * 10.0)  # ~26GB at 1920x1088
+                    
+                    # Get available VRAM beyond cached models (~67GB baseline)
+                    try:
+                        import torch
+                        if torch.cuda.is_available():
+                            total_gb = torch.cuda.get_device_properties(0).total_mem / (1024**3)
+                            allocated_gb = torch.cuda.memory_allocated() / (1024**3)
+                            available_gb = (total_gb - allocated_gb) * 0.85  # 15% safety
+                        else:
+                            available_gb = 25.0
+                    except Exception:
+                        available_gb = 25.0
+                    
+                    max_by_vram = max(1, int(available_gb / activation_gb_per_video))
+                    max_batch = min(max_by_vram, InferenceConfig.LTX2_MAX_CONCURRENT_VIDEOS)
+                    
+                    if max_batch < 2:
+                        logger.info(
+                            f"Resolution {width}x{height} needs ~{activation_gb_per_video:.1f}GB/video, "
+                            f"available: {available_gb:.1f}GB → sequential processing"
+                        )
             else:
                 max_batch = 1  # Fallback to safe default
         else:
