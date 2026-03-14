@@ -92,8 +92,30 @@ if [ ! -f .env ]; then
     if [ -f .env.example ]; then
         cp .env.example .env
         echo -e "  ✓ Created .env from .env.example"
-        echo -e "${YELLOW}    ⚠ Please edit .env with your API keys${NC}"
     fi
+fi
+
+# Inject secrets from environment variables (if provided)
+# Usage: API_KEY=xxx HF_TOKEN=xxx ./scripts/deploy.sh
+if [ -n "${API_KEY:-}" ]; then
+    sed -i "s|^API_KEY=.*|API_KEY=${API_KEY}|" .env
+    echo -e "  ✓ API_KEY set from environment"
+else
+    # Check if .env still has the placeholder
+    if grep -q "CHANGE-ME" .env 2>/dev/null; then
+        echo -e "${RED}  ✗ API_KEY not set! Pass it via: API_KEY=your-key ./scripts/deploy.sh${NC}"
+        exit 1
+    fi
+fi
+
+if [ -n "${HF_TOKEN:-}" ]; then
+    sed -i "s|^HF_TOKEN=.*|HF_TOKEN=${HF_TOKEN}|" .env
+    echo -e "  ✓ HF_TOKEN set from environment"
+fi
+
+if [ -n "${GITHUB_ACCESS_TOKEN:-}" ]; then
+    sed -i "s|^GITHUB_ACCESS_TOKEN=.*|GITHUB_ACCESS_TOKEN=${GITHUB_ACCESS_TOKEN}|" .env
+    echo -e "  ✓ GITHUB_ACCESS_TOKEN set from environment"
 fi
 
 # Create models directory
