@@ -12,6 +12,7 @@ from ltx_core.model.upsampler import upsample_video
 from ltx_core.model.video_vae import TilingConfig, get_video_chunks_number
 from ltx_core.model.video_vae import decode_video as vae_decode_video
 from ltx_core.quantization import QuantizationPolicy
+from ltx_core.text_encoders.gemma.embeddings_processor import EmbeddingsProcessorOutput
 from ltx_core.types import Audio, LatentState, VideoPixelShape
 from ltx_pipelines.utils import ModelLedger, euler_denoising_loop
 from ltx_pipelines.utils.args import (
@@ -84,6 +85,7 @@ class DistilledPipeline:
         images: list[ImageConditioningInput],
         tiling_config: TilingConfig | None = None,
         enhance_prompt: bool = False,
+        pre_encoded_context: EmbeddingsProcessorOutput | None = None,
     ) -> tuple[Iterator[torch.Tensor], Audio]:
         assert_resolution(height=height, width=width, is_two_stage=True)
 
@@ -92,12 +94,15 @@ class DistilledPipeline:
         stepper = EulerDiffusionStep()
         dtype = torch.bfloat16
 
-        (ctx_p,) = encode_prompts(
-            [prompt],
-            self.model_ledger,
-            enhance_first_prompt=enhance_prompt,
-            enhance_prompt_image=images[0][0] if len(images) > 0 else None,
-        )
+        if pre_encoded_context is not None:
+            ctx_p = pre_encoded_context
+        else:
+            (ctx_p,) = encode_prompts(
+                [prompt],
+                self.model_ledger,
+                enhance_first_prompt=enhance_prompt,
+                enhance_prompt_image=images[0][0] if len(images) > 0 else None,
+            )
         video_context, audio_context = ctx_p.video_encoding, ctx_p.audio_encoding
 
         # Stage 1: Initial low resolution video generation.

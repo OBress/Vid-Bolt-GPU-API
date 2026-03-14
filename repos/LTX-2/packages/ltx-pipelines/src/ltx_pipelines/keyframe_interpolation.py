@@ -18,6 +18,7 @@ from ltx_core.model.upsampler import upsample_video
 from ltx_core.model.video_vae import TilingConfig, get_video_chunks_number
 from ltx_core.model.video_vae import decode_video as vae_decode_video
 from ltx_core.quantization import QuantizationPolicy
+from ltx_core.text_encoders.gemma.embeddings_processor import EmbeddingsProcessorOutput
 from ltx_core.types import Audio, LatentState, VideoPixelShape
 from ltx_pipelines.utils import ModelLedger
 from ltx_pipelines.utils.args import ImageConditioningInput, default_2_stage_arg_parser, detect_checkpoint_path
@@ -93,6 +94,7 @@ class KeyframeInterpolationPipeline:
         images: list[ImageConditioningInput],
         tiling_config: TilingConfig | None = None,
         enhance_prompt: bool = False,
+        pre_encoded_contexts: tuple[EmbeddingsProcessorOutput, EmbeddingsProcessorOutput] | None = None,
     ) -> tuple[Iterator[torch.Tensor], Audio]:
         assert_resolution(height=height, width=width, is_two_stage=True)
 
@@ -101,13 +103,16 @@ class KeyframeInterpolationPipeline:
         stepper = EulerDiffusionStep()
         dtype = torch.bfloat16
 
-        ctx_p, ctx_n = encode_prompts(
-            [prompt, negative_prompt],
-            self.stage_1_model_ledger,
-            enhance_first_prompt=enhance_prompt,
-            enhance_prompt_image=images[0][0] if len(images) > 0 else None,
-            enhance_prompt_seed=seed,
-        )
+        if pre_encoded_contexts is not None:
+            ctx_p, ctx_n = pre_encoded_contexts
+        else:
+            ctx_p, ctx_n = encode_prompts(
+                [prompt, negative_prompt],
+                self.stage_1_model_ledger,
+                enhance_first_prompt=enhance_prompt,
+                enhance_prompt_image=images[0][0] if len(images) > 0 else None,
+                enhance_prompt_seed=seed,
+            )
         v_context_p, a_context_p = ctx_p.video_encoding, ctx_p.audio_encoding
         v_context_n, a_context_n = ctx_n.video_encoding, ctx_n.audio_encoding
 

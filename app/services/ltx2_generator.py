@@ -23,6 +23,7 @@ import logging
 import math
 import random
 import tempfile
+import threading
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -87,6 +88,10 @@ class LTX2Generator(VideoGenerator):
         # Concurrent generation support
         self._concurrent_controller: LTX2ConcurrencyController | None = None
         self._concurrent_enabled = getattr(settings, 'ltx2_concurrent_enabled', True)
+        
+        # Thread lock to serialize text encoder access during concurrent generation.
+        # The Gemma LLM has internal mutable state (KV caches) that is not thread-safe.
+        self._text_encode_lock = threading.Lock()
 
     @property
     def _loaded(self) -> bool:
@@ -408,7 +413,11 @@ class LTX2Generator(VideoGenerator):
     # I2V (Image-to-Video) Generation
     # ========================================================================
 
-    async def generate_video(self, params: LTX2VideoParams) -> LTX2VideoResult:
+    async def generate_video(
+        self, 
+        params: LTX2VideoParams, 
+        pre_encoded_context: Any | None = None,
+    ) -> LTX2VideoResult:
         """Generate a video from a single start frame (I2V mode).
 
         This is a convenience method that converts I2V parameters to keyframe
@@ -416,6 +425,7 @@ class LTX2Generator(VideoGenerator):
 
         Args:
             params: I2V generation parameters
+            pre_encoded_context: Optional pre-encoded prompt embeddings (for concurrent batch)
 
         Returns:
             LTX2VideoResult containing the generated video data
@@ -460,7 +470,7 @@ class LTX2Generator(VideoGenerator):
         )
 
         # Delegate to keyframe generation
-        return await self.generate_keyframe_video(keyframe_params)
+        return await self.generate_keyframe_video(keyframe_params, pre_encoded_context=pre_encoded_context)
 
     # ========================================================================
     # Batch Video Generation (Sequential Warm-Model)
@@ -537,15 +547,65 @@ class LTX2Generator(VideoGenerator):
     # Concurrent Batch Video Generation (Shared Pipeline)
     # ========================================================================
 
+    def _pre_encode_prompt(
+        self,
+        prompt: str,
+        model_ledger: Any,
+        enhance_prompt: bool = False,
+        enhance_prompt_image: str | None = None,
+        enhance_prompt_seed: int = 42,
+        negative_prompt: str | None = None,
+    ) -> Any:
+        """Pre-encode a prompt with the text encoder, serialized by thread lock.
+        
+        The Gemma LLM has internal mutable state (KV caches, attention buffers)
+        that is not thread-safe. This method acquires the text encode lock before
+        calling encode_prompts, ensuring only one thread accesses the shared
+        text encoder at a time.
+        
+        Args:
+            prompt: Text prompt to encode
+            model_ledger: ModelLedger instance for text encoder access
+            enhance_prompt: Whether to enhance the prompt
+            enhance_prompt_image: Optional image path for prompt enhancement
+            enhance_prompt_seed: Seed for prompt enhancement
+            negative_prompt: Optional negative prompt (for keyframe interpolation)
+            
+        Returns:
+            Pre-encoded context(s) — single EmbeddingsProcessorOutput for distilled,
+            or tuple of (positive, negative) for keyframe interpolation.
+        """
+        from ltx_pipelines.utils.helpers import encode_prompts
+        
+        with self._text_encode_lock:
+            if negative_prompt is not None:
+                # Keyframe interpolation needs both positive and negative contexts
+                return encode_prompts(
+                    [prompt, negative_prompt],
+                    model_ledger,
+                    enhance_first_prompt=enhance_prompt,
+                    enhance_prompt_image=enhance_prompt_image,
+                    enhance_prompt_seed=enhance_prompt_seed,
+                )
+            else:
+                # Distilled pipeline needs only positive context
+                (ctx,) = encode_prompts(
+                    [prompt],
+                    model_ledger,
+                    enhance_first_prompt=enhance_prompt,
+                    enhance_prompt_image=enhance_prompt_image,
+                )
+                return ctx
+
     async def generate_concurrent_batch(
         self,
         params_list: list[LTX2VideoParams],
     ) -> list[LTX2VideoResult]:
         """Generate multiple videos concurrently using shared pipeline.
         
-        This method leverages the stateless nature of LTX-2's DistilledPipeline
-        to run multiple video generations in parallel. Concurrency is dynamically
-        limited based on video duration and available VRAM.
+        Uses a two-phase approach for thread safety:
+        1. Pre-encode all prompts sequentially (text encoder is not thread-safe)
+        2. Run diffusion concurrently (each thread creates its own model instances)
         
         Falls back to sequential processing if concurrent generation fails.
         
@@ -594,10 +654,57 @@ class LTX2Generator(VideoGenerator):
             f"(max_concurrent={max_concurrent}, longest={max_duration:.1f}s)"
         )
         
-        # Create semaphore for this batch
+        # Phase 1: Pre-encode all prompts sequentially (thread-safe)
+        # This serializes access to the shared Gemma text encoder whose internal
+        # KV caches are not safe for concurrent use.
+        pre_encoded_contexts = []
+        loop = asyncio.get_event_loop()
+        
+        for i, params in enumerate(params_list):
+            logger.debug(f"Pre-encoding prompt {i+1}/{len(params_list)} for job {params.job_id}")
+            
+            # Determine which pipeline will be used to select the right model_ledger
+            # and encoding strategy (with or without negative prompt)
+            requested_frames = math.ceil(params.duration_seconds * params.frame_rate) + 1
+            num_frames = round_up_to_valid_frames(requested_frames)
+            has_end_frame = params.end_frame_data is not None
+            num_keyframes = 2 if has_end_frame else 1
+            
+            if num_keyframes == 1:
+                # Will use DistilledPipeline — encode single prompt
+                model_ledger = self.components.distilled_pipeline.model_ledger
+                ctx = await loop.run_in_executor(
+                    None,
+                    lambda p=params, ml=model_ledger: self._pre_encode_prompt(
+                        prompt=p.prompt,
+                        model_ledger=ml,
+                        enhance_prompt=p.enhance_prompt,
+                    ),
+                )
+            else:
+                # Will use KeyframeInterpolationPipeline — encode prompt + negative
+                model_ledger = self.components.keyframe_pipeline.stage_1_model_ledger
+                ctx = await loop.run_in_executor(
+                    None,
+                    lambda p=params, ml=model_ledger: self._pre_encode_prompt(
+                        prompt=p.prompt,
+                        model_ledger=ml,
+                        enhance_prompt=p.enhance_prompt,
+                        negative_prompt=p.negative_prompt or "",
+                        enhance_prompt_seed=p.seed or 42,
+                    ),
+                )
+            
+            pre_encoded_contexts.append(ctx)
+        
+        logger.info(f"Pre-encoded {len(pre_encoded_contexts)} prompts, starting concurrent diffusion")
+        
+        # Phase 2: Run diffusion concurrently (each thread gets its own models)
         semaphore = asyncio.Semaphore(max_concurrent)
         
-        async def generate_one(idx: int, params: LTX2VideoParams) -> LTX2VideoResult:
+        async def generate_one(
+            idx: int, params: LTX2VideoParams, pre_ctx: Any
+        ) -> LTX2VideoResult:
             """Generate a single video with semaphore-controlled concurrency."""
             async with semaphore:
                 logger.debug(
@@ -605,7 +712,7 @@ class LTX2Generator(VideoGenerator):
                     f"(job_id={params.job_id}, {params.duration_seconds}s)"
                 )
                 try:
-                    result = await self.generate_video(params)
+                    result = await self.generate_video(params, pre_encoded_context=pre_ctx)
                     logger.debug(f"Completed video {idx+1}/{len(params_list)}")
                     return result
                 except Exception as e:
@@ -627,7 +734,8 @@ class LTX2Generator(VideoGenerator):
         # Run all generations concurrently (semaphore limits parallelism)
         try:
             results = await asyncio.gather(*[
-                generate_one(i, p) for i, p in enumerate(params_list)
+                generate_one(i, p, ctx) 
+                for i, (p, ctx) in enumerate(zip(params_list, pre_encoded_contexts))
             ])
         except Exception as e:
             logger.error(
@@ -654,12 +762,15 @@ class LTX2Generator(VideoGenerator):
     # ========================================================================
 
     async def generate_keyframe_video(
-        self, params: KeyframeInterpolationParams
+        self, 
+        params: KeyframeInterpolationParams,
+        pre_encoded_context: Any | None = None,
     ) -> LTX2VideoResult:
         """Generate a video by interpolating between keyframes.
 
         Args:
             params: Generation parameters including keyframes, prompt, dimensions
+            pre_encoded_context: Optional pre-encoded prompt embeddings (for concurrent batch)
 
         Returns:
             LTX2VideoResult containing the generated video data
@@ -719,7 +830,8 @@ class LTX2Generator(VideoGenerator):
                 num_frames, 
                 seed, 
                 target_width=target_width, 
-                target_height=target_height
+                target_height=target_height,
+                pre_encoded_context=pre_encoded_context,
             ),
         )
 
@@ -741,6 +853,7 @@ class LTX2Generator(VideoGenerator):
         seed: int,
         target_width: int,
         target_height: int,
+        pre_encoded_context: Any | None = None,
     ) -> tuple[bytes, bool]:
         """Synchronous video generation (runs in thread pool).
         
@@ -760,7 +873,8 @@ class LTX2Generator(VideoGenerator):
         with torch.no_grad():
             return self._generate_sync_inner(
                 params, num_frames, seed, target_width, target_height,
-                TilingConfig, get_video_chunks_number, encode_video
+                TilingConfig, get_video_chunks_number, encode_video,
+                pre_encoded_context=pre_encoded_context,
             )
 
     def _generate_sync_inner(
@@ -773,8 +887,13 @@ class LTX2Generator(VideoGenerator):
         TilingConfig,
         get_video_chunks_number,
         encode_video,
+        pre_encoded_context: Any | None = None,
     ) -> tuple[bytes, bool]:
-        """Inner implementation of _generate_sync - runs inside inference_mode context."""
+        """Inner implementation of _generate_sync - runs inside inference_mode context.
+        
+        When pre_encoded_context is provided (from concurrent batch), it is passed
+        directly to the pipeline, skipping the text encoder entirely.
+        """
 
         assert self._temp_dir is not None
         assert self.components is not None
@@ -852,6 +971,7 @@ class LTX2Generator(VideoGenerator):
                 images=images,
                 tiling_config=tiling_config,
                 enhance_prompt=params.enhance_prompt,
+                pre_encoded_context=pre_encoded_context,
             )
         else:
             # Two keyframes: use KeyframeInterpolationPipeline with distilled schedule
@@ -872,6 +992,7 @@ class LTX2Generator(VideoGenerator):
                 images=images,
                 tiling_config=tiling_config,
                 enhance_prompt=params.enhance_prompt,
+                pre_encoded_contexts=pre_encoded_context,
             )
 
         # Consolidate video chunks into a single tensor for cropping/trimming
