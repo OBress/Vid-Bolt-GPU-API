@@ -857,7 +857,7 @@ class JobManager:
                     if mode == VRAMLoadMode.IMAGE_EDITING:
                         expected_limit = 45.0  # 5 instances * ~7-8GB
                     elif mode == VRAMLoadMode.VIDEO_GENERATION:
-                        expected_limit = 70.0  # LTX-2 with ALL models cached (~67GB actual)
+                        expected_limit = 45.0  # Cached transformer+text_encoder (~38GB) + headroom
                     elif mode == VRAMLoadMode.ALL:
                         expected_limit = 75.0  # LightX2V + LTX-2 (no Z-Image)
 
@@ -905,7 +905,7 @@ class JobManager:
                 if mode == VRAMLoadMode.IMAGE_EDITING:
                     expected_limit = 45.0
                 elif mode == VRAMLoadMode.VIDEO_GENERATION:
-                    expected_limit = 70.0  # LTX-2 with ALL models cached (~67GB actual)
+                    expected_limit = 45.0  # Cached transformer+text_encoder (~38GB) + headroom
                 elif mode == VRAMLoadMode.ALL:
                     expected_limit = 75.0
             
