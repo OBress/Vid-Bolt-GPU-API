@@ -456,32 +456,32 @@ class JobManager:
                     max_batch = 1  # ALL mode: limited VRAM headroom
                 else:
                     # Calculate activation VRAM per video based on resolution
-                    # Empirical: 1920x1088 uses ~26GB activations, scales ~linearly with pixels
+                    # Empirical: 1920x1088 peaks at ~41GB with 35.4GB baseline = ~6GB activations
+                    # Tiled decode + staged model loading keep actual usage low.
+                    # Formula: 2GB base + 3GB per megapixel (conservative vs observed ~6GB)
                     megapixels = (width * height) / 1_000_000
-                    activation_gb_per_video = 5.0 + (megapixels * 10.0)  # ~26GB at 1920x1088
+                    activation_gb_per_video = 2.0 + (megapixels * 3.0)  # ~8.3GB at 1920x1088
                     
-                    # Get available VRAM beyond cached transformer (~27GB baseline)
+                    # Known baseline: transformer = 35.4GB. Use total GPU - baseline for headroom.
+                    transformer_baseline_gb = 35.4
                     try:
                         import torch
                         if torch.cuda.is_available():
                             total_gb = torch.cuda.get_device_properties(0).total_mem / (1024**3)
-                            allocated_gb = torch.cuda.memory_allocated() / (1024**3)
-                            available_gb = (total_gb - allocated_gb) * 0.85  # 15% safety
                         else:
-                            allocated_gb = 0.0
-                            available_gb = 25.0
+                            total_gb = 95.0  # RTX Pro 6000 fallback
                     except Exception:
-                        allocated_gb = 0.0
-                        available_gb = 25.0
+                        total_gb = 95.0
                     
+                    # Available = total - transformer baseline - 15% safety margin
+                    available_gb = (total_gb - transformer_baseline_gb) * 0.85
                     max_by_vram = max(1, int(available_gb / activation_gb_per_video))
                     max_batch = min(max_by_vram, InferenceConfig.LTX2_MAX_CONCURRENT_VIDEOS)
                     
-                    if max_batch < 2:
-                        logger.info(
-                            f"Resolution {width}x{height} needs ~{activation_gb_per_video:.1f}GB/video, "
-                            f"allocated: {allocated_gb:.1f}GB, available: {available_gb:.1f}GB → sequential"
-                        )
+                    logger.info(
+                        f"Resolution {width}x{height}: ~{activation_gb_per_video:.1f}GB/video, "
+                        f"available: {available_gb:.1f}GB → batch {max_batch}"
+                    )
             else:
                 max_batch = 1  # Fallback to safe default
         else:
@@ -859,7 +859,7 @@ class JobManager:
                     if mode == VRAMLoadMode.IMAGE_EDITING:
                         expected_limit = 45.0  # 5 instances * ~7-8GB
                     elif mode == VRAMLoadMode.VIDEO_GENERATION:
-                        expected_limit = 35.0  # Cached transformer (~22GB) + overhead
+                        expected_limit = 37.0  # Cached transformer (35.4GB empirical)
                     elif mode == VRAMLoadMode.ALL:
                         expected_limit = 55.0  # LightX2V (~19GB) + cached transformer (~22GB) + overhead
 
@@ -907,7 +907,7 @@ class JobManager:
                 if mode == VRAMLoadMode.IMAGE_EDITING:
                     expected_limit = 45.0
                 elif mode == VRAMLoadMode.VIDEO_GENERATION:
-                    expected_limit = 35.0  # Cached transformer (~22GB) + overhead
+                    expected_limit = 37.0  # Cached transformer (35.4GB empirical)
                 elif mode == VRAMLoadMode.ALL:
                     expected_limit = 55.0  # LightX2V (~19GB) + cached transformer (~22GB) + overhead
             
