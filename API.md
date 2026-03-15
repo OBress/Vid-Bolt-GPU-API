@@ -418,6 +418,16 @@ Switch between Image Mode and Video Mode. Unloads current models and loads the t
 }
 ```
 
+**Error Response (503 - Jobs Active):**
+
+Returned if any jobs are currently queued or processing. Wait for all jobs to complete before switching.
+
+```json
+{
+  "detail": "Cannot switch modes while jobs are queued or processing"
+}
+```
+
 ---
 
 ### Settings
@@ -459,6 +469,16 @@ Set the VRAM loading mode. This unloads current models and loads the target mode
 {
   "mode": "video_generation",
   "description": "Video Generation - LTX-2 DistilledPipeline only (~40GB VRAM)"
+}
+```
+
+**Error Response (503 - Jobs Active):**
+
+Returned if any jobs are currently queued or processing. Wait for all jobs to complete before switching.
+
+```json
+{
+  "detail": "Cannot change VRAM mode while jobs are queued or processing"
 }
 ```
 

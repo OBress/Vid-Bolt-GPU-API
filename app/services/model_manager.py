@@ -112,6 +112,9 @@ class ModelManager:
         self._ltx2_generator: Optional["VideoGenerator"] = None
         self._acestep_generator: Optional["MusicGenerator"] = None
         
+        # Job manager reference (set via setter to break circular dependency)
+        self._job_manager = None
+        
         # Track loaded state
         self._loaded = False
         
@@ -124,6 +127,10 @@ class ModelManager:
         self._audio_dynamic_loaded = False
         
         logger.info("ModelManager initialized")
+
+    def set_job_manager(self, job_manager) -> None:
+        """Set the JobManager instance (breaks circular dependency)."""
+        self._job_manager = job_manager
 
     @property
     def current_mode(self) -> VRAMLoadMode:
@@ -188,6 +195,10 @@ class ModelManager:
         """
         if self._is_busy:
             raise RuntimeError("Cannot change VRAM mode while a job is in progress")
+        
+        # Also check if any jobs are queued (prevents race between batch jobs)
+        if self._job_manager and self._job_manager.has_pending_or_active_jobs():
+            raise RuntimeError("Cannot change VRAM mode while jobs are queued or processing")
         
         if self._is_switching:
             raise RuntimeError(f"Already switching to {self._switching_target.value if self._switching_target else 'unknown'}")

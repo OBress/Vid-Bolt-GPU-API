@@ -96,6 +96,13 @@ async def switch_mode(
             detail=f"Cannot switch modes while a job is in progress (job: {model_manager.active_job_id})"
         )
     
+    # Check if jobs are queued (prevents race between batch jobs)
+    if model_manager._job_manager and model_manager._job_manager.has_pending_or_active_jobs():
+        raise HTTPException(
+            status_code=503,
+            detail="Cannot switch modes while jobs are queued or processing"
+        )
+    
     try:
         if request.target_mode == "image":
             await model_manager.switch_to_image_mode()

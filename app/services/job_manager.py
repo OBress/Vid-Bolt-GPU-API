@@ -94,6 +94,20 @@ class JobManager:
             if job.status in (JobStatus.PENDING, JobStatus.PROCESSING)
         ]
 
+    def has_pending_or_active_jobs(self) -> bool:
+        """Check if there are any pending or processing jobs.
+        
+        Used by ModelManager to prevent mode switches while jobs are queued.
+        This closes the race condition where _is_busy is False between
+        sequential batch jobs but the queue still has work to process.
+        """
+        if self._pending_jobs_set:
+            return True
+        return any(
+            job.status in (JobStatus.PENDING, JobStatus.PROCESSING)
+            for job in self._jobs.values()
+        )
+
     def get_queue_position(self, job_id: str) -> Optional[int]:
         """Get the current queue position for a pending job (1-based).
         
@@ -826,15 +840,17 @@ class JobManager:
                 reserved = torch.cuda.memory_reserved() / (1024**3)
                 
                 # Determine expected usage based on mode
-                expected_limit = 25.0  # Default (Z-Image)
+                # Thresholds are rounded up to nearest 5GB for leniency
+                # (LoRA weights, CUDA context, and fragmentation add overhead)
+                expected_limit = 40.0  # Default (Z-Image + LoRA ≈ 36.6GB)
                 if self._model_manager:
                     mode = self._model_manager.current_mode
                     if mode == VRAMLoadMode.IMAGE_EDITING:
-                        expected_limit = 45.0  # 5 instances * ~7-8GB
+                        expected_limit = 50.0  # 5 instances * ~7-8GB + overhead
                     elif mode == VRAMLoadMode.VIDEO_GENERATION:
-                        expected_limit = 62.0  # Cached transformer + text_encoder + embeddings (~60GB)
+                        expected_limit = 70.0  # Cached transformer + text_encoder + embeddings
                     elif mode == VRAMLoadMode.ALL:
-                        expected_limit = 55.0  # LightX2V (~19GB) + cached transformer (~22GB) + overhead
+                        expected_limit = 60.0  # LightX2V (~19GB) + cached transformer (~22GB) + overhead
 
                 # Model weights should be within expected limit. If higher, something's leaking.
                 if allocated > expected_limit:
@@ -874,15 +890,16 @@ class JobManager:
                 return
             
             # Determine expected VRAM limit based on current mode
-            expected_limit = 25.0  # Default
+            # Thresholds are rounded up to nearest 5GB for leniency
+            expected_limit = 40.0  # Default (Z-Image + LoRA ≈ 36.6GB)
             if self._model_manager:
                 mode = self._model_manager.current_mode
                 if mode == VRAMLoadMode.IMAGE_EDITING:
-                    expected_limit = 45.0
+                    expected_limit = 50.0
                 elif mode == VRAMLoadMode.VIDEO_GENERATION:
-                    expected_limit = 62.0  # Cached transformer + text_encoder + embeddings (~60GB)
+                    expected_limit = 85.0  # Full cache: transformer + text_encoder + embeddings (~81GB)
                 elif mode == VRAMLoadMode.ALL:
-                    expected_limit = 55.0  # LightX2V (~19GB) + cached transformer (~22GB) + overhead
+                    expected_limit = 60.0  # LightX2V (~19GB) + cached transformer (~22GB) + overhead
             
             tolerance = expected_limit * 1.1  # 10% headroom
             

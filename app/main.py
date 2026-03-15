@@ -125,6 +125,10 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     # This is required for _process_batch() to access generators
     job_manager.set_model_manager(model_manager)
     
+    # Link ModelManager back to JobManager for mode-switch guards
+    # This prevents mode switches while jobs are queued
+    model_manager.set_job_manager(job_manager)
+    
     # Initialize WebhookService for callback notifications
     from app.services.webhook_service import WebhookService, set_webhook_service_instance
     
