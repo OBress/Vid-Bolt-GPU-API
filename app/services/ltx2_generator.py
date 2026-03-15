@@ -369,22 +369,22 @@ class LTX2Generator(VideoGenerator):
             # Warmup failure is non-fatal - first real inference will just be slow
 
     def _patch_model_ledger_caching(self) -> None:
-        """Cache transformer, text_encoder, and embeddings_processor in VRAM.
+        """Cache models in VRAM based on lean_cache mode.
         
-        Since video generation is sequential (max_batch=1), all three heavy
-        models can be cached safely — no risk of duplicate copies.
+        lean_cache=False (VIDEO_GENERATION): Cache transformer + text_encoder + embeddings
+          - ~60GB baseline, saves ~4-6s/video by skipping disk→GPU reload
         
-        The pipeline's encode_prompts() does `del text_encoder; cleanup_memory()`
-        but this just drops the local reference. Our cached copy persists,
-        making subsequent calls instant (no disk→GPU reload).
-        
-        Expected baseline: ~60GB (transformer ~35GB + text_encoder ~24GB + embeddings ~0.1GB)
-        Saves ~4-6 seconds per video vs load-per-call.
+        lean_cache=True (ALL mode): Cache ONLY transformer
+          - ~35GB baseline (+ LightX2V ~19GB = ~55GB total)
+          - text_encoder loads/frees per-call (~4-6s slower per video)
+          - Frees ~24GB for activations → longer videos at high resolution
         """
         distilled = self.components.distilled_pipeline
         ledger = distilled.model_ledger
         
-        logger.info("Caching transformer + text_encoder + embeddings_processor...")
+        lean = getattr(self, 'lean_cache', False)
+        mode_label = "lean (transformer only)" if lean else "full (transformer + text_encoder + embeddings)"
+        logger.info(f"Caching models in {mode_label} mode...")
         
         try:
             import torch
@@ -395,45 +395,66 @@ class LTX2Generator(VideoGenerator):
             
             logger.info(f"  VRAM before caching: {_vram_gb():.1f}GB")
             
-            # Cache all three heavy models
+            # Always cache transformer (used every denoising step)
             cached_transformer = ledger.transformer()
             logger.info(f"  VRAM after transformer: {_vram_gb():.1f}GB")
-            
-            cached_text_encoder = ledger.text_encoder()
-            logger.info(f"  VRAM after text_encoder: {_vram_gb():.1f}GB")
-            
-            cached_embeddings = ledger.gemma_embeddings_processor()
-            logger.info(f"  VRAM after embeddings_processor: {_vram_gb():.1f}GB")
-            
-            # Create cached factories — pipeline's del/cleanup_memory() just
-            # drops local refs; these closures keep the objects alive
             def _transformer(): return cached_transformer
-            def _text_encoder(): return cached_text_encoder
-            def _embeddings(): return cached_embeddings
             
-            # Patch distilled pipeline's model_ledger
-            ledger.transformer = _transformer
-            ledger.text_encoder = _text_encoder
-            ledger.gemma_embeddings_processor = _embeddings
-            
-            # Patch keyframe pipeline's model_ledgers too
-            keyframe = self.components.keyframe_pipeline
-            if hasattr(keyframe, 'stage_1_model_ledger'):
-                keyframe.stage_1_model_ledger.transformer = _transformer
-                keyframe.stage_1_model_ledger.text_encoder = _text_encoder
-                keyframe.stage_1_model_ledger.gemma_embeddings_processor = _embeddings
-                if hasattr(keyframe, 'stage_2_model_ledger'):
-                    keyframe.stage_2_model_ledger.transformer = _transformer
-                    keyframe.stage_2_model_ledger.text_encoder = _text_encoder
-                    keyframe.stage_2_model_ledger.gemma_embeddings_processor = _embeddings
-                logger.info("  Patched DistilledPipeline + KeyframeInterpolationPipeline model_ledgers")
+            if lean:
+                # Lean mode: text_encoder and embeddings load/free per-call
+                # No caching, no lock needed (sequential processing)
+                logger.info("  Lean mode: text_encoder/embeddings will load/free per-call")
+                
+                # Patch only transformer
+                ledger.transformer = _transformer
+                
+                keyframe = self.components.keyframe_pipeline
+                if hasattr(keyframe, 'stage_1_model_ledger'):
+                    keyframe.stage_1_model_ledger.transformer = _transformer
+                    if hasattr(keyframe, 'stage_2_model_ledger'):
+                        keyframe.stage_2_model_ledger.transformer = _transformer
+                    logger.info("  Patched DistilledPipeline + KeyframeInterpolationPipeline (transformer only)")
+                else:
+                    logger.info("  Patched DistilledPipeline (transformer only)")
+                
+                logger.info(
+                    f"Lean cache active. VRAM baseline: {_vram_gb():.1f}GB "
+                    f"(~24GB free for activations vs full cache)"
+                )
             else:
-                logger.info("  Patched DistilledPipeline model_ledger")
-            
-            logger.info(
-                f"All models cached. VRAM baseline: {_vram_gb():.1f}GB "
-                f"(saves ~4-6s/video vs load-per-call)"
-            )
+                # Full mode: cache everything for speed
+                cached_text_encoder = ledger.text_encoder()
+                logger.info(f"  VRAM after text_encoder: {_vram_gb():.1f}GB")
+                
+                cached_embeddings = ledger.gemma_embeddings_processor()
+                logger.info(f"  VRAM after embeddings_processor: {_vram_gb():.1f}GB")
+                
+                # Cached factories — pipeline's del/cleanup_memory() just drops local refs
+                def _text_encoder(): return cached_text_encoder
+                def _embeddings(): return cached_embeddings
+                
+                # Patch all ledgers
+                ledger.transformer = _transformer
+                ledger.text_encoder = _text_encoder
+                ledger.gemma_embeddings_processor = _embeddings
+                
+                keyframe = self.components.keyframe_pipeline
+                if hasattr(keyframe, 'stage_1_model_ledger'):
+                    keyframe.stage_1_model_ledger.transformer = _transformer
+                    keyframe.stage_1_model_ledger.text_encoder = _text_encoder
+                    keyframe.stage_1_model_ledger.gemma_embeddings_processor = _embeddings
+                    if hasattr(keyframe, 'stage_2_model_ledger'):
+                        keyframe.stage_2_model_ledger.transformer = _transformer
+                        keyframe.stage_2_model_ledger.text_encoder = _text_encoder
+                        keyframe.stage_2_model_ledger.gemma_embeddings_processor = _embeddings
+                    logger.info("  Patched DistilledPipeline + KeyframeInterpolationPipeline (full cache)")
+                else:
+                    logger.info("  Patched DistilledPipeline (full cache)")
+                
+                logger.info(
+                    f"Full cache active. VRAM baseline: {_vram_gb():.1f}GB "
+                    f"(saves ~4-6s/video vs load-per-call)"
+                )
             
         except Exception as e:
             logger.warning(f"Failed to patch model_ledger caching (non-fatal): {e}")

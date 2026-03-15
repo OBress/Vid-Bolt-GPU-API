@@ -454,7 +454,7 @@ class ModelManager:
         self._set_switching_progress("Loading LightX2V (1 instance for ALL mode)...", 0.2)
         await self._load_lightx2v()
         self._set_switching_progress("Loading LTX-2 (this takes 2-3 minutes)...", 0.5)
-        await self._load_ltx2()
+        await self._load_ltx2(lean_cache=True)  # Lean cache: only transformer, saves ~24GB for activations
         
         self._set_switching_progress("Finalizing...", 1.0)
         logger.info("ALL mode loaded: LightX2V + LTX-2 ready, Z-Image loads on demand")
@@ -542,19 +542,26 @@ class ModelManager:
             await asyncio.to_thread(self._lightx2v_generator.unload_models)
         self._force_gc()
 
-    async def _load_ltx2(self) -> None:
+    async def _load_ltx2(self, lean_cache: bool = False) -> None:
         """Load LTX-2 video model (DistilledPipeline only).
         
         Loads only the DistilledPipeline which supports I2V with 1-2 keyframes.
         Uses ~40GB VRAM.
+        
+        Args:
+            lean_cache: If True, only cache the transformer (not text_encoder/embeddings).
+                       Used in ALL mode to save ~24GB VRAM for longer videos.
         """
         from app.services.ltx2_generator import LTX2Generator
         
         if self._ltx2_generator is None:
             self._ltx2_generator = LTX2Generator(self._settings)
         
+        # Set caching mode before loading — checked by _patch_model_ledger_caching
+        self._ltx2_generator.lean_cache = lean_cache
+        
         if not self._ltx2_generator._loaded:
-            logger.info("Loading LTX-2.3 22B (DistilledPipeline)...")
+            logger.info(f"Loading LTX-2.3 22B (DistilledPipeline, lean_cache={lean_cache})...")
             await asyncio.to_thread(self._ltx2_generator.load_models)
 
     async def _unload_ltx2(self) -> None:
