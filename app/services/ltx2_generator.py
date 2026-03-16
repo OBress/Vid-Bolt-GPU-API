@@ -368,13 +368,30 @@ class LTX2Generator(VideoGenerator):
             logger.warning(f"LTX-2 warmup failed (non-fatal): {e}", exc_info=True)
             # Warmup failure is non-fatal - first real inference will just be slow
 
+    @staticmethod
+    def _log_vram(label: str) -> None:
+        """Log current VRAM usage for memory leak diagnostics."""
+        try:
+            import torch
+            if torch.cuda.is_available():
+                alloc = torch.cuda.memory_allocated() / (1024**3)
+                reserved = torch.cuda.memory_reserved() / (1024**3)
+                logger.info(f"VRAM [{label}]: allocated={alloc:.2f}GB, reserved={reserved:.2f}GB")
+        except ImportError:
+            pass
+
     def _patch_model_ledger_caching(self) -> None:
         """Cache models in VRAM based on lean_cache mode.
         
-        lean_cache=False (VIDEO_GENERATION): Cache transformer + text_encoder + embeddings
+        Caches ALL model instances to prevent them being rebuilt from disk
+        on every generation call. Without caching, video_decoder, audio_decoder,
+        vocoder, video_encoder, and spatial_upsampler create ~5GB of new GPU
+        model instances per generation that may not be freed in time → OOM.
+        
+        lean_cache=False (VIDEO_GENERATION): Cache everything
           - ~60GB baseline, saves ~4-6s/video by skipping disk→GPU reload
         
-        lean_cache=True (ALL mode): Cache ONLY transformer
+        lean_cache=True (ALL mode): Cache transformer + lightweight models
           - ~35GB baseline (+ LightX2V ~19GB = ~55GB total)
           - text_encoder loads/frees per-call (~4-6s slower per video)
           - Frees ~24GB for activations → longer videos at high resolution
@@ -400,22 +417,53 @@ class LTX2Generator(VideoGenerator):
             logger.info(f"  VRAM after transformer: {_vram_gb():.1f}GB")
             def _transformer(): return cached_transformer
             
+            # Always cache lightweight pipeline models (decoder, encoder, vocoder, upsampler).
+            # These are small (~0.5-2GB each) but were being rebuilt from disk on EVERY
+            # generation call, leaking ~5GB/video that GC couldn't reliably free in time.
+            cached_video_decoder = ledger.video_decoder()
+            cached_audio_decoder = ledger.audio_decoder()
+            cached_vocoder = ledger.vocoder()
+            cached_video_encoder = ledger.video_encoder()
+            cached_spatial_upsampler = ledger.spatial_upsampler()
+            logger.info(f"  VRAM after decoder/encoder/vocoder/upsampler: {_vram_gb():.1f}GB")
+            
+            def _video_decoder(): return cached_video_decoder
+            def _audio_decoder(): return cached_audio_decoder
+            def _vocoder(): return cached_vocoder
+            def _video_encoder(): return cached_video_encoder
+            def _spatial_upsampler(): return cached_spatial_upsampler
+            
             if lean:
                 # Lean mode: text_encoder and embeddings load/free per-call
                 # No caching, no lock needed (sequential processing)
                 logger.info("  Lean mode: text_encoder/embeddings will load/free per-call")
                 
-                # Patch only transformer
+                # Patch transformer + lightweight models
                 ledger.transformer = _transformer
+                ledger.video_decoder = _video_decoder
+                ledger.audio_decoder = _audio_decoder
+                ledger.vocoder = _vocoder
+                ledger.video_encoder = _video_encoder
+                ledger.spatial_upsampler = _spatial_upsampler
                 
                 keyframe = self.components.keyframe_pipeline
                 if hasattr(keyframe, 'stage_1_model_ledger'):
                     keyframe.stage_1_model_ledger.transformer = _transformer
+                    keyframe.stage_1_model_ledger.video_decoder = _video_decoder
+                    keyframe.stage_1_model_ledger.audio_decoder = _audio_decoder
+                    keyframe.stage_1_model_ledger.vocoder = _vocoder
+                    keyframe.stage_1_model_ledger.video_encoder = _video_encoder
+                    keyframe.stage_1_model_ledger.spatial_upsampler = _spatial_upsampler
                     if hasattr(keyframe, 'stage_2_model_ledger'):
                         keyframe.stage_2_model_ledger.transformer = _transformer
-                    logger.info("  Patched DistilledPipeline + KeyframeInterpolationPipeline (transformer only)")
+                        keyframe.stage_2_model_ledger.video_decoder = _video_decoder
+                        keyframe.stage_2_model_ledger.audio_decoder = _audio_decoder
+                        keyframe.stage_2_model_ledger.vocoder = _vocoder
+                        keyframe.stage_2_model_ledger.video_encoder = _video_encoder
+                        keyframe.stage_2_model_ledger.spatial_upsampler = _spatial_upsampler
+                    logger.info("  Patched DistilledPipeline + KeyframeInterpolationPipeline (lean + decoders)")
                 else:
-                    logger.info("  Patched DistilledPipeline (transformer only)")
+                    logger.info("  Patched DistilledPipeline (lean + decoders)")
                 
                 logger.info(
                     f"Lean cache active. VRAM baseline: {_vram_gb():.1f}GB "
@@ -437,16 +485,31 @@ class LTX2Generator(VideoGenerator):
                 ledger.transformer = _transformer
                 ledger.text_encoder = _text_encoder
                 ledger.gemma_embeddings_processor = _embeddings
+                ledger.video_decoder = _video_decoder
+                ledger.audio_decoder = _audio_decoder
+                ledger.vocoder = _vocoder
+                ledger.video_encoder = _video_encoder
+                ledger.spatial_upsampler = _spatial_upsampler
                 
                 keyframe = self.components.keyframe_pipeline
                 if hasattr(keyframe, 'stage_1_model_ledger'):
                     keyframe.stage_1_model_ledger.transformer = _transformer
                     keyframe.stage_1_model_ledger.text_encoder = _text_encoder
                     keyframe.stage_1_model_ledger.gemma_embeddings_processor = _embeddings
+                    keyframe.stage_1_model_ledger.video_decoder = _video_decoder
+                    keyframe.stage_1_model_ledger.audio_decoder = _audio_decoder
+                    keyframe.stage_1_model_ledger.vocoder = _vocoder
+                    keyframe.stage_1_model_ledger.video_encoder = _video_encoder
+                    keyframe.stage_1_model_ledger.spatial_upsampler = _spatial_upsampler
                     if hasattr(keyframe, 'stage_2_model_ledger'):
                         keyframe.stage_2_model_ledger.transformer = _transformer
                         keyframe.stage_2_model_ledger.text_encoder = _text_encoder
                         keyframe.stage_2_model_ledger.gemma_embeddings_processor = _embeddings
+                        keyframe.stage_2_model_ledger.video_decoder = _video_decoder
+                        keyframe.stage_2_model_ledger.audio_decoder = _audio_decoder
+                        keyframe.stage_2_model_ledger.vocoder = _vocoder
+                        keyframe.stage_2_model_ledger.video_encoder = _video_encoder
+                        keyframe.stage_2_model_ledger.spatial_upsampler = _spatial_upsampler
                     logger.info("  Patched DistilledPipeline + KeyframeInterpolationPipeline (full cache)")
                 else:
                     logger.info("  Patched DistilledPipeline (full cache)")
@@ -951,6 +1014,7 @@ class LTX2Generator(VideoGenerator):
 
         assert self._temp_dir is not None
         assert self.components is not None
+        self._log_vram(f"pre-pipeline [{params.job_id[:8]}]")
 
         # Save keyframe images to temp files
         # Preprocess each keyframe: center crop to target aspect ratio, then resize
@@ -1051,6 +1115,8 @@ class LTX2Generator(VideoGenerator):
 
         # Consolidate video chunks into a single tensor for cropping/trimming
         import torch
+        self._log_vram(f"post-pipeline [{params.job_id[:8]}]")
+        
         if isinstance(video_chunks, torch.Tensor):
             video_tensor = video_chunks
         else:
@@ -1059,6 +1125,8 @@ class LTX2Generator(VideoGenerator):
             if not chunks:
                  raise RuntimeError("No video chunks generated")
             video_tensor = torch.cat(chunks, dim=0)
+            # Free individual chunk references immediately to release GPU memory
+            del chunks
 
         # Apply In-Memory Optimization
         logger.info("Applying in-memory cropping and trimming...")
@@ -1106,12 +1174,20 @@ class LTX2Generator(VideoGenerator):
             video_chunks_number=video_chunks_number,
         )
 
+        # Determine if audio was generated (must check before del)
+        has_audio = audio is not None
+
+        # Free GPU tensors immediately after encoding to MP4 — they're no longer needed
+        del video_tensor
+        del audio
+        import gc
+        gc.collect()
+        torch.cuda.empty_cache()
+        self._log_vram(f"post-encode [{params.job_id[:8]}]")
+
         # Read output
         with open(output_path, "rb") as f:
             video_data = f.read()
-
-        # Determine if audio was generated
-        has_audio = audio is not None
 
         # Clean up temp files
         try:
