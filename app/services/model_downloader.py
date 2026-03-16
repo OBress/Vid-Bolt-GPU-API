@@ -100,7 +100,7 @@ class ModelDownloader:
             "repo": "Lightricks/LTX-2.3",
             "local_dir": "models/ltx-2",
             "type": "file",
-            "filename": "ltx-2.3-spatial-upscaler-x2-1.0.safetensors",
+            "filename": "ltx-2.3-spatial-upscaler-x2-1.1.safetensors",
         },
         {
             "name": "ltx2-distilled-lora",

@@ -128,6 +128,17 @@ EOF
 fi
 
 # =============================================================================
+# Cleanup: Remove superseded model files
+# =============================================================================
+# v1.0 spatial upscaler replaced by v1.1 hotfix (long video generation fix)
+OLD_SPATIAL_UPSCALER="/app/models/ltx-2/ltx-2.3-spatial-upscaler-x2-1.0.safetensors"
+if [ -f "$OLD_SPATIAL_UPSCALER" ]; then
+    echo -e "${YELLOW}[Startup] Removing old spatial upscaler v1.0 (replaced by v1.1 hotfix)${NC}"
+    rm -f "$OLD_SPATIAL_UPSCALER"
+    echo -e "${GREEN}[Startup] Old spatial upscaler removed - v1.1 will be downloaded automatically${NC}"
+fi
+
+# =============================================================================
 # Start the application
 # =============================================================================
 echo -e "${GREEN}[Startup] Starting Vid-Bolt GPU API...${NC}"
