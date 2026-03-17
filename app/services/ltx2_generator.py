@@ -388,6 +388,11 @@ class LTX2Generator(VideoGenerator):
         vocoder, video_encoder, and spatial_upsampler create ~5GB of new GPU
         model instances per generation that may not be freed in time → OOM.
         
+        IMPORTANT: All cached model instances are stored in self._cached_models
+        so that unload_models() can explicitly free them. Without this, the
+        closures keep GPU tensors alive even after pipeline deletion, leaking
+        ~22GB per mode switch cycle.
+        
         lean_cache=False (VIDEO_GENERATION): Cache everything
           - ~60GB baseline, saves ~4-6s/video by skipping disk→GPU reload
         
@@ -412,26 +417,33 @@ class LTX2Generator(VideoGenerator):
             
             logger.info(f"  VRAM before caching: {_vram_gb():.1f}GB")
             
+            # Initialize the cache dict — unload_models() will clear this
+            self._cached_models = {}
+            
             # Always cache transformer (used every denoising step)
-            cached_transformer = ledger.transformer()
+            self._cached_models['transformer'] = ledger.transformer()
             logger.info(f"  VRAM after transformer: {_vram_gb():.1f}GB")
-            def _transformer(): return cached_transformer
             
             # Always cache lightweight pipeline models (decoder, encoder, vocoder, upsampler).
             # These are small (~0.5-2GB each) but were being rebuilt from disk on EVERY
             # generation call, leaking ~5GB/video that GC couldn't reliably free in time.
-            cached_video_decoder = ledger.video_decoder()
-            cached_audio_decoder = ledger.audio_decoder()
-            cached_vocoder = ledger.vocoder()
-            cached_video_encoder = ledger.video_encoder()
-            cached_spatial_upsampler = ledger.spatial_upsampler()
+            self._cached_models['video_decoder'] = ledger.video_decoder()
+            self._cached_models['audio_decoder'] = ledger.audio_decoder()
+            self._cached_models['vocoder'] = ledger.vocoder()
+            self._cached_models['video_encoder'] = ledger.video_encoder()
+            self._cached_models['spatial_upsampler'] = ledger.spatial_upsampler()
             logger.info(f"  VRAM after decoder/encoder/vocoder/upsampler: {_vram_gb():.1f}GB")
             
-            def _video_decoder(): return cached_video_decoder
-            def _audio_decoder(): return cached_audio_decoder
-            def _vocoder(): return cached_vocoder
-            def _video_encoder(): return cached_video_encoder
-            def _spatial_upsampler(): return cached_spatial_upsampler
+            # Create closures that reference self._cached_models (not local vars).
+            # This way, clearing self._cached_models in unload_models() breaks
+            # ALL references and allows GC to free the GPU tensors.
+            cm = self._cached_models  # short alias for closures
+            def _transformer(): return cm['transformer']
+            def _video_decoder(): return cm['video_decoder']
+            def _audio_decoder(): return cm['audio_decoder']
+            def _vocoder(): return cm['vocoder']
+            def _video_encoder(): return cm['video_encoder']
+            def _spatial_upsampler(): return cm['spatial_upsampler']
             
             if lean:
                 # Lean mode: text_encoder and embeddings load/free per-call
@@ -471,15 +483,15 @@ class LTX2Generator(VideoGenerator):
                 )
             else:
                 # Full mode: cache everything for speed
-                cached_text_encoder = ledger.text_encoder()
+                self._cached_models['text_encoder'] = ledger.text_encoder()
                 logger.info(f"  VRAM after text_encoder: {_vram_gb():.1f}GB")
                 
-                cached_embeddings = ledger.gemma_embeddings_processor()
+                self._cached_models['embeddings'] = ledger.gemma_embeddings_processor()
                 logger.info(f"  VRAM after embeddings_processor: {_vram_gb():.1f}GB")
                 
-                # Cached factories — pipeline's del/cleanup_memory() just drops local refs
-                def _text_encoder(): return cached_text_encoder
-                def _embeddings(): return cached_embeddings
+                # Closures referencing self._cached_models dict
+                def _text_encoder(): return cm['text_encoder']
+                def _embeddings(): return cm['embeddings']
                 
                 # Patch all ledgers
                 ledger.transformer = _transformer
@@ -1400,6 +1412,10 @@ class LTX2Generator(VideoGenerator):
         """Unload models and free GPU memory.
         
         This is called by ModelManager when switching modes to release VRAM.
+        
+        CRITICAL: Must clear self._cached_models FIRST to break closure
+        reference chains. Without this, cached GPU tensors (~22GB) survive
+        pipeline deletion and leak into subsequent mode loads.
         """
         if not self.is_loaded:
             logger.info("LTX-2 models not loaded, nothing to unload")
@@ -1407,11 +1423,20 @@ class LTX2Generator(VideoGenerator):
         
         logger.info("Unloading LTX-2 models...")
         
-        if self.components is not None:
-            import gc
-            try:
-                import torch
-                
+        import gc
+        try:
+            import torch
+            
+            # CRITICAL: Clear cached model references FIRST.
+            # This breaks the closure reference chain that keeps GPU tensors alive
+            # even after pipeline objects are deleted.
+            if hasattr(self, '_cached_models') and self._cached_models:
+                cached_names = list(self._cached_models.keys())
+                logger.info(f"  Clearing {len(cached_names)} cached models: {cached_names}")
+                self._cached_models.clear()
+            self._cached_models = {}
+            
+            if self.components is not None:
                 # Delete both pipelines
                 if hasattr(self.components, 'distilled_pipeline') and self.components.distilled_pipeline is not None:
                     del self.components.distilled_pipeline
@@ -1420,16 +1445,21 @@ class LTX2Generator(VideoGenerator):
                 
                 # Clear the components container
                 self.components = None
+            
+            # Force garbage collection and clear CUDA cache
+            gc.collect()
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+                torch.cuda.synchronize()
                 
-                # Force garbage collection and clear CUDA cache
-                gc.collect()
-                if torch.cuda.is_available():
-                    torch.cuda.empty_cache()
-                    torch.cuda.synchronize()
-                    
-            except ImportError:
-                self.components = None
-                gc.collect()
+                allocated_gb = torch.cuda.memory_allocated() / (1024**3)
+                logger.info(f"  VRAM after unload cleanup: {allocated_gb:.2f}GB")
+                
+        except ImportError:
+            if hasattr(self, '_cached_models'):
+                self._cached_models.clear()
+            self.components = None
+            gc.collect()
         
         self.is_loaded = False
         logger.info("LTX-2 models unloaded successfully")

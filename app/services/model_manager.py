@@ -500,6 +500,7 @@ class ModelManager:
         if self._zimage_generator and self._zimage_generator._loaded:
             logger.info("Unloading Z-Image Turbo models...")
             await asyncio.to_thread(self._zimage_generator.unload_models)
+        self._zimage_generator = None  # Drop all references to allow GC
         self._force_gc()
 
     async def _load_lightx2v(self) -> None:
@@ -551,6 +552,7 @@ class ModelManager:
         if self._lightx2v_generator and self._lightx2v_generator._loaded:
             logger.info("Unloading LightX2V models...")
             await asyncio.to_thread(self._lightx2v_generator.unload_models)
+        self._lightx2v_generator = None  # Drop all references to allow GC
         self._force_gc()
 
     async def _load_ltx2(self, lean_cache: bool = False) -> None:
@@ -580,6 +582,7 @@ class ModelManager:
         if self._ltx2_generator and self._ltx2_generator._loaded:
             logger.info("Unloading LTX-2 models...")
             await asyncio.to_thread(self._ltx2_generator.unload_models)
+        self._ltx2_generator = None  # Drop all references to allow GC
         self._force_gc()
 
     async def _load_acestep(self) -> None:
@@ -601,6 +604,7 @@ class ModelManager:
         if self._acestep_generator and self._acestep_generator._loaded:
             logger.info("Unloading ACE-Step models...")
             await asyncio.to_thread(self._acestep_generator.unload_models)
+        self._acestep_generator = None  # Drop all references to allow GC
         self._force_gc()
 
 
