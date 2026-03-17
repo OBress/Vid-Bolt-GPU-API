@@ -286,6 +286,12 @@ class ModelManager:
                     await self._unload_zimage()
                     self._zimage_dynamic_loaded = False
                     logger.info("ALL mode: Z-Image unloaded, VRAM freed for video generation")
+                # Unload ACE-Step if loaded to free VRAM for video gen
+                if self._audio_dynamic_loaded:
+                    logger.info("ALL mode: Unloading ACE-Step to free VRAM for video generation...")
+                    await self._unload_acestep()
+                    self._audio_dynamic_loaded = False
+                    logger.info("ALL mode: ACE-Step unloaded, VRAM freed for video generation")
                 return True
             elif job_type == JobType.IMAGE_EDITING:
                 # Unload Z-Image if loaded to free VRAM for image editing (LightX2V)
@@ -347,6 +353,8 @@ class ModelManager:
         logger.info("Switching to Image Generation Mode (Z-Image only)...")
         
         # Unload other models
+        self._set_switching_progress("Unloading ACE-Step...", 0.05)
+        await self._unload_acestep()
         self._set_switching_progress("Unloading LightX2V...", 0.1)
         await self._unload_lightx2v()
         self._set_switching_progress("Unloading LTX-2...", 0.3)
@@ -367,6 +375,8 @@ class ModelManager:
         logger.info("Switching to Image Editing Mode (LightX2V only)...")
         
         # Unload other models
+        self._set_switching_progress("Unloading ACE-Step...", 0.05)
+        await self._unload_acestep()
         self._set_switching_progress("Unloading Z-Image...", 0.1)
         await self._unload_zimage()
         self._set_switching_progress("Unloading LTX-2...", 0.3)
@@ -394,6 +404,8 @@ class ModelManager:
         logger.info("Switching to Video Generation Mode (LTX-2 DistilledPipeline only)...")
         
         # Unload other models
+        self._set_switching_progress("Unloading ACE-Step...", 0.03)
+        await self._unload_acestep()
         self._set_switching_progress("Unloading Z-Image...", 0.05)
         await self._unload_zimage()
         self._set_switching_progress("Unloading LightX2V...", 0.1)

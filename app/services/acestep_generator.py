@@ -115,21 +115,67 @@ class ACEStepGenerator(MusicGenerator):
         if not self._is_loaded:
             return
         logger.info("Unloading ACE-Step 1.5 models...")
-        if self._dit_handler is not None:
-            del self._dit_handler
-            self._dit_handler = None
-        if self._llm_handler is not None:
-            del self._llm_handler
-            self._llm_handler = None
-        self._is_loaded = False
-        gc.collect()
+        
         try:
             import torch
             if torch.cuda.is_available():
-                torch.cuda.empty_cache()
+                vram_before = torch.cuda.memory_allocated() / (1024**3)
+                logger.info(f"  VRAM before ACE-Step unload: {vram_before:.2f}GB")
         except ImportError:
-            pass
-        logger.info("ACE-Step 1.5 models unloaded")
+            torch = None
+        
+        # CRITICAL: Explicitly destroy vLLM/nanovllm engine to free GPU memory.
+        # Without this, nanovllm's model runner + KV cache (~17.5GB) persist as zombie 
+        # allocations because atexit.register(self.exit) only fires at process exit,
+        # not when the Python reference is dropped.
+        if self._llm_handler is not None:
+            try:
+                if (hasattr(self._llm_handler, 'llm') 
+                    and self._llm_handler.llm is not None
+                    and hasattr(self._llm_handler.llm, 'exit')):
+                    logger.info("  Destroying nanovllm engine (freeing model runner + KV cache)...")
+                    self._llm_handler.llm.exit()
+            except Exception as e:
+                logger.warning(f"  Failed to exit nanovllm engine: {e}")
+            
+            # Call LLMHandler's own unload (cleans up tokenizer, distributed state, etc.)
+            try:
+                if hasattr(self._llm_handler, 'unload'):
+                    self._llm_handler.unload()
+            except Exception as e:
+                logger.warning(f"  Failed to unload LLM handler: {e}")
+            
+            del self._llm_handler
+            self._llm_handler = None
+        
+        # Clean up DiT handler (moves models off GPU)
+        if self._dit_handler is not None:
+            try:
+                # Try to move DiT model to CPU before deleting
+                if hasattr(self._dit_handler, 'model') and self._dit_handler.model is not None:
+                    if hasattr(self._dit_handler.model, 'cpu'):
+                        self._dit_handler.model.cpu()
+                if hasattr(self._dit_handler, 'vae') and self._dit_handler.vae is not None:
+                    if hasattr(self._dit_handler.vae, 'cpu'):
+                        self._dit_handler.vae.cpu()
+                if hasattr(self._dit_handler, 'text_encoder') and self._dit_handler.text_encoder is not None:
+                    if hasattr(self._dit_handler.text_encoder, 'cpu'):
+                        self._dit_handler.text_encoder.cpu()
+            except Exception as e:
+                logger.warning(f"  Failed to offload DiT models to CPU: {e}")
+            del self._dit_handler
+            self._dit_handler = None
+        
+        self._is_loaded = False
+        gc.collect()
+        
+        if torch is not None and torch.cuda.is_available():
+            torch.cuda.empty_cache()
+            torch.cuda.synchronize()
+            vram_after = torch.cuda.memory_allocated() / (1024**3)
+            logger.info(f"  VRAM after ACE-Step unload: {vram_after:.2f}GB")
+        
+        logger.info("ACE-Step 1.5 models unloaded successfully")
 
     def get_status(self) -> Dict[str, Any]:
         return {
