@@ -848,7 +848,7 @@ class JobManager:
                     if mode == VRAMLoadMode.IMAGE_EDITING:
                         expected_limit = 50.0  # 5 instances * ~7-8GB + overhead
                     elif mode == VRAMLoadMode.VIDEO_GENERATION:
-                        expected_limit = 85.0  # Full cache: transformer + text_encoder + embeddings (~84.6GB)
+                        expected_limit = 70.0  # Full cache: transformer + text_encoder + embeddings (~67GB)
                     elif mode == VRAMLoadMode.ALL:
                         expected_limit = 60.0  # LightX2V (~19GB) + cached transformer (~22GB) + overhead
 
@@ -897,7 +897,7 @@ class JobManager:
                 if mode == VRAMLoadMode.IMAGE_EDITING:
                     expected_limit = 50.0
                 elif mode == VRAMLoadMode.VIDEO_GENERATION:
-                    expected_limit = 85.0  # Full cache: transformer + text_encoder + embeddings (~84.6GB)
+                    expected_limit = 70.0  # Full cache: transformer + text_encoder + embeddings (~67GB)
                 elif mode == VRAMLoadMode.ALL:
                     expected_limit = 60.0  # LightX2V (~19GB) + cached transformer (~22GB) + overhead
             

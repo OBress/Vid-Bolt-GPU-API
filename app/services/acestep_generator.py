@@ -148,21 +148,8 @@ class ACEStepGenerator(MusicGenerator):
             del self._llm_handler
             self._llm_handler = None
         
-        # Clean up DiT handler (moves models off GPU)
+        # Clean up DiT handler
         if self._dit_handler is not None:
-            try:
-                # Try to move DiT model to CPU before deleting
-                if hasattr(self._dit_handler, 'model') and self._dit_handler.model is not None:
-                    if hasattr(self._dit_handler.model, 'cpu'):
-                        self._dit_handler.model.cpu()
-                if hasattr(self._dit_handler, 'vae') and self._dit_handler.vae is not None:
-                    if hasattr(self._dit_handler.vae, 'cpu'):
-                        self._dit_handler.vae.cpu()
-                if hasattr(self._dit_handler, 'text_encoder') and self._dit_handler.text_encoder is not None:
-                    if hasattr(self._dit_handler.text_encoder, 'cpu'):
-                        self._dit_handler.text_encoder.cpu()
-            except Exception as e:
-                logger.warning(f"  Failed to offload DiT models to CPU: {e}")
             del self._dit_handler
             self._dit_handler = None
         
