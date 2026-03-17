@@ -842,13 +842,13 @@ class JobManager:
                 # Determine expected usage based on mode
                 # Thresholds are rounded up to nearest 5GB for leniency
                 # (LoRA weights, CUDA context, and fragmentation add overhead)
-                expected_limit = 40.0  # Default (Z-Image + LoRA ≈ 36.6GB)
+                expected_limit = 25.0  # Default (Z-Image model weights ~20GB)
                 if self._model_manager:
                     mode = self._model_manager.current_mode
                     if mode == VRAMLoadMode.IMAGE_EDITING:
                         expected_limit = 50.0  # 5 instances * ~7-8GB + overhead
                     elif mode == VRAMLoadMode.VIDEO_GENERATION:
-                        expected_limit = 60.0  # Cached transformer + decoders (~56GB)
+                        expected_limit = 85.0  # Full cache: transformer + text_encoder + embeddings (~84.6GB)
                     elif mode == VRAMLoadMode.ALL:
                         expected_limit = 60.0  # LightX2V (~19GB) + cached transformer (~22GB) + overhead
 
@@ -891,13 +891,13 @@ class JobManager:
             
             # Determine expected VRAM limit based on current mode
             # Thresholds are rounded up to nearest 5GB for leniency
-            expected_limit = 40.0  # Default (Z-Image + LoRA ≈ 36.6GB)
+            expected_limit = 25.0  # Default (Z-Image model weights ~20GB)
             if self._model_manager:
                 mode = self._model_manager.current_mode
                 if mode == VRAMLoadMode.IMAGE_EDITING:
                     expected_limit = 50.0
                 elif mode == VRAMLoadMode.VIDEO_GENERATION:
-                    expected_limit = 60.0  # Cached transformer + decoders (~56GB)
+                    expected_limit = 85.0  # Full cache: transformer + text_encoder + embeddings (~84.6GB)
                 elif mode == VRAMLoadMode.ALL:
                     expected_limit = 60.0  # LightX2V (~19GB) + cached transformer (~22GB) + overhead
             
