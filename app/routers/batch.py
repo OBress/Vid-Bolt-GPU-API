@@ -290,3 +290,46 @@ async def collect_batch(
     logger.info(f"Collected batch {batch_id}: {batch.completed_items}/{batch.total_items} completed, {batch.failed_items} failed")
     
     return batch
+
+
+# =============================================================================
+# Batch Cancellation
+# =============================================================================
+
+@router.post(
+    "/{batch_id}/cancel",
+    response_model=BatchInfo,
+    responses={
+        404: {"model": ErrorResponse, "description": "Batch not found"},
+        401: {"model": ErrorResponse, "description": "Authentication error"},
+    },
+    summary="Cancel Batch",
+    description=(
+        "Cancel a batch. Currently-processing items will finish, but all "
+        "pending items are removed from the queue and marked as cancelled. "
+        "Cancelled items receive a `generation.cancelled` webhook. "
+        "This operation is idempotent."
+    ),
+)
+async def cancel_batch(
+    batch_id: Annotated[str, Path(description="The unique batch ID")],
+    api_key: APIKeyDep,
+    batch_manager: BatchManagerDep,
+) -> BatchInfo:
+    """Cancel a batch, allowing in-progress items to finish."""
+    batch = await batch_manager.cancel_batch(batch_id)
+    
+    if not batch:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Batch {batch_id} not found. It may have expired (5 min) or been collected."
+        )
+    
+    logger.info(
+        f"Cancelled batch {batch_id}: "
+        f"{batch.cancelled_items} cancelled, "
+        f"{batch.completed_items} already completed, "
+        f"{batch.processing_items} still processing"
+    )
+    
+    return batch

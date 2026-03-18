@@ -31,6 +31,7 @@ from app.models.common import get_dimensions
 from app.models.internal import ImageGenerationParams, ImageEditParams, VideoGenerationParams
 from app.models.job import JobResult, JobStatus
 
+
 if TYPE_CHECKING:
     from app.services.job_manager import JobManager
     from app.services.model_manager import ModelManager
@@ -453,6 +454,9 @@ class BatchManager:
         if not job_ids or not metadata:
             return None
         
+        # Check if this batch was cancelled
+        is_cancelled = "cancelled_at" in metadata
+        
         # Aggregate from JobManager
         items: List[BatchItemStatus] = []
         completed_count = 0
@@ -460,6 +464,7 @@ class BatchManager:
         pending_count = 0
         processing_count = 0
         retrying_count = 0
+        cancelled_count = 0
         
         for idx, job_id in enumerate(job_ids):
             job = self._job_manager.get_job(job_id)
@@ -483,6 +488,9 @@ class BatchManager:
                 elif job.status == JobStatus.FAILED:
                     state = BatchItemState.FAILED
                     failed_count += 1
+                elif job.status == JobStatus.CANCELLED:
+                    state = BatchItemState.CANCELLED
+                    cancelled_count += 1
                 else:
                     state = BatchItemState.PENDING
                     pending_count += 1
@@ -507,10 +515,18 @@ class BatchManager:
                 completed_count += 1
         
         # Determine overall batch status
-        all_done = completed_count + failed_count == len(job_ids)
+        terminal_count = completed_count + failed_count + cancelled_count
+        all_done = terminal_count == len(job_ids)
         any_processing = processing_count > 0 or retrying_count > 0
         
-        if all_done:
+        if is_cancelled:
+            if all_done:
+                batch_status = BatchStatus.CANCELLED
+                completed_at = time.time()
+            else:
+                batch_status = BatchStatus.CANCELLING
+                completed_at = None
+        elif all_done:
             batch_status = BatchStatus.COMPLETED
             completed_at = time.time()
         elif any_processing:
@@ -530,10 +546,47 @@ class BatchManager:
             pending_items=pending_count,
             processing_items=processing_count,
             retrying_items=retrying_count,
+            cancelled_items=cancelled_count,
             created_at=metadata["created_at"],
             completed_at=completed_at,
+            cancelled_at=metadata.get("cancelled_at"),
             items=items,
         )
+    
+    async def cancel_batch(self, batch_id: str) -> Optional[BatchInfo]:
+        """Cancel a batch, removing pending items from the queue.
+        
+        Currently-processing items are allowed to finish. Only pending and
+        retrying items are cancelled. This is idempotent — calling on an
+        already-cancelled or completed batch returns the current state.
+        
+        Args:
+            batch_id: The batch ID to cancel
+            
+        Returns:
+            BatchInfo with updated status, or None if not found
+        """
+        job_ids = self._batch_to_jobs.get(batch_id)
+        metadata = self._batch_metadata.get(batch_id)
+        
+        if not job_ids or not metadata:
+            return None
+        
+        # Mark batch as cancelled (idempotent)
+        if "cancelled_at" not in metadata:
+            metadata["cancelled_at"] = time.time()
+            logger.info(f"Cancelling batch {batch_id} ({len(job_ids)} items)")
+        
+        # Cancel all pending jobs
+        cancelled_count = 0
+        for job_id in job_ids:
+            job = self._job_manager.get_job(job_id)
+            if job and job.status == JobStatus.PENDING:
+                if await self._job_manager.cancel_job(job_id):
+                    cancelled_count += 1
+        
+        logger.info(f"Cancelled {cancelled_count} pending items in batch {batch_id}")
+        return self.get_batch(batch_id)
     
     def collect_batch(self, batch_id: str) -> Optional[BatchInfo]:
         """Get batch results and immediately delete the batch.

@@ -330,6 +330,79 @@ class JobManager:
         logger.info(f"Requeued job {job_id} to back of {bucket_key} queue")
         return True
 
+    async def cancel_job(self, job_id: str) -> bool:
+        """Cancel a pending job by removing it from the queue.
+        
+        Only jobs in PENDING status can be cancelled. Processing, completed,
+        and failed jobs are left unchanged.
+        
+        Args:
+            job_id: Job ID to cancel
+            
+        Returns:
+            True if successfully cancelled, False if job not found or not pending
+        """
+        job = self._jobs.get(job_id)
+        if not job:
+            logger.warning(f"Cannot cancel job {job_id}: not found")
+            return False
+        
+        if job.status != JobStatus.PENDING:
+            logger.debug(f"Cannot cancel job {job_id}: status is {job.status.value}")
+            return False
+        
+        # Remove from pending queue
+        async with self._condition:
+            self._pending_jobs_set.discard(job_id)
+            bucket_key = getattr(job, '_bucket_key', None)
+            if bucket_key and bucket_key in self._pending_buckets:
+                try:
+                    self._pending_buckets[bucket_key].remove(job_id)
+                    if not self._pending_buckets[bucket_key]:
+                        del self._pending_buckets[bucket_key]
+                except ValueError:
+                    pass  # Already removed
+        
+        # Mark as cancelled
+        job.status = JobStatus.CANCELLED
+        job.completed_at = time.time()
+        job.progress_stage = "cancelled"
+        
+        # Send cancellation webhook
+        await self._send_cancelled_webhook(job)
+        
+        logger.info(f"Cancelled job {job_id}")
+        return True
+
+    async def _send_cancelled_webhook(self, job: JobInfo) -> None:
+        """Send a generation.cancelled webhook for a cancelled job."""
+        if not self._webhook_service:
+            return
+        
+        webhook_url = getattr(job, '_webhook_url', None)
+        if not webhook_url:
+            return
+        
+        payload = WebhookPayload(
+            event="generation.cancelled",
+            job_id=job.job_id,
+            item_id=job.item_id or job.job_id,
+            batch_id=job.batch_id,
+            status="cancelled",
+            completed_at=job.completed_at or time.time(),
+            generation_type=job._job_type.value if job._job_type else "unknown",
+            result=None,
+            error_message="Job cancelled by user",
+            error_code="BATCH_CANCELLED",
+            retry_count=0,
+        )
+        
+        await self._webhook_service.deliver(
+            webhook_url=webhook_url,
+            payload=payload,
+            secret=getattr(job, '_webhook_secret', None),
+        )
+
     async def _worker_loop(self) -> None:
         """Main worker loop handling job execution and batch scheduling."""
         from app.services.model_manager import VRAMLoadMode, ModelMode

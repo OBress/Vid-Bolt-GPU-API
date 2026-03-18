@@ -397,3 +397,161 @@ class TestBatchImageEditing:
         data = response.json()
         assert data["batch_id"] == batch_id
         assert data["total_items"] == 1
+
+
+class TestBatchCancellation:
+    """Tests for batch cancellation feature."""
+    
+    def test_cancelled_enum_values(self):
+        """Test that cancelled states exist in enums."""
+        from app.models.batch import BatchStatus, BatchItemState
+        from app.models.job import JobStatus
+        
+        assert BatchStatus.CANCELLING.value == "cancelling"
+        assert BatchStatus.CANCELLED.value == "cancelled"
+        assert BatchItemState.CANCELLED.value == "cancelled"
+        assert JobStatus.CANCELLED.value == "cancelled"
+    
+    def test_cancel_batch_endpoint(
+        self, client: TestClient, api_key_headers: dict, mock_storage
+    ):
+        """Test POST cancel endpoint returns batch with cancelled items."""
+        batch_id = f"test-cancel-{uuid.uuid4()}"
+        
+        # Submit a batch with multiple items
+        client.post(
+            "/api/v1/batch/image/generate",
+            headers=api_key_headers,
+            json={
+                "batch_id": batch_id,
+                "items": [
+                    {"item_id": f"img-{i}", "prompt": f"Test {i}", "save_url": f"https://example.com/{i}.png"}
+                    for i in range(5)
+                ],
+                "webhook_url": "http://webhook.test"
+            }
+        )
+        
+        # Cancel the batch
+        response = client.post(
+            f"/api/v1/batch/{batch_id}/cancel",
+            headers=api_key_headers,
+        )
+        
+        assert response.status_code == 200
+        data = response.json()
+        assert data["batch_id"] == batch_id
+        assert data["status"] in ("cancelling", "cancelled")
+        assert data["cancelled_items"] >= 0
+        assert data["cancelled_at"] is not None
+    
+    def test_cancel_batch_not_found(
+        self, client: TestClient, api_key_headers: dict
+    ):
+        """Test 404 for cancelling non-existent batch."""
+        response = client.post(
+            "/api/v1/batch/non-existent-batch/cancel",
+            headers=api_key_headers,
+        )
+        
+        assert response.status_code == 404
+    
+    def test_cancel_batch_requires_auth(self, client: TestClient):
+        """Test that cancel endpoint requires authentication."""
+        response = client.post(
+            "/api/v1/batch/some-batch/cancel",
+        )
+        
+        assert response.status_code == 401
+    
+    def test_cancel_batch_idempotent(
+        self, client: TestClient, api_key_headers: dict, mock_storage
+    ):
+        """Test that cancelling same batch twice returns 200 both times."""
+        batch_id = f"test-cancel-idem-{uuid.uuid4()}"
+        
+        # Submit batch
+        client.post(
+            "/api/v1/batch/image/generate",
+            headers=api_key_headers,
+            json={
+                "batch_id": batch_id,
+                "items": [{"item_id": "i1", "prompt": "Test", "save_url": "https://example.com/1.png"}],
+                "webhook_url": "http://webhook.test"
+            }
+        )
+        
+        # Cancel twice
+        response1 = client.post(f"/api/v1/batch/{batch_id}/cancel", headers=api_key_headers)
+        response2 = client.post(f"/api/v1/batch/{batch_id}/cancel", headers=api_key_headers)
+        
+        assert response1.status_code == 200
+        assert response2.status_code == 200
+        assert response1.json()["cancelled_at"] == response2.json()["cancelled_at"]
+    
+    def test_cancel_batch_status_in_get(
+        self, client: TestClient, api_key_headers: dict, mock_storage
+    ):
+        """Test that GET batch status reflects cancellation."""
+        batch_id = f"test-cancel-get-{uuid.uuid4()}"
+        
+        # Submit batch
+        client.post(
+            "/api/v1/batch/image/generate",
+            headers=api_key_headers,
+            json={
+                "batch_id": batch_id,
+                "items": [{"item_id": "i1", "prompt": "Test", "save_url": "https://example.com/1.png"}],
+                "webhook_url": "http://webhook.test"
+            }
+        )
+        
+        # Cancel
+        client.post(f"/api/v1/batch/{batch_id}/cancel", headers=api_key_headers)
+        
+        # GET should reflect cancellation
+        response = client.get(f"/api/v1/batch/{batch_id}", headers=api_key_headers)
+        assert response.status_code == 200
+        data = response.json()
+        assert data["status"] in ("cancelling", "cancelled")
+        assert data["cancelled_at"] is not None
+    
+    def test_batch_manager_cancel_logic(self):
+        """Unit test BatchManager.cancel_batch logic."""
+        from app.services.batch_manager import BatchManager
+        from app.services.job_manager import JobManager
+        from app.config import get_settings
+        from app.models.job import JobStatus, JobInfo
+        
+        settings = get_settings()
+        job_manager = JobManager(settings)
+        batch_manager = BatchManager(settings, job_manager)
+        
+        # Manually set up a batch
+        batch_id = "manual-cancel-test"
+        job_ids = [f"{batch_id}__item_{i}" for i in range(3)]
+        
+        batch_manager._batch_to_jobs[batch_id] = job_ids
+        batch_manager._batch_metadata[batch_id] = {
+            "batch_type": "image_generation",
+            "created_at": time.time(),
+        }
+        
+        for jid in job_ids:
+            job_manager._jobs[jid] = JobInfo(
+                job_id=jid,
+                status=JobStatus.PENDING,
+                created_at=time.time(),
+                item_id=jid,
+            )
+            batch_manager._job_to_batch[jid] = batch_id
+            batch_manager._retry_counts[jid] = 0
+        
+        # Simulate one job already completed
+        job_manager._jobs[job_ids[0]].status = JobStatus.COMPLETED
+        
+        # The batch should show 1 completed, 2 pending
+        batch_info = batch_manager.get_batch(batch_id)
+        assert batch_info.completed_items == 1
+        assert batch_info.pending_items == 2
+

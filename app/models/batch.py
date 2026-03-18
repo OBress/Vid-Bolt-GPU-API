@@ -17,6 +17,8 @@ class BatchStatus(str, Enum):
     PENDING = "pending"        # All items pending
     PROCESSING = "processing"  # At least one item processing
     COMPLETED = "completed"    # All items finished (some may have failed)
+    CANCELLING = "cancelling"  # Cancel requested, but some items still processing
+    CANCELLED = "cancelled"   # Cancel completed, all items done (completed/failed/cancelled)
 
 
 class BatchItemState(str, Enum):
@@ -26,6 +28,7 @@ class BatchItemState(str, Enum):
     COMPLETED = "completed"
     FAILED = "failed"
     RETRYING = "retrying"      # Failed once, requeued for retry
+    CANCELLED = "cancelled"    # Cancelled before processing started
 
 
 class BatchItemStatus(BaseModel):
@@ -50,8 +53,10 @@ class BatchInfo(BaseModel):
     pending_items: int = Field(default=0, ge=0, description="Number of pending items")
     processing_items: int = Field(default=0, ge=0, description="Number of currently processing items")
     retrying_items: int = Field(default=0, ge=0, description="Number of items being retried")
+    cancelled_items: int = Field(default=0, ge=0, description="Number of cancelled items")
     created_at: float = Field(..., description="Unix timestamp when batch was created")
     completed_at: Optional[float] = Field(default=None, description="Unix timestamp when batch completed")
+    cancelled_at: Optional[float] = Field(default=None, description="Unix timestamp when batch was cancelled")
     items: List[BatchItemStatus] = Field(default_factory=list, description="Per-item status details")
 
     model_config = {

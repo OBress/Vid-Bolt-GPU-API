@@ -970,6 +970,58 @@ Collect batch results and immediately delete the batch. Use when done polling.
 
 ---
 
+#### `POST /api/v1/batch/{batch_id}/cancel`
+
+Cancel a batch. Currently-processing items will finish, but all pending items are removed from the queue and marked as `cancelled`. Each cancelled item receives a `generation.cancelled` webhook. This operation is **idempotent**.
+
+**Behavior:**
+
+- Items with status `pending` or `retrying` → immediately cancelled
+- Items with status `processing` → allowed to finish normally
+- Items with status `completed` or `failed` → unchanged
+- Batch status transitions to `cancelling` (items still processing) or `cancelled` (all done)
+
+**Response:**
+
+```json
+{
+  "batch_id": "batch-abc123",
+  "status": "cancelling",
+  "batch_type": "image_generation",
+  "total_items": 10,
+  "completed_items": 3,
+  "failed_items": 0,
+  "pending_items": 0,
+  "processing_items": 1,
+  "retrying_items": 0,
+  "cancelled_items": 6,
+  "created_at": 1715420000.0,
+  "cancelled_at": 1715420030.0,
+  "items": [
+    {"item_index": 0, "item_id": "img-1", "job_id": "batch-abc123__item_0", "status": "completed", "retry_count": 0},
+    {"item_index": 1, "item_id": "img-2", "job_id": "batch-abc123__item_1", "status": "processing", "retry_count": 0},
+    {"item_index": 2, "item_id": "img-3", "job_id": "batch-abc123__item_2", "status": "cancelled", "retry_count": 0}
+  ]
+}
+```
+
+**Cancelled Item Webhook:**
+
+```json
+{
+  "event": "generation.cancelled",
+  "job_id": "batch-abc123__item_5",
+  "item_id": "img-6",
+  "batch_id": "batch-abc123",
+  "status": "cancelled",
+  "completed_at": 1715420030.0,
+  "generation_type": "image_generation",
+  "error_message": "Job cancelled by user",
+  "error_code": "BATCH_CANCELLED",
+  "retry_count": 0
+}
+```
+
 ### LoRA Management
 
 Endpoints for managing Z-Image LoRA models. All require authentication.
@@ -1202,10 +1254,18 @@ Retry downloading any failed models. **Requires authentication.**
 | `GPU_OUT_OF_MEMORY` | VRAM exhausted. Retry with lower res. |
 | `JOB_TIMEOUT`       | Processing took too long.             |
 | `GENERATION_FAILED` | Internal model error.                 |
+| `BATCH_CANCELLED`   | Job cancelled via batch cancel.       |
 
 ---
 
 ## Changelog
+
+### v0.7.0
+
+- **Batch Cancellation**: Added `POST /api/v1/batch/{batch_id}/cancel` endpoint
+- **Cancellation States**: New `cancelling`/`cancelled` batch statuses and `cancelled` item state
+- **Cancellation Webhooks**: Cancelled items receive `generation.cancelled` webhook event
+- **New Error Code**: `BATCH_CANCELLED` for cancelled jobs
 
 ### v0.6.0
 

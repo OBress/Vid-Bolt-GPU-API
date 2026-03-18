@@ -16,7 +16,7 @@ class WebhookPayload(BaseModel):
     
     event: str = Field(
         ...,
-        description="Event type: 'generation.completed' or 'generation.failed'"
+        description="Event type: 'generation.completed', 'generation.failed', or 'generation.cancelled'"
     )
     
     # Identifiers
