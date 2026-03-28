@@ -118,6 +118,11 @@ RUN pip install --no-cache-dir \
 # Ensure soundfile backend is available for torchaudio (ACE-Step audio saving)
 RUN pip install --no-cache-dir soundfile==0.13.1
 
+# SAM 3 (Segment Anything Model 3) - vendored locally for version stability
+# Lightweight model (~848M params, ~3.5GB weights) for image/video segmentation
+COPY repos/sam3 /app/repos/sam3
+RUN pip install --no-cache-dir -e /app/repos/sam3
+
 # =============================================================================
 # Copy Application Code
 # =============================================================================

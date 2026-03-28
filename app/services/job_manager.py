@@ -544,6 +544,9 @@ class JobManager:
                 # enough headroom for 2 concurrent pipeline runs.
                 # Sequential processing is stable and fast (~20-30s/video at 1080p).
                 max_batch = 1
+        elif job_type in (JobType.MUSIC_GENERATION, JobType.SEGMENTATION):
+            # Audio/Segmentation: single job processing
+            max_batch = 1
         else:
             # Unknown job type - return single job as fallback
             logger.warning(f"Unknown job type {job_type}, processing single job")
@@ -798,6 +801,10 @@ class JobManager:
             job_type = getattr(job, '_job_type', None)
             if job_type == JobType.VIDEO_GENERATION:
                 timeout_seconds = InferenceConfig.VIDEO_JOB_TIMEOUT
+            elif job_type == JobType.MUSIC_GENERATION:
+                timeout_seconds = InferenceConfig.AUDIO_JOB_TIMEOUT
+            elif job_type == JobType.SEGMENTATION:
+                timeout_seconds = InferenceConfig.SEGMENTATION_JOB_TIMEOUT
             else:
                 timeout_seconds = InferenceConfig.IMAGE_JOB_TIMEOUT
             

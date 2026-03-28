@@ -52,6 +52,9 @@ class ModelPaths:
     
     # ACE-Step 1.5 (music generation)
     ACESTEP_MODEL = "models/ace-step-1.5"
+    
+    # SAM 3 (segmentation)
+    SAM3_MODEL = "models/sam3"
 
 
 class InferenceConfig:
@@ -107,10 +110,15 @@ class InferenceConfig:
     ACESTEP_MAX_DURATION = 600.0      # 10 minutes max
     ACESTEP_SAMPLE_RATE = 48000       # 48kHz output (ACE-Step 1.5 native)
     
+    # SAM 3 (segmentation) settings
+    SAM3_MAX_OBJECTS = 100            # Max objects to segment per request
+    SAM3_VIDEO_MAX_FRAMES = 300       # Max frames to process for video segmentation
+    
     # Job timeouts (seconds)
     IMAGE_JOB_TIMEOUT = 300      # 5 minutes for image batch jobs (large batches at 1920x1080)
     VIDEO_JOB_TIMEOUT = 600      # 10 minutes for video jobs
     AUDIO_JOB_TIMEOUT = 600      # 10 minutes for audio jobs
+    SEGMENTATION_JOB_TIMEOUT = 300  # 5 minutes for segmentation jobs
     
     # Limits
     MAX_IMAGE_SIZE_MB = 10
@@ -153,6 +161,7 @@ class Settings(BaseSettings):
     # Test Overrides (hidden from .env, used for testing real generators without weights)
     zimage_dry_run_override: Optional[bool] = None
     lightx2v_dry_run_override: Optional[bool] = None
+    sam3_dry_run_override: Optional[bool] = None
     ltx2_dry_run_override: Optional[bool] = None
     audio_dry_run_override: Optional[bool] = None
 
@@ -426,6 +435,34 @@ class Settings(BaseSettings):
         """In mock_mode, all generators run in dry-run mode."""
         if self.audio_dry_run_override is not None:
             return self.audio_dry_run_override
+        return self.mock_mode
+    
+    # --- SAM 3 (Segmentation) ---
+    @property
+    def sam3_model_path(self) -> str:
+        return ModelPaths.SAM3_MODEL
+    
+    @property
+    def sam3_device(self) -> str:
+        return InferenceConfig.DEVICE
+    
+    @property
+    def sam3_max_objects(self) -> int:
+        return InferenceConfig.SAM3_MAX_OBJECTS
+    
+    @property
+    def sam3_video_max_frames(self) -> int:
+        return InferenceConfig.SAM3_VIDEO_MAX_FRAMES
+    
+    @property
+    def sam3_job_timeout(self) -> int:
+        return InferenceConfig.SEGMENTATION_JOB_TIMEOUT
+    
+    @property
+    def sam3_dry_run(self) -> bool:
+        """In mock_mode, all generators run in dry-run mode."""
+        if self.sam3_dry_run_override is not None:
+            return self.sam3_dry_run_override
         return self.mock_mode
 
 

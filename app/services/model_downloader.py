@@ -116,6 +116,14 @@ class ModelDownloader:
             "type": "full",
             "indicator_file": "config.json",
         },
+        {
+            "name": "sam3",
+            "repo": "facebook/sam3",
+            "local_dir": "models/sam3",
+            "type": "full",
+            "indicator_file": "config.json",
+            "optional": True,  # Gated model - skip if HF access not granted yet
+        },
     ]
 
     def __init__(self, base_path: Path):
@@ -148,8 +156,10 @@ class ModelDownloader:
             return (local_path / indicator).exists()
 
     def check_all_models_exist(self) -> bool:
-        """Check if all required models are already downloaded."""
+        """Check if all required (non-optional) models are already downloaded."""
         for model in self.MODELS:
+            if model.get("optional", False):
+                continue  # Skip optional models (e.g., gated SAM 3)
             if not self._model_exists(model):
                 return False
         return True
@@ -215,10 +225,17 @@ class ModelDownloader:
 
                 except Exception as e:
                     error_msg = str(e)
-                    logger.error(f"Failed to download {model_name}: {error_msg}")
-                    with self._lock:
-                        self.status.models[model_name].status = DownloadStatus.FAILED
-                        self.status.models[model_name].error = error_msg
+                    if model.get("optional", False):
+                        logger.warning(f"Optional model {model_name} failed to download (skipping): {error_msg}")
+                        with self._lock:
+                            self.status.models[model_name].status = DownloadStatus.SKIPPED
+                            self.status.models[model_name].error = f"Optional: {error_msg}"
+                            self.status.completed_models += 1
+                    else:
+                        logger.error(f"Failed to download {model_name}: {error_msg}")
+                        with self._lock:
+                            self.status.models[model_name].status = DownloadStatus.FAILED
+                            self.status.models[model_name].error = error_msg
                     # Continue with other models
 
             # Check final status

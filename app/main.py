@@ -24,7 +24,7 @@ from app import __version__
 from app.config import get_settings
 from app.exceptions import APIError
 from app.models.common import ErrorResponse
-from app.routers import health, image_generation, image_editing, ltx2_generation, mode, system, lora_management, jobs, gpu, download_status, settings as settings_router_module, batch as batch_router, music_generation
+from app.routers import health, image_generation, image_editing, ltx2_generation, mode, system, lora_management, jobs, gpu, download_status, settings as settings_router_module, batch as batch_router, music_generation, segmentation
 from app.utils.logging import setup_logging
 
 # Initialize settings
@@ -344,3 +344,4 @@ app.include_router(download_status.router)
 app.include_router(settings_router_module.router)
 app.include_router(batch_router.router)
 app.include_router(music_generation.router)
+app.include_router(segmentation.router)

@@ -136,3 +136,43 @@ class MusicGenerationResult:
     sample_rate: int
     seed: int
 
+
+# --- Segmentation ---
+
+@dataclass
+class ImageSegmentationParams:
+    """Parameters for image segmentation (SAM 3)."""
+    job_id: str
+    input_image_data: bytes
+    text_prompt: Optional[str] = None         # e.g., "all cars", "person in red"
+    point_prompts: Optional[List[Tuple[int, int]]] = None  # [(x, y)] click coords
+    box_prompts: Optional[List[Tuple[int, int, int, int]]] = None  # [(x1,y1,x2,y2)]
+    max_objects: int = 100
+
+@dataclass
+class ImageSegmentationResult:
+    """Result of image segmentation."""
+    masks_data: bytes             # JSON-encoded list of base64 PNG masks
+    boxes: List[Tuple[int, int, int, int]]  # Bounding boxes per object
+    scores: List[float]           # Confidence scores per object
+    object_count: int
+    width: int
+    height: int
+
+@dataclass
+class VideoSegmentationParams:
+    """Parameters for video segmentation/tracking (SAM 3)."""
+    job_id: str
+    input_video_data: bytes       # MP4 video bytes
+    text_prompt: str              # Concept to track (e.g., "yellow school bus")
+    output_format: str = "masks_json"  # "masks_json" or "overlay_video"
+    max_frames: int = 300         # Max frames to process
+
+@dataclass
+class VideoSegmentationResult:
+    """Result of video segmentation."""
+    result_data: bytes            # JSON masks or overlay video MP4
+    output_format: str
+    frame_count: int
+    object_count: int
+    tracked_ids: List[int]        # Unique IDs for tracked objects

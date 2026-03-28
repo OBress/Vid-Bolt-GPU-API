@@ -13,6 +13,8 @@ from app.models.internal import (
     ImageEditResult,
     ImageGenerationParams,
     ImageGenerationResult,
+    ImageSegmentationParams,
+    ImageSegmentationResult,
     KeyframeInterpolationParams,
     MusicGenerationParams,
     MusicGenerationResult,
@@ -20,6 +22,8 @@ from app.models.internal import (
     UpscaleResult,
     VideoGenerationParams,
     VideoGenerationResult,
+    VideoSegmentationParams,
+    VideoSegmentationResult,
 )
 
 
@@ -135,3 +139,16 @@ class MusicGenerator(BaseModelGenerator):
         """Generate music from a text prompt and optional lyrics."""
         pass
 
+
+class Segmenter(BaseModelGenerator):
+    """Interface for image/video segmentation."""
+
+    @abstractmethod
+    async def segment_image(self, params: ImageSegmentationParams) -> ImageSegmentationResult:
+        """Segment objects in an image by text or visual prompts."""
+        pass
+
+    @abstractmethod
+    async def segment_video(self, params: VideoSegmentationParams) -> VideoSegmentationResult:
+        """Track and segment objects across video frames."""
+        pass

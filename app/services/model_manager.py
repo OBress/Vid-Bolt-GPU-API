@@ -23,6 +23,7 @@ if TYPE_CHECKING:
         ImageEditor,
         ImageGenerator,
         MusicGenerator,
+        Segmenter,
         VideoGenerator,
     )
 
@@ -37,6 +38,7 @@ class VRAMLoadMode(str, Enum):
     IMAGE_EDITING = "image_editing"        # LightX2V only
     VIDEO_GENERATION = "video_generation"  # LTX-2 DistilledPipeline only (~40GB)
     AUDIO_CREATION = "audio_creation"      # ACE-Step only
+    SEGMENTATION = "segmentation"          # SAM 3 only (~4-10GB)
     ALL = "all"                            # All models loaded (disabled)
 
 
@@ -47,6 +49,7 @@ class JobType(str, Enum):
     IMAGE_EDITING = "image_editing"
     VIDEO_GENERATION = "video_generation"
     MUSIC_GENERATION = "music_generation"
+    SEGMENTATION = "segmentation"
 
 
 @dataclass
@@ -111,6 +114,7 @@ class ModelManager:
         self._lightx2v_generator: Optional["ImageEditor"] = None
         self._ltx2_generator: Optional["VideoGenerator"] = None
         self._acestep_generator: Optional["MusicGenerator"] = None
+        self._sam3_generator: Optional["Segmenter"] = None
         
         # Job manager reference (set via setter to break circular dependency)
         self._job_manager = None
@@ -125,6 +129,9 @@ class ModelManager:
         
         # Dynamic audio loading in ALL mode
         self._audio_dynamic_loaded = False
+        
+        # Dynamic SAM 3 loading in ALL mode
+        self._sam3_dynamic_loaded = False
         
         logger.info("ModelManager initialized")
 
@@ -172,6 +179,8 @@ class ModelManager:
             loaded_models.append("ltx-2.3-22b")
         if self._acestep_generator and self._acestep_generator._loaded:
             loaded_models.append("ace-step-1.5")
+        if self._sam3_generator and self._sam3_generator._loaded:
+            loaded_models.append("sam3")
             
         return ModeStatus(
             mode=self._mode,
@@ -224,6 +233,8 @@ class ModelManager:
                 await self._switch_to_video_generation_mode()
             elif mode == VRAMLoadMode.AUDIO_CREATION:
                 await self._switch_to_audio_creation_mode()
+            elif mode == VRAMLoadMode.SEGMENTATION:
+                await self._switch_to_segmentation_mode()
             elif mode == VRAMLoadMode.ALL:
                 await self._load_all_models()
             
@@ -266,6 +277,8 @@ class ModelManager:
         # Map job type to required mode
         if job_type == JobType.MUSIC_GENERATION:
             required_mode = VRAMLoadMode.AUDIO_CREATION
+        elif job_type == JobType.SEGMENTATION:
+            required_mode = VRAMLoadMode.SEGMENTATION
         else:
             required_mode = VRAMLoadMode(job_type.value)
         
@@ -308,6 +321,14 @@ class ModelManager:
                     await self._load_acestep()
                     self._audio_dynamic_loaded = True
                     logger.info("ALL mode: Audio models loaded dynamically")
+                return True
+            elif job_type == JobType.SEGMENTATION:
+                # Dynamically load SAM 3 in ALL mode (lightweight ~4GB)
+                if not self._sam3_dynamic_loaded:
+                    logger.info("ALL mode: Dynamically loading SAM 3 for segmentation...")
+                    await self._load_sam3()
+                    self._sam3_dynamic_loaded = True
+                    logger.info("ALL mode: SAM 3 loaded dynamically")
                 return True
             else:
                 # Unknown job type - just return True
@@ -353,6 +374,8 @@ class ModelManager:
         logger.info("Switching to Image Generation Mode (Z-Image only)...")
         
         # Unload other models
+        self._set_switching_progress("Unloading SAM 3...", 0.03)
+        await self._unload_sam3()
         self._set_switching_progress("Unloading ACE-Step...", 0.05)
         await self._unload_acestep()
         self._set_switching_progress("Unloading LightX2V...", 0.1)
@@ -375,6 +398,8 @@ class ModelManager:
         logger.info("Switching to Image Editing Mode (LightX2V only)...")
         
         # Unload other models
+        self._set_switching_progress("Unloading SAM 3...", 0.03)
+        await self._unload_sam3()
         self._set_switching_progress("Unloading ACE-Step...", 0.05)
         await self._unload_acestep()
         self._set_switching_progress("Unloading Z-Image...", 0.1)
@@ -404,6 +429,8 @@ class ModelManager:
         logger.info("Switching to Video Generation Mode (LTX-2 DistilledPipeline only)...")
         
         # Unload other models
+        self._set_switching_progress("Unloading SAM 3...", 0.02)
+        await self._unload_sam3()
         self._set_switching_progress("Unloading ACE-Step...", 0.03)
         await self._unload_acestep()
         self._set_switching_progress("Unloading Z-Image...", 0.05)
@@ -432,6 +459,8 @@ class ModelManager:
         logger.info("Switching to Audio Creation Mode (ACE-Step only)...")
         
         # Unload other models
+        self._set_switching_progress("Unloading SAM 3...", 0.05)
+        await self._unload_sam3()
         self._set_switching_progress("Unloading Z-Image...", 0.1)
         await self._unload_zimage()
         self._set_switching_progress("Unloading LightX2V...", 0.2)
@@ -446,6 +475,34 @@ class ModelManager:
         self._set_switching_progress("Finalizing...", 1.0)
         logger.info("Successfully switched to Audio Creation Mode")
 
+
+    async def _switch_to_segmentation_mode(self) -> None:
+        """Switch to Segmentation mode (SAM 3 only).
+        
+        This mode is optimized for image/video segmentation.
+        Uses ~4-10GB VRAM.
+        """
+        if self._is_busy:
+            raise RuntimeError("Cannot switch modes while a job is in progress")
+        
+        logger.info("Switching to Segmentation Mode (SAM 3 only)...")
+        
+        # Unload other models
+        self._set_switching_progress("Unloading Z-Image...", 0.1)
+        await self._unload_zimage()
+        self._set_switching_progress("Unloading LightX2V...", 0.15)
+        await self._unload_lightx2v()
+        self._set_switching_progress("Unloading LTX-2...", 0.2)
+        await self._unload_ltx2()
+        self._set_switching_progress("Unloading ACE-Step...", 0.3)
+        await self._unload_acestep()
+        
+        # Load SAM 3
+        self._set_switching_progress("Loading SAM 3...", 0.5)
+        await self._load_sam3()
+        
+        self._set_switching_progress("Finalizing...", 1.0)
+        logger.info("Successfully switched to Segmentation Mode (~4-10GB VRAM)")
 
     async def _load_all_models(self) -> None:
         """Load all models into VRAM (ALL mode).
@@ -620,6 +677,27 @@ class ModelManager:
         self._force_gc()
 
 
+    async def _load_sam3(self) -> None:
+        """Load SAM 3 segmentation model."""
+        from app.services.sam3_generator import SAM3Generator
+        
+        if self._sam3_generator is not None and self._sam3_generator._loaded:
+            logger.info("SAM 3 already loaded, skipping")
+            return
+        
+        self._sam3_generator = SAM3Generator(self._settings)
+        
+        if not self._sam3_generator._loaded:
+            logger.info("Loading SAM 3 models...")
+            await asyncio.to_thread(self._sam3_generator.load_models)
+
+    async def _unload_sam3(self) -> None:
+        """Unload SAM 3 model."""
+        if self._sam3_generator and self._sam3_generator._loaded:
+            logger.info("Unloading SAM 3 models...")
+            await asyncio.to_thread(self._sam3_generator.unload_models)
+        self._sam3_generator = None  # Drop all references to allow GC
+        self._force_gc()
 
     def _force_gc(self) -> None:
         """Force garbage collection and clear CUDA cache."""
@@ -740,6 +818,23 @@ class ModelManager:
         return self._acestep_generator
 
 
+    def get_segmenter(self) -> "Segmenter":
+        """Get the Segmenter for image/video segmentation.
+        
+        Returns:
+            Segmenter instance
+            
+        Raises:
+            RuntimeError: If not in a valid mode or generator not loaded
+        """
+        valid_modes = [VRAMLoadMode.SEGMENTATION, VRAMLoadMode.ALL]
+        if self._mode not in valid_modes:
+            raise RuntimeError(f"Not in valid mode for segmentation (current: {self._mode.value})")
+        
+        if self._sam3_generator is None or not self._sam3_generator._loaded:
+            raise RuntimeError("SAM 3 generator not loaded")
+        
+        return self._sam3_generator
 
     # --- Legacy compatibility for switch methods ---
 

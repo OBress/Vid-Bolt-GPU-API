@@ -1,6 +1,6 @@
 # Vid-Bolt GPU API
 
-A high-performance FastAPI backend for AI-powered image, video, and music generation.
+A high-performance FastAPI backend for AI-powered image, video, music generation, and segmentation.
 
 ## Table of Contents
 
@@ -20,6 +20,7 @@ A high-performance FastAPI backend for AI-powered image, video, and music genera
   - [LTX-2 Video Generation](#ltx-2-video-generation)
   - [LTX-2 Keyframe Interpolation](#ltx-2-keyframe-interpolation)
   - [Music Generation](#music-generation)
+  - [Segmentation](#segmentation)
   - [Batch Operations](#batch-operations)
   - [LoRA Management](#lora-management)
   - [GPU Monitoring](#gpu-monitoring)
@@ -40,6 +41,7 @@ Vid-Bolt GPU API provides AI-powered generation capabilities:
 | **Image Editing**    | Qwen-Image-Edit-2511 | Edit images with AI instructions         |
 | **Video Generation** | LTX-2 19B            | Generate videos from images (720p/1080p) |
 | **Music Generation** | ACE-Step 1.5         | Generate music from text prompts         |
+| **Segmentation**     | SAM 3                | Segment objects in images and videos     |
 
 ### Architecture
 
@@ -54,15 +56,15 @@ Vid-Bolt GPU API provides AI-powered generation capabilities:
 │   THREAD    │  • Automatic Mode Switching (Dynamic)     │
 │             │  • OOM & Timeout Handling                 │
 ├─────────────┴───────────────────────────────────────────┤
-│   IMAGE MODE       │   VIDEO MODE    │   AUDIO MODE     │
-│  ┌──────────────┐  │ ┌─────────────┐ │ ┌──────────────┐ │
-│  │ Z-Image Turbo│  │ │ LTX-2 19B   │ │ │ ACE-Step 1.5 │ │
-│  │ (text-to-img)│  │ │ (I2V, 720p/ │ │ │ (music gen)  │ │
-│  ├──────────────┤  │ │ 1080p)      │ │ └──────────────┘ │
-│  │ Qwen-Image-  │  │ └─────────────┘ │                  │
-│  │ Edit (editing)│  │                 │                  │
-│  └──────────────┘  │                 │                  │
-└────────────────────┴─────────────────┴──────────────────┘
+│   IMAGE MODE       │   VIDEO MODE    │   AUDIO MODE     │  SEG MODE    │
+│  ┌──────────────┐  │ ┌─────────────┐ │ ┌──────────────┐ │ ┌──────────┐ │
+│  │ Z-Image Turbo│  │ │ LTX-2 19B   │ │ │ ACE-Step 1.5 │ │ │  SAM 3   │ │
+│  │ (text-to-img)│  │ │ (I2V, 720p/ │ │ │ (music gen)  │ │ │ (segment)│ │
+│  ├──────────────┤  │ │ 1080p)      │ │ └──────────────┘ │ └──────────┘ │
+│  │ Qwen-Image-  │  │ └─────────────┘ │                  │              │
+│  │ Edit (editing)│  │                 │                  │              │
+│  └──────────────┘  │                 │                  │              │
+└────────────────────┴─────────────────┴──────────────────┴──────────────┘
 ```
 
 ---
@@ -201,6 +203,7 @@ Configurable via `POST /api/v1/settings/vram-mode`:
 | `image_editing`    | LightX2V only      | ~40GB      | Image editing/inpainting   |
 | `video_generation` | LTX-2 only         | ~40GB      | Video generation           |
 | `audio_creation`   | ACE-Step           | ~4GB       | Music generation           |
+| `segmentation`     | SAM 3              | ~4-10GB    | Image/video segmentation   |
 | `all`              | All models         | ~76GB+     | High-VRAM GPUs (A100/H100) |
 
 #### Mode Behavior
@@ -225,7 +228,13 @@ Configurable via `POST /api/v1/settings/vram-mode`:
    - Scheduling: Grouped by job type to minimize switching
    - Switching time: ~15-30s
 
-5. **all**:
+5. **segmentation**:
+   - Loads **SAM 3** (Segment Anything Model 3) for image/video segmentation
+   - Supports text prompts, point prompts, and box prompts
+   - Switching time: ~5-10s (lightweight model)
+   - VRAM usage: ~4-10GB
+
+6. **all**:
    - Loads **all models simultaneously**
    - Scheduling: Strict FIFO (no switching needed)
    - Switching time: Instant
@@ -832,6 +841,126 @@ Example prompts:
 
 ---
 
+### Segmentation
+
+Image and video segmentation powered by Meta's **SAM 3** (Segment Anything Model 3). Supports text prompts ("segment all cars"), point prompts (click coordinates), and box prompts (bounding regions) for images, and text-based object tracking for videos.
+
+#### `POST /api/v1/segment/image`
+
+**Returns HTTP 202 Accepted**. Segments objects in an image using text, point, or box prompts.
+
+**Request:**
+
+| Field            | Type       | Required | Description                                         | Default |
+| ---------------- | ---------- | -------- | --------------------------------------------------- | ------- |
+| `job_id`         | string     | ✅       | Unique job identifier                               | -       |
+| `input_image_url`| string     | ✅       | URL of input image (PNG/JPEG/WebP)                  | -       |
+| `text_prompt`    | string     | ❌*      | Text describing objects to segment                  | -       |
+| `point_prompts`  | int[][]    | ❌*      | List of `[x, y]` click coordinates                  | -       |
+| `box_prompts`    | int[][]    | ❌*      | List of `[x1, y1, x2, y2]` bounding boxes          | -       |
+| `max_objects`    | int        | ❌       | Maximum objects to segment (1-500)                  | `100`   |
+| `save_url`       | string     | ✅       | Presigned PUT URL for output                        | -       |
+| `webhook_url`    | string     | ❌       | URL to POST when complete                           | -       |
+| `item_id`        | string     | ❌       | Client identifier (returned in webhook)             | -       |
+| `webhook_secret` | string     | ❌       | HMAC signing secret                                 | -       |
+
+> **Note:** At least one prompt type is required (`text_prompt`, `point_prompts`, or `box_prompts`).
+
+**Prompt Types:**
+
+| Prompt Type     | Use Case                                      | Example                                |
+| --------------- | --------------------------------------------- | -------------------------------------- |
+| `text_prompt`   | Open-vocabulary detection ("all cars")         | `"person in red shirt"`                |
+| `point_prompts` | Click specific objects                        | `[[512, 300], [100, 200]]`             |
+| `box_prompts`   | Segment within bounding regions               | `[[50, 50, 400, 300]]`                 |
+
+**Response (Immediate - 202 Accepted):**
+
+```json
+{
+  "job_id": "550e8400-e29b...",
+  "status_url": "/api/v1/jobs/550e8400-e29b..."
+}
+```
+
+**Result Payload (via webhook/polling):**
+
+```json
+{
+  "save_url": "https://storage.example.com/masks.json",
+  "generation_time": 1.2,
+  "metadata": {
+    "object_count": 3,
+    "width": 1920,
+    "height": 1080,
+    "boxes": [[50, 100, 400, 350], [600, 200, 900, 500], [1000, 50, 1200, 300]],
+    "scores": [0.98, 0.95, 0.87]
+  }
+}
+```
+
+The `save_url` points to a JSON file containing an array of base64-encoded PNG masks, one per detected object.
+
+---
+
+#### `POST /api/v1/segment/video`
+
+**Returns HTTP 202 Accepted**. Tracks and segments objects across video frames using a text prompt.
+
+**Request:**
+
+| Field              | Type   | Required | Description                                  | Default        |
+| ------------------ | ------ | -------- | -------------------------------------------- | -------------- |
+| `job_id`           | string | ✅       | Unique job identifier                        | -              |
+| `input_video_url`  | string | ✅       | URL of input video (MP4)                     | -              |
+| `text_prompt`      | string | ✅       | Objects to track (e.g., "yellow school bus") | -              |
+| `output_format`    | string | ❌       | `"masks_json"` for per-frame mask data       | `"masks_json"` |
+| `max_frames`       | int    | ❌       | Maximum frames to process (1-1000)           | `300`          |
+| `save_url`         | string | ✅       | Presigned PUT URL for output                 | -              |
+| `webhook_url`      | string | ❌       | URL to POST when complete                    | -              |
+| `item_id`          | string | ❌       | Client identifier (returned in webhook)      | -              |
+| `webhook_secret`   | string | ❌       | HMAC signing secret                          | -              |
+
+**Response (Immediate - 202 Accepted):**
+
+```json
+{
+  "job_id": "550e8400-e29b...",
+  "status_url": "/api/v1/jobs/550e8400-e29b..."
+}
+```
+
+**Result Payload (via webhook/polling):**
+
+```json
+{
+  "save_url": "https://storage.example.com/tracking.json",
+  "generation_time": 8.5,
+  "metadata": {
+    "frame_count": 120,
+    "object_count": 2,
+    "tracked_ids": [1, 2],
+    "output_format": "masks_json"
+  }
+}
+```
+
+The `save_url` points to a JSON file with per-frame masks for each tracked object, structured as:
+
+```json
+{
+  "frames": {
+    "0": { "1": "<base64_png_mask>", "2": "<base64_png_mask>" },
+    "1": { "1": "<base64_png_mask>", "2": "<base64_png_mask>" }
+  },
+  "tracked_ids": [1, 2],
+  "frame_count": 120,
+  "text_prompt": "yellow school bus"
+}
+```
+
+---
+
 ### Batch Operations
 
 Batch endpoints allow submitting multiple items in a single request, reducing API overhead from 300+ calls to just 1.
@@ -1259,6 +1388,15 @@ Retry downloading any failed models. **Requires authentication.**
 ---
 
 ## Changelog
+
+### v0.8.0
+
+- **Segmentation**: Added SAM 3 (Segment Anything Model 3) integration
+  - `POST /api/v1/segment/image` — text/box/point prompt image segmentation
+  - `POST /api/v1/segment/video` — text prompt video object tracking
+  - New `segmentation` VRAM mode (~4-10GB)
+  - Dynamic loading in `all` mode
+  - 848M parameter model, ~3.5GB weights
 
 ### v0.7.0
 
