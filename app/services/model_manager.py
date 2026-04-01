@@ -338,6 +338,16 @@ class ModelManager:
         if self._mode == required_mode:
             return True
         
+        # VIDEO_GENERATION mode: dynamically load SAM 3 for segmentation jobs
+        # SAM 3 is lightweight (~4GB) and can coexist with LTX-2 (~66GB) on 80GB GPU
+        if self._mode == VRAMLoadMode.VIDEO_GENERATION and job_type == JobType.SEGMENTATION:
+            if not self._sam3_dynamic_loaded:
+                logger.info("VIDEO mode: Dynamically loading SAM 3 for segmentation (~4GB)...")
+                await self._load_sam3()
+                self._sam3_dynamic_loaded = True
+                logger.info("VIDEO mode: SAM 3 loaded dynamically alongside LTX-2")
+            return True
+        
         # Need to switch - check if busy
         if self._is_busy:
             logger.warning(
@@ -827,7 +837,7 @@ class ModelManager:
         Raises:
             RuntimeError: If not in a valid mode or generator not loaded
         """
-        valid_modes = [VRAMLoadMode.SEGMENTATION, VRAMLoadMode.ALL]
+        valid_modes = [VRAMLoadMode.SEGMENTATION, VRAMLoadMode.ALL, VRAMLoadMode.VIDEO_GENERATION]
         if self._mode not in valid_modes:
             raise RuntimeError(f"Not in valid mode for segmentation (current: {self._mode.value})")
         
