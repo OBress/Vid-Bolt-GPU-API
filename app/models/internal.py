@@ -148,6 +148,7 @@ class ImageSegmentationParams:
     point_prompts: Optional[List[Tuple[int, int]]] = None  # [(x, y)] click coords
     box_prompts: Optional[List[Tuple[int, int, int, int]]] = None  # [(x1,y1,x2,y2)] all positive
     box_prompts_labeled: Optional[List[Tuple[Tuple[int, int, int, int], bool]]] = None  # [((x1,y1,x2,y2), label)]
+    object_prompts: Optional[List[Dict]] = None  # [{"label": "person", "text": "white man"}]
     confidence_threshold: float = 0.5
     max_objects: int = 100
     output_type: str = "masks_json"    # "masks_json" or "image"
@@ -164,6 +165,7 @@ class ImageSegmentationResult:
     height: int
     content_type: str = "application/json"  # "application/json" or "image/png"
     raw_masks: Optional[List[Any]] = None   # Raw mask tensors for effects pipeline
+    labels: Optional[List[str]] = None  # Object labels from object_prompts
 
 @dataclass
 class VideoSegmentationParams:

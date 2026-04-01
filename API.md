@@ -36,12 +36,12 @@ A high-performance FastAPI backend for AI-powered image, video, music generation
 
 Vid-Bolt GPU API provides AI-powered generation capabilities:
 
-| Capability           | Model                | Description                              |
-| -------------------- | -------------------- | ---------------------------------------- |
-| **Text-to-Image**    | Z-Image Turbo        | Generate images from text prompts        |
-| **Image Editing**    | Qwen-Image-Edit-2511 | Edit images with AI instructions         |
-| **Video Generation** | LTX-2 19B            | Generate videos from images (720p/1080p) |
-| **Music Generation** | ACE-Step 1.5         | Generate music from text prompts         |
+| Capability           | Model                | Description                                              |
+| -------------------- | -------------------- | -------------------------------------------------------- |
+| **Text-to-Image**    | Z-Image Turbo        | Generate images from text prompts                        |
+| **Image Editing**    | Qwen-Image-Edit-2511 | Edit images with AI instructions                         |
+| **Video Generation** | LTX-2 19B            | Generate videos from images (720p/1080p)                 |
+| **Music Generation** | ACE-Step 1.5         | Generate music from text prompts                         |
 | **Segmentation**     | SAM 3.1              | Segment, track, and animate objects in images and videos |
 
 ### Architecture
@@ -386,16 +386,16 @@ Get the current VRAM mode status including switching progress.
 }
 ```
 
-| Field                | Type         | Description                                                                                     |
-| -------------------- | ------------ | ----------------------------------------------------------------------------------------------- |
+| Field                | Type         | Description                                                                                                     |
+| -------------------- | ------------ | --------------------------------------------------------------------------------------------------------------- |
 | `mode`               | string       | Current mode (`image_generation`, `image_editing`, `video_generation`, `audio_creation`, `segmentation`, `all`) |
-| `is_busy`            | bool         | Whether a job is currently running                                                              |
-| `active_job_id`      | string\|null | ID of the currently running job                                                                 |
-| `loaded_models`      | list[string] | Names of currently loaded models                                                                |
-| `is_switching`       | bool         | Whether mode switch is in progress                                                              |
-| `switching_target`   | string\|null | Target mode when switching                                                                      |
-| `switching_step`     | string\|null | Current switching step description                                                              |
-| `switching_progress` | float\|null  | Progress 0.0-1.0 when switching                                                                 |
+| `is_busy`            | bool         | Whether a job is currently running                                                                              |
+| `active_job_id`      | string\|null | ID of the currently running job                                                                                 |
+| `loaded_models`      | list[string] | Names of currently loaded models                                                                                |
+| `is_switching`       | bool         | Whether mode switch is in progress                                                                              |
+| `switching_target`   | string\|null | Target mode when switching                                                                                      |
+| `switching_step`     | string\|null | Current switching step description                                                                              |
+| `switching_progress` | float\|null  | Progress 0.0-1.0 when switching                                                                                 |
 
 ---
 
@@ -469,8 +469,8 @@ Set the VRAM loading mode. This unloads current models and loads the target mode
 }
 ```
 
-| Field  | Type   | Required | Description                                                                              |
-| ------ | ------ | -------- | ---------------------------------------------------------------------------------------- |
+| Field  | Type   | Required | Description                                                                                              |
+| ------ | ------ | -------- | -------------------------------------------------------------------------------------------------------- |
 | `mode` | string | ✅       | One of: `image_generation`, `image_editing`, `video_generation`, `audio_creation`, `segmentation`, `all` |
 
 **Response:**
@@ -859,33 +859,60 @@ Image and video segmentation powered by Meta's **SAM 3.1** (Segment Anything Mod
 
 **Request:**
 
-| Field                 | Type       | Required | Description                                                        | Default        |
-| --------------------- | ---------- | -------- | ------------------------------------------------------------------ | -------------- |
-| `job_id`              | string     | ✅       | Unique job identifier                                              | -              |
-| `input_image_url`     | string     | ✅       | URL of input image (PNG/JPEG/WebP)                                 | -              |
-| `text_prompt`         | string     | ❌*      | Text describing objects to segment                                 | -              |
-| `point_prompts`       | int[][]    | ❌*      | List of `[x, y]` click coordinates                                 | -              |
-| `box_prompts`         | int[][]    | ❌*      | List of `[x1, y1, x2, y2]` bounding boxes (all positive)          | -              |
-| `box_prompts_labeled` | object[]   | ❌*      | List of `{box: [x1,y1,x2,y2], label: true/false}` (include/exclude) | -            |
-| `confidence_threshold`| float      | ❌       | Minimum confidence to include (0.0-1.0)                            | `0.5`          |
-| `max_objects`         | int        | ❌       | Maximum objects to segment (1-500)                                 | `100`          |
-| `output_type`         | string     | ❌       | `"masks_json"` for raw masks, `"image"` for processed image        | `"masks_json"` |
-| `operations`          | object[]   | ❌       | Ordered list of visual operations (only when `output_type="image"`)| -              |
-| `save_url`            | string     | ✅       | Presigned PUT URL for output                                       | -              |
-| `webhook_url`         | string     | ❌       | URL to POST when complete                                          | -              |
-| `item_id`             | string     | ❌       | Client identifier (returned in webhook)                            | -              |
-| `webhook_secret`      | string     | ❌       | HMAC signing secret                                                | -              |
+| Field                  | Type     | Required | Description                                                         | Default        |
+| ---------------------- | -------- | -------- | ------------------------------------------------------------------- | -------------- |
+| `job_id`               | string   | ✅       | Unique job identifier                                               | -              |
+| `input_image_url`      | string   | ✅       | URL of input image (PNG/JPEG/WebP)                                  | -              |
+| `text_prompt`          | string   | ❌\*     | Text describing objects to segment                                  | -              |
+| `point_prompts`        | int[][]  | ❌\*     | List of `[x, y]` click coordinates                                  | -              |
+| `box_prompts`          | int[][]  | ❌\*     | List of `[x1, y1, x2, y2]` bounding boxes (all positive)            | -              |
+| `box_prompts_labeled`  | object[] | ❌\*     | List of `{box: [x1,y1,x2,y2], label: true/false}` (include/exclude) | -              |
+| `object_prompts`       | object[] | ❌\*     | Named object prompts for per-object targeting (see below)           | -              |
+| `confidence_threshold` | float    | ❌       | Minimum confidence to include (0.0-1.0)                             | `0.5`          |
+| `max_objects`          | int      | ❌       | Maximum objects to segment (1-500)                                  | `100`          |
+| `output_type`          | string   | ❌       | `"masks_json"` for raw masks, `"image"` for processed image         | `"masks_json"` |
+| `operations`           | object[] | ❌       | Ordered list of visual operations (only when `output_type="image"`) | -              |
+| `save_url`             | string   | ✅       | Presigned PUT URL for output                                        | -              |
+| `webhook_url`          | string   | ❌       | URL to POST when complete                                           | -              |
+| `item_id`              | string   | ❌       | Client identifier (returned in webhook)                             | -              |
+| `webhook_secret`       | string   | ❌       | HMAC signing secret                                                 | -              |
 
-> **Note:** At least one prompt type is required (`text_prompt`, `point_prompts`, `box_prompts`, or `box_prompts_labeled`).
+> **Note:** At least one prompt type is required (`text_prompt`, `point_prompts`, `box_prompts`, `box_prompts_labeled`, or `object_prompts`).
 
 **Prompt Types:**
 
-| Prompt Type          | Use Case                                      | Example                                |
-| -------------------- | --------------------------------------------- | -------------------------------------- |
-| `text_prompt`        | Open-vocabulary detection ("all cars")         | `"person in red shirt"`                |
-| `point_prompts`      | Click specific objects                        | `[[512, 300], [100, 200]]`             |
-| `box_prompts`        | Segment within bounding regions               | `[[50, 50, 400, 300]]`                 |
-| `box_prompts_labeled`| Include/exclude regions                       | `[{"box": [50,50,400,300], "label": true}, {"box": [100,100,200,200], "label": false}]` |
+| Prompt Type           | Use Case                               | Example                                                                                 |
+| --------------------- | -------------------------------------- | --------------------------------------------------------------------------------------- |
+| `text_prompt`         | Open-vocabulary detection ("all cars") | `"person in red shirt"`                                                                 |
+| `point_prompts`       | Click specific objects                 | `[[512, 300], [100, 200]]`                                                              |
+| `box_prompts`         | Segment within bounding regions        | `[[50, 50, 400, 300]]`                                                                  |
+| `box_prompts_labeled` | Include/exclude regions                | `[{"box": [50,50,400,300], "label": true}, {"box": [100,100,200,200], "label": false}]` |
+| `object_prompts`      | Named per-object targeting             | `[{"label": "person", "text": "white man sitting"}, {"label": "table", "text": "metal table"}]` |
+
+**`object_prompts` — Named Object Targeting:**
+
+Use `object_prompts` when you need to apply different effects to different objects. Each prompt defines a `label` (a name you choose) and `text` (the SAM detection query). The label is then used in `select` operations to target specific objects.
+
+```json
+{
+  "object_prompts": [
+    { "label": "person", "text": "white man sitting" },
+    { "label": "table", "text": "metal table" }
+  ],
+  "operations": [
+    { "type": "select", "target": "background" },
+    { "type": "blur", "strength": 25 },
+    { "type": "select", "target": "mask", "object_label": "person" },
+    { "type": "outline", "color": [0, 255, 255, 255], "thickness": 3 }
+  ]
+}
+```
+
+Key behaviors:
+- `select: background` (no label) → excludes ALL detected objects (person + table). **Use this for background blur to avoid double-blur artifacts.**
+- `select: mask, object_label: "person"` → targets only the person
+- `select: mask, object_labels: ["person", "table"]` → targets the union of person + table masks
+- Response metadata includes a `labels` array mapping each detected mask to its label
 
 **Example — Raw masks (default):**
 
@@ -926,7 +953,11 @@ Image and video segmentation powered by Meta's **SAM 3.1** (Segment Anything Mod
     "object_count": 3,
     "width": 1920,
     "height": 1080,
-    "boxes": [[50, 100, 400, 350], [600, 200, 900, 500], [1000, 50, 1200, 300]],
+    "boxes": [
+      [50, 100, 400, 350],
+      [600, 200, 900, 500],
+      [1000, 50, 1200, 300]
+    ],
     "scores": [0.98, 0.95, 0.87],
     "output_type": "masks_json"
   }
@@ -958,25 +989,25 @@ Image and video segmentation powered by Meta's **SAM 3.1** (Segment Anything Mod
 
 **Request:**
 
-| Field                   | Type     | Required | Description                                                        | Default        |
-| ----------------------- | -------- | -------- | ------------------------------------------------------------------ | -------------- |
-| `job_id`                | string   | ✅       | Unique job identifier                                              | -              |
-| `input_video_url`       | string   | ✅       | URL of input video (MP4)                                           | -              |
-| `text_prompt`           | string   | ❌*      | Objects to track (e.g., "yellow school bus")                       | -              |
-| `point_prompts`         | float[][]| ❌*      | List of `[x, y]` coordinates for point prompts on initial frame    | -              |
-| `point_labels`          | int[]    | ❌       | Labels per point: `1` = positive, `0` = negative                   | all `1`        |
-| `box_prompts`           | float[][]| ❌*      | List of `[x, y, w, h]` bounding boxes for initial frame           | -              |
-| `box_labels`            | int[]    | ❌       | Labels per box: `1` = positive, `0` = negative                     | all `1`        |
-| `prompt_frame_index`    | int      | ❌       | Frame to apply prompts on                                          | `0`            |
-| `propagation_direction` | string   | ❌       | `"forward"`, `"backward"`, or `"both"`                             | `"forward"`    |
-| `confidence_threshold`  | float    | ❌       | Minimum confidence (0.0-1.0)                                       | `0.5`          |
-| `output_format`         | string   | ❌       | `"masks_json"` or `"video"`                                        | `"masks_json"` |
-| `operations`            | object[] | ❌       | Visual operations per frame (only when `output_format="video"`)    | -              |
-| `max_frames`            | int      | ❌       | Maximum frames to process (1-1000)                                 | `300`          |
-| `save_url`              | string   | ✅       | Presigned PUT URL for output                                       | -              |
-| `webhook_url`           | string   | ❌       | URL to POST when complete                                          | -              |
-| `item_id`               | string   | ❌       | Client identifier                                                  | -              |
-| `webhook_secret`        | string   | ❌       | HMAC signing secret                                                | -              |
+| Field                   | Type      | Required | Description                                                     | Default        |
+| ----------------------- | --------- | -------- | --------------------------------------------------------------- | -------------- |
+| `job_id`                | string    | ✅       | Unique job identifier                                           | -              |
+| `input_video_url`       | string    | ✅       | URL of input video (MP4)                                        | -              |
+| `text_prompt`           | string    | ❌\*     | Objects to track (e.g., "yellow school bus")                    | -              |
+| `point_prompts`         | float[][] | ❌\*     | List of `[x, y]` coordinates for point prompts on initial frame | -              |
+| `point_labels`          | int[]     | ❌       | Labels per point: `1` = positive, `0` = negative                | all `1`        |
+| `box_prompts`           | float[][] | ❌\*     | List of `[x, y, w, h]` bounding boxes for initial frame         | -              |
+| `box_labels`            | int[]     | ❌       | Labels per box: `1` = positive, `0` = negative                  | all `1`        |
+| `prompt_frame_index`    | int       | ❌       | Frame to apply prompts on                                       | `0`            |
+| `propagation_direction` | string    | ❌       | `"forward"`, `"backward"`, or `"both"`                          | `"forward"`    |
+| `confidence_threshold`  | float     | ❌       | Minimum confidence (0.0-1.0)                                    | `0.5`          |
+| `output_format`         | string    | ❌       | `"masks_json"` or `"video"`                                     | `"masks_json"` |
+| `operations`            | object[]  | ❌       | Visual operations per frame (only when `output_format="video"`) | -              |
+| `max_frames`            | int       | ❌       | Maximum frames to process (1-1000)                              | `300`          |
+| `save_url`              | string    | ✅       | Presigned PUT URL for output                                    | -              |
+| `webhook_url`           | string    | ❌       | URL to POST when complete                                       | -              |
+| `item_id`               | string    | ❌       | Client identifier                                               | -              |
+| `webhook_secret`        | string    | ❌       | HMAC signing secret                                             | -              |
 
 > **Note:** At least one prompt type is required (`text_prompt`, `point_prompts`, or `box_prompts`).
 
@@ -1037,109 +1068,109 @@ Operations are applied sequentially. Use `select` to target which region subsequ
 
 **Selection:**
 
-| Operation | Description | Parameters |
-| --------- | ----------- | ---------- |
-| `select` | Switch target region | `target`: `"mask"`, `"background"`, or `"all"`. Optional: `object_index`: 0-based index to target a single object instead of all. |
+| Operation | Description          | Parameters                                                                                                                                                                                                                                   |
+| --------- | -------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `select`  | Switch target region | `target`: `"mask"`, `"background"`, or `"all"`. Optional: `object_index` (int), `object_label` (string, from `object_prompts`), or `object_labels` (string[], union). Without any index/label, targets all detected objects. |
 
 **Blur / Privacy:**
 
-| Operation  | Description             | Parameters                                        |
-| ---------- | ----------------------- | ------------------------------------------------- |
-| `blur`     | Gaussian blur           | `strength`: 1-100 (default: 25)                   |
-| `pixelate` | Mosaic pixelation       | `block_size`: 5-50 px (default: 15)               |
-| `redact`   | Solid color fill        | `color`: [R,G,B] (default: [0,0,0])               |
+| Operation  | Description       | Parameters                          |
+| ---------- | ----------------- | ----------------------------------- |
+| `blur`     | Gaussian blur     | `strength`: 1-100 (default: 25)     |
+| `pixelate` | Mosaic pixelation | `block_size`: 5-50 px (default: 15) |
+| `redact`   | Solid color fill  | `color`: [R,G,B] (default: [0,0,0]) |
 
 **Color & Appearance:**
 
-| Operation       | Description                    | Parameters                                                                 |
-| --------------- | ------------------------------ | -------------------------------------------------------------------------- |
-| `color_overlay` | Semi-transparent color fill    | `color`: [R,G,B,A] (default: [255,0,0,128])                               |
-| `color_grade`   | Brightness/contrast/saturation | `brightness`, `contrast`, `saturation`: -100 to 100                        |
-| `opacity`       | Adjust transparency            | `value`: 0.0-1.0                                                           |
-| `replace_color` | Hue shift + saturation scale   | `hue_shift`: -180 to 180, `saturation_scale`: 0.0-3.0                     |
+| Operation       | Description                    | Parameters                                            |
+| --------------- | ------------------------------ | ----------------------------------------------------- |
+| `color_overlay` | Semi-transparent color fill    | `color`: [R,G,B,A] (default: [255,0,0,128])           |
+| `color_grade`   | Brightness/contrast/saturation | `brightness`, `contrast`, `saturation`: -100 to 100   |
+| `opacity`       | Adjust transparency            | `value`: 0.0-1.0                                      |
+| `replace_color` | Hue shift + saturation scale   | `hue_shift`: -180 to 180, `saturation_scale`: 0.0-3.0 |
 
 **Compositing:**
 
-| Operation            | Description                    | Parameters                                        |
-| -------------------- | ------------------------------ | ------------------------------------------------- |
-| `remove_background`  | Make background transparent    | *(outputs RGBA PNG)*                              |
-| `replace_background` | Replace background             | `color`: [R,G,B] or `image_url`: string           |
-| `greenscreen`        | Replace background with green  | *(no params)*                                     |
+| Operation            | Description                   | Parameters                              |
+| -------------------- | ----------------------------- | --------------------------------------- |
+| `remove_background`  | Make background transparent   | _(outputs RGBA PNG)_                    |
+| `replace_background` | Replace background            | `color`: [R,G,B] or `image_url`: string |
+| `greenscreen`        | Replace background with green | _(no params)_                           |
 
 **Drawing & Annotation:**
 
-| Operation      | Description                      | Parameters                                                                       |
-| -------------- | -------------------------------- | -------------------------------------------------------------------------------- |
-| `outline`      | Draw smooth contour lines        | `color`: [R,G,B,A] (default: [0,255,0,255]), `thickness`: 1-20, `progress`: 0.0-1.0 (for draw animation) |
-| `bounding_box` | Draw bounding boxes              | `color`: [R,G,B,A] (default: [255,0,0,255]), `thickness`: 1-10 (default: 2)     |
+| Operation      | Description               | Parameters                                                                                               |
+| -------------- | ------------------------- | -------------------------------------------------------------------------------------------------------- |
+| `outline`      | Draw smooth contour lines | `color`: [R,G,B,A] (default: [0,255,0,255]), `thickness`: 1-20, `progress`: 0.0-1.0 (for draw animation) |
+| `bounding_box` | Draw bounding boxes       | `color`: [R,G,B,A] (default: [255,0,0,255]), `thickness`: 1-10 (default: 2)                              |
 
 **Creative Effects:**
 
-| Operation  | Description                      | Parameters                                                                    |
-| ---------- | -------------------------------- | ----------------------------------------------------------------------------- |
-| `spotlight`| Darken everything except objects | `darkness`: 0.0-1.0 (default: 0.7)                                           |
-| `bokeh`    | Depth-of-field blur on background| `strength`: 5-50 (default: 15)                                               |
-| `glow`     | Glow/bloom around object edges   | `color`: [R,G,B], `radius`: 5-50, `intensity`: 0.0-1.0                       |
-| `shadow`   | Drop shadow on objects           | `offset`: [x,y], `blur`: 5-30, `color`: [R,G,B,A]                            |
-| `vignette` | Vignette focused on objects      | `strength`: 0.0-1.0 (default: 0.5)                                           |
+| Operation   | Description                       | Parameters                                             |
+| ----------- | --------------------------------- | ------------------------------------------------------ |
+| `spotlight` | Darken everything except objects  | `darkness`: 0.0-1.0 (default: 0.7)                     |
+| `bokeh`     | Depth-of-field blur on background | `strength`: 5-50 (default: 15)                         |
+| `glow`      | Glow/bloom around object edges    | `color`: [R,G,B], `radius`: 5-50, `intensity`: 0.0-1.0 |
+| `shadow`    | Drop shadow on objects            | `offset`: [x,y], `blur`: 5-30, `color`: [R,G,B,A]      |
+| `vignette`  | Vignette focused on objects       | `strength`: 0.0-1.0 (default: 0.5)                     |
 
 **Filters (NEW):**
 
-| Operation     | Description                        | Parameters                                                      |
-| ------------- | ---------------------------------- | --------------------------------------------------------------- |
-| `grayscale`   | Convert selection to B&W           | `intensity`: 0.0-1.0 (default: 1.0) — blend factor             |
-| `invert`      | Invert colors of selection         | `intensity`: 0.0-1.0 (default: 1.0) — blend factor             |
-| `sharpen`     | Enhance/sharpen edges              | `strength`: 0.0-10.0 (default: 2.0)                            |
-| `sepia`       | Warm vintage tone                  | `intensity`: 0.0-1.0 (default: 1.0)                            |
-| `posterize`   | Reduce to N color levels           | `levels`: 2-32 (default: 4)                                    |
-| `edge_detect` | Show edges (line art blend)        | `intensity`: 0.0-1.0 (default: 1.0)                            |
-| `emboss`      | 3D relief emboss                   | `intensity`: 0.0-1.0 (default: 1.0)                            |
-| `noise`       | Add grain/noise                    | `amount`: 0.0-1.0 (default: 0.3), `noise_type`: `"gaussian"`/`"grain"`, `seed`: int |
-| `sketch`      | Pencil drawing effect              | `intensity`: 0.0-1.0 (default: 1.0), `detail`: 1-10 (default: 5) |
+| Operation     | Description                 | Parameters                                                                          |
+| ------------- | --------------------------- | ----------------------------------------------------------------------------------- |
+| `grayscale`   | Convert selection to B&W    | `intensity`: 0.0-1.0 (default: 1.0) — blend factor                                  |
+| `invert`      | Invert colors of selection  | `intensity`: 0.0-1.0 (default: 1.0) — blend factor                                  |
+| `sharpen`     | Enhance/sharpen edges       | `strength`: 0.0-10.0 (default: 2.0)                                                 |
+| `sepia`       | Warm vintage tone           | `intensity`: 0.0-1.0 (default: 1.0)                                                 |
+| `posterize`   | Reduce to N color levels    | `levels`: 2-32 (default: 4)                                                         |
+| `edge_detect` | Show edges (line art blend) | `intensity`: 0.0-1.0 (default: 1.0)                                                 |
+| `emboss`      | 3D relief emboss            | `intensity`: 0.0-1.0 (default: 1.0)                                                 |
+| `noise`       | Add grain/noise             | `amount`: 0.0-1.0 (default: 0.3), `noise_type`: `"gaussian"`/`"grain"`, `seed`: int |
+| `sketch`      | Pencil drawing effect       | `intensity`: 0.0-1.0 (default: 1.0), `detail`: 1-10 (default: 5)                    |
 
 **Artistic (NEW):**
 
-| Operation  | Description                      | Parameters                                                                    |
-| ---------- | -------------------------------- | ----------------------------------------------------------------------------- |
-| `duotone`  | Two-color palette map            | `color_dark`: [R,G,B] (default: [20,0,80]), `color_light`: [R,G,B] (default: [255,200,100]), `intensity`: 0.0-1.0 |
-| `halftone` | Newspaper dot-pattern            | `dot_size`: 2-30 (default: 6), `intensity`: 0.0-1.0                          |
-| `glitch`   | RGB shift + scanlines            | `intensity`: 0.0-1.0 (default: 0.5), `rgb_shift`: 0-30 (default: 10), `seed`: int |
+| Operation  | Description           | Parameters                                                                                                        |
+| ---------- | --------------------- | ----------------------------------------------------------------------------------------------------------------- |
+| `duotone`  | Two-color palette map | `color_dark`: [R,G,B] (default: [20,0,80]), `color_light`: [R,G,B] (default: [255,200,100]), `intensity`: 0.0-1.0 |
+| `halftone` | Newspaper dot-pattern | `dot_size`: 2-30 (default: 6), `intensity`: 0.0-1.0                                                               |
+| `glitch`   | RGB shift + scanlines | `intensity`: 0.0-1.0 (default: 0.5), `rgb_shift`: 0-30 (default: 10), `seed`: int                                 |
 
 **Distortion (NEW):**
 
-| Operation     | Description                    | Parameters                                                       |
-| ------------- | ------------------------------ | ---------------------------------------------------------------- |
-| `motion_blur` | Directional blur               | `angle`: 0-360 (default: 0), `strength`: 1-50 (default: 15)     |
-| `glass`       | Frosted glass distortion       | `strength`: 1-30 (default: 8), `scale`: 1-20 (default: 4), `seed`: int |
+| Operation     | Description              | Parameters                                                             |
+| ------------- | ------------------------ | ---------------------------------------------------------------------- |
+| `motion_blur` | Directional blur         | `angle`: 0-360 (default: 0), `strength`: 1-50 (default: 15)            |
+| `glass`       | Frosted glass distortion | `strength`: 1-30 (default: 8), `scale`: 1-20 (default: 4), `seed`: int |
 
 **Mask Processing (NEW):**
 
-| Operation | Description                    | Parameters                        |
-| --------- | ------------------------------ | --------------------------------- |
-| `feather` | Soften mask edges              | `radius`: 1-50 (default: 10)     |
+| Operation | Description       | Parameters                   |
+| --------- | ----------------- | ---------------------------- |
+| `feather` | Soften mask edges | `radius`: 1-50 (default: 10) |
 
 **Camera (Animation Only):**
 
-| Operation | Description                    | Parameters                                                                      |
-| --------- | ------------------------------ | ------------------------------------------------------------------------------- |
-| `zoom`    | Ken Burns zoom toward subject  | `scale`: 1.0-4.0, `target`: `"mask"`/`"center"`/`[x,y]`                        |
-| `pan`     | Smooth camera pan              | `offset`: `[x, y]` pixel offset                                                |
+| Operation | Description                   | Parameters                                              |
+| --------- | ----------------------------- | ------------------------------------------------------- |
+| `zoom`    | Ken Burns zoom toward subject | `scale`: 1.0-4.0, `target`: `"mask"`/`"center"`/`[x,y]` |
+| `pan`     | Smooth camera pan             | `offset`: `[x, y]` pixel offset                         |
 
 > **Note:** `zoom` and `pan` only work with the animation system (`POST /segment/animate` or video operations with `animation` configs). They crop/scale the output canvas per frame.
 
 **Common Recipes:**
 
-| Use Case | Operations |
-| --- | --- |
-| Blur background (portrait mode) | `[{select: background}, {blur: 25}]` |
-| Redact all faces | `text_prompt: "face"` + `[{select: mask}, {pixelate: 20}]` |
-| Green screen removal | `text_prompt: "person"` + `[{greenscreen}]` |
-| Spotlight subject | `[{spotlight: 0.6}, {select: background}, {bokeh: 15}]` |
-| Annotate objects | `[{outline}, {bounding_box: {color: [255,0,0], thickness: 2}}]` |
-| Vintage film look | `[{sepia: {intensity: 0.7}}, {noise: {amount: 0.2, noise_type: "grain"}}]` |
-| Neon outline | `[{outline: {color: [0,255,255], thickness: 3}}, {glow: {color: [0,200,255], radius: 20}}]` |
-| Pencil sketch | `[{sketch: {intensity: 0.9, detail: 6}}]` |
-| Color pop | `[{select: background}, {grayscale: 1.0}, {select: mask}, {color_grade: {saturation: 50}}]` |
+| Use Case                        | Operations                                                                                  |
+| ------------------------------- | ------------------------------------------------------------------------------------------- |
+| Blur background (portrait mode) | `[{select: background}, {blur: 25}]`                                                        |
+| Redact all faces                | `text_prompt: "face"` + `[{select: mask}, {pixelate: 20}]`                                  |
+| Green screen removal            | `text_prompt: "person"` + `[{greenscreen}]`                                                 |
+| Spotlight subject               | `[{spotlight: 0.6}, {select: background}, {bokeh: 15}]`                                     |
+| Annotate objects                | `[{outline}, {bounding_box: {color: [255,0,0], thickness: 2}}]`                             |
+| Vintage film look               | `[{sepia: {intensity: 0.7}}, {noise: {amount: 0.2, noise_type: "grain"}}]`                  |
+| Neon outline                    | `[{outline: {color: [0,255,255], thickness: 3}}, {glow: {color: [0,200,255], radius: 20}}]` |
+| Pencil sketch                   | `[{sketch: {intensity: 0.9, detail: 6}}]`                                                   |
+| Color pop                       | `[{select: background}, {grayscale: 1.0}, {select: mask}, {color_grade: {saturation: 50}}]` |
 
 ---
 
@@ -1148,6 +1179,7 @@ Operations are applied sequentially. Use `select` to target which region subsequ
 Generate an animated video from a single image by applying animated visual effects to segmented regions. SAM 3.1 runs once to detect objects, then the animation engine renders frames with interpolated effect parameters.
 
 **Key concepts:**
+
 - Every numeric parameter on any operation can be animated
 - 10 easing functions control the rate of change
 - 6 animation modes (transition, draw, pulse, reveal, loop, stagger)
@@ -1161,23 +1193,23 @@ Generate an animated video from a single image by applying animated visual effec
 
 **Request:**
 
-| Field                 | Type       | Required | Description                                                        | Default        |
-| --------------------- | ---------- | -------- | ------------------------------------------------------------------ | -------------- |
-| `job_id`              | string     | ✅       | Unique job identifier                                              | -              |
-| `input_image_url`     | string     | ✅       | URL of input image (PNG/JPEG/WebP)                                 | -              |
-| `text_prompt`         | string     | ❌*      | Text describing objects to segment                                 | -              |
-| `point_prompts`       | int[][]    | ❌*      | List of `[x, y]` click coordinates                                 | -              |
-| `box_prompts`         | int[][]    | ❌*      | List of `[x1, y1, x2, y2]` bounding boxes                         | -              |
-| `box_prompts_labeled` | object[]   | ❌*      | List of `{box: [x1,y1,x2,y2], label: true/false}`                 | -              |
-| `confidence_threshold`| float      | ❌       | Minimum confidence (0.0-1.0)                                       | `0.5`          |
-| `max_objects`         | int        | ❌       | Maximum objects to segment (1-500)                                 | `100`          |
-| `duration_seconds`    | float      | ❌       | Animation duration (0.5-10.0)                                      | `3.0`          |
-| `fps`                 | int        | ❌       | Frames per second (8-60)                                           | `30`           |
-| `operations`          | object[]   | ✅       | Ordered list of operations with optional `animation` configs       | -              |
-| `save_url`            | string     | ✅       | Presigned PUT URL for MP4 output                                   | -              |
-| `webhook_url`         | string     | ❌       | URL to POST when complete                                          | -              |
-| `item_id`             | string     | ❌       | Client identifier                                                  | -              |
-| `webhook_secret`      | string     | ❌       | HMAC signing secret                                                | -              |
+| Field                  | Type     | Required | Description                                                  | Default |
+| ---------------------- | -------- | -------- | ------------------------------------------------------------ | ------- |
+| `job_id`               | string   | ✅       | Unique job identifier                                        | -       |
+| `input_image_url`      | string   | ✅       | URL of input image (PNG/JPEG/WebP)                           | -       |
+| `text_prompt`          | string   | ❌\*     | Text describing objects to segment                           | -       |
+| `point_prompts`        | int[][]  | ❌\*     | List of `[x, y]` click coordinates                           | -       |
+| `box_prompts`          | int[][]  | ❌\*     | List of `[x1, y1, x2, y2]` bounding boxes                    | -       |
+| `box_prompts_labeled`  | object[] | ❌\*     | List of `{box: [x1,y1,x2,y2], label: true/false}`            | -       |
+| `confidence_threshold` | float    | ❌       | Minimum confidence (0.0-1.0)                                 | `0.5`   |
+| `max_objects`          | int      | ❌       | Maximum objects to segment (1-500)                           | `100`   |
+| `duration_seconds`     | float    | ❌       | Animation duration (0.5-10.0)                                | `3.0`   |
+| `fps`                  | int      | ❌       | Frames per second (8-60)                                     | `30`    |
+| `operations`           | object[] | ✅       | Ordered list of operations with optional `animation` configs | -       |
+| `save_url`             | string   | ✅       | Presigned PUT URL for MP4 output                             | -       |
+| `webhook_url`          | string   | ❌       | URL to POST when complete                                    | -       |
+| `item_id`              | string   | ❌       | Client identifier                                            | -       |
+| `webhook_secret`       | string   | ❌       | HMAC signing secret                                          | -       |
 
 > **Note:** At least one prompt type is required. At least one operation is required.
 
@@ -1189,17 +1221,17 @@ Every operation can include an `animation` key to animate its parameters over ti
 
 **Animation Config:**
 
-| Field           | Type     | Required | Description                                                        | Default           |
-| --------------- | -------- | -------- | ------------------------------------------------------------------ | ----------------- |
-| `mode`          | string   | ❌       | Animation mode (see below)                                         | `"transition"`    |
-| `start`         | object   | ❌       | Parameter values at animation start                                | current values    |
-| `end`           | object   | ❌       | Parameter values at animation end                                  | current values    |
-| `easing`        | string   | ❌       | Easing function name (see below)                                   | `"ease_out"`      |
-| `delay`         | float    | ❌       | Seconds before animation starts (0.0-10.0)                         | `0.0`             |
-| `duration`      | float    | ❌       | Animation duration in seconds (overrides total)                    | total duration    |
-| `cycles`        | int      | ❌       | Oscillation count for pulse/loop modes (1-20)                      | `1`               |
-| `direction`     | string   | ❌       | Reveal direction (for `reveal` mode)                               | `"left"`          |
-| `stagger_delay` | float    | ❌       | Seconds between each object (for `stagger` mode)                   | `0.2`             |
+| Field           | Type   | Required | Description                                      | Default        |
+| --------------- | ------ | -------- | ------------------------------------------------ | -------------- |
+| `mode`          | string | ❌       | Animation mode (see below)                       | `"transition"` |
+| `start`         | object | ❌       | Parameter values at animation start              | current values |
+| `end`           | object | ❌       | Parameter values at animation end                | current values |
+| `easing`        | string | ❌       | Easing function name (see below)                 | `"ease_out"`   |
+| `delay`         | float  | ❌       | Seconds before animation starts (0.0-10.0)       | `0.0`          |
+| `duration`      | float  | ❌       | Animation duration in seconds (overrides total)  | total duration |
+| `cycles`        | int    | ❌       | Oscillation count for pulse/loop modes (1-20)    | `1`            |
+| `direction`     | string | ❌       | Reveal direction (for `reveal` mode)             | `"left"`       |
+| `stagger_delay` | float  | ❌       | Seconds between each object (for `stagger` mode) | `0.2`          |
 
 **Schema (operation with animation):**
 
@@ -1223,31 +1255,31 @@ Every operation can include an `animation` key to animate its parameters over ti
 
 #### Animation Modes
 
-| Mode | Behavior | Use Cases |
-| --- | --- | --- |
-| `transition` | Interpolate `start` → `end` values linearly over time | Blur fading in, color shifting, opacity changing |
-| `draw` | Sets `progress` param from 0→1 (progressive contour trace) | Outline drawing itself around an object |
-| `pulse` | Oscillates `start` → `end` → `start` with configurable `cycles` | Pulsing glow, breathing spotlight, flickering noise |
-| `reveal` | Progressive directional wipe (set `direction`) | Effect appearing via wipe from left/right/radial |
-| `loop` | Sawtooth: value goes `start` → `end` repeatedly over `cycles` | Hue cycling, continuous color shifting |
-| `stagger` | Like transition, but each detected object starts with an offset | Objects outlining one-by-one, sequential highlighting |
+| Mode         | Behavior                                                        | Use Cases                                             |
+| ------------ | --------------------------------------------------------------- | ----------------------------------------------------- |
+| `transition` | Interpolate `start` → `end` values linearly over time           | Blur fading in, color shifting, opacity changing      |
+| `draw`       | Sets `progress` param from 0→1 (progressive contour trace)      | Outline drawing itself around an object               |
+| `pulse`      | Oscillates `start` → `end` → `start` with configurable `cycles` | Pulsing glow, breathing spotlight, flickering noise   |
+| `reveal`     | Progressive directional wipe (set `direction`)                  | Effect appearing via wipe from left/right/radial      |
+| `loop`       | Sawtooth: value goes `start` → `end` repeatedly over `cycles`   | Hue cycling, continuous color shifting                |
+| `stagger`    | Like transition, but each detected object starts with an offset | Objects outlining one-by-one, sequential highlighting |
 
 ---
 
 #### Easing Functions
 
-| Easing | Description | Character |
-| --- | --- | --- |
-| `linear` | Constant speed | Mechanical, robotic |
-| `ease_in` | Slow start, fast end (quadratic) | Building momentum |
-| `ease_out` | Fast start, slow end (quadratic) | **Recommended default** |
-| `ease_in_out` | Smooth start and end (smoothstep) | Polished, professional |
-| `ease_in_cubic` | More dramatic slow start | Intense build-up |
-| `ease_out_cubic` | More dramatic slow end | Heavy landing |
-| `ease_in_out_cubic` | Professional cubic motion | Film-quality movement |
-| `ease_out_back` | Overshoots then settles back | Bouncy, playful |
-| `ease_out_elastic` | Spring oscillation | High-energy, dynamic reveal |
-| `ease_out_bounce` | Ball-drop bounce | Fun, attention-grabbing |
+| Easing              | Description                       | Character                   |
+| ------------------- | --------------------------------- | --------------------------- |
+| `linear`            | Constant speed                    | Mechanical, robotic         |
+| `ease_in`           | Slow start, fast end (quadratic)  | Building momentum           |
+| `ease_out`          | Fast start, slow end (quadratic)  | **Recommended default**     |
+| `ease_in_out`       | Smooth start and end (smoothstep) | Polished, professional      |
+| `ease_in_cubic`     | More dramatic slow start          | Intense build-up            |
+| `ease_out_cubic`    | More dramatic slow end            | Heavy landing               |
+| `ease_in_out_cubic` | Professional cubic motion         | Film-quality movement       |
+| `ease_out_back`     | Overshoots then settles back      | Bouncy, playful             |
+| `ease_out_elastic`  | Spring oscillation                | High-energy, dynamic reveal |
+| `ease_out_bounce`   | Ball-drop bounce                  | Fun, attention-grabbing     |
 
 ---
 
@@ -1255,33 +1287,33 @@ Every operation can include an `animation` key to animate its parameters over ti
 
 How to animate each of the 35 operations. Every numeric parameter listed above can be placed in `start`/`end`.
 
-| Effect | Best Mode | Animated Params | Example |
-| --- | --- | --- | --- |
-| `blur` | transition | `strength`: 0→25 | Background gradually blurs |
-| `outline` | **draw** | *(auto progress)* | Contour traces itself around object |
-| `glow` | **pulse** | `intensity`: 0→0.8 | Pulsing neon glow (set cycles: 3) |
-| `spotlight` | transition | `darkness`: 0→0.8 | Lights gradually dim around subject |
-| `grayscale` | transition | `intensity`: 0→1 | Color drains to B&W |
-| `sepia` | transition | `intensity`: 0→1 | Modern photo ages to vintage |
-| `sketch` | transition | `intensity`: 0→1 | Photo transforms into pencil drawing |
-| `glitch` | pulse/loop | `intensity`: 0→0.8 | Glitch effect flickers on and off |
-| `noise` | transition | `amount`: 0→0.5 | Film grain gradually appears |
-| `zoom` | transition | `scale`: 1.0→1.5 | Ken Burns zoom toward subject |
-| `opacity` | transition | `value`: 0→1 | Fade-in effect |
-| `color_grade` | transition | `saturation`: 0→60 | Colors gradually become vivid |
-| `bokeh` | transition | `strength`: 0→30 | Background gradually blurs with bokeh |
-| `halftone` | transition | `dot_size`: 30→6 | Large dots shrink to detailed halftone |
-| `duotone` | transition | `intensity`: 0→1 | Photo morphs into two-color palette |
-| `invert` | pulse | `intensity`: 0→1 | Colors flash inverted and back |
-| `posterize` | transition | `levels`: 32→4 | Gradually reduces color levels |
-| `edge_detect` | transition | `intensity`: 0→1 | Photo fades to line art |
-| `emboss` | transition | `intensity`: 0→1 | 3D relief effect fades in |
-| `motion_blur` | transition | `strength`: 0→30 | Motion blur streaks appear |
-| `glass` | transition | `strength`: 0→15 | Frosted glass effect fades in |
-| `feather` | transition | `radius`: 0→20 | Mask edges progressively soften |
-| `pixelate` | transition | `block_size`: 5→50 | Mosaic blocks get larger |
-| `vignette` | transition | `strength`: 0→0.8 | Edges gradually darken |
-| `shadow` | transition | `opacity`: 0→200 | Drop shadow fades in |
+| Effect        | Best Mode  | Animated Params    | Example                                |
+| ------------- | ---------- | ------------------ | -------------------------------------- |
+| `blur`        | transition | `strength`: 0→25   | Background gradually blurs             |
+| `outline`     | **draw**   | _(auto progress)_  | Contour traces itself around object    |
+| `glow`        | **pulse**  | `intensity`: 0→0.8 | Pulsing neon glow (set cycles: 3)      |
+| `spotlight`   | transition | `darkness`: 0→0.8  | Lights gradually dim around subject    |
+| `grayscale`   | transition | `intensity`: 0→1   | Color drains to B&W                    |
+| `sepia`       | transition | `intensity`: 0→1   | Modern photo ages to vintage           |
+| `sketch`      | transition | `intensity`: 0→1   | Photo transforms into pencil drawing   |
+| `glitch`      | pulse/loop | `intensity`: 0→0.8 | Glitch effect flickers on and off      |
+| `noise`       | transition | `amount`: 0→0.5    | Film grain gradually appears           |
+| `zoom`        | transition | `scale`: 1.0→1.5   | Ken Burns zoom toward subject          |
+| `opacity`     | transition | `value`: 0→1       | Fade-in effect                         |
+| `color_grade` | transition | `saturation`: 0→60 | Colors gradually become vivid          |
+| `bokeh`       | transition | `strength`: 0→30   | Background gradually blurs with bokeh  |
+| `halftone`    | transition | `dot_size`: 30→6   | Large dots shrink to detailed halftone |
+| `duotone`     | transition | `intensity`: 0→1   | Photo morphs into two-color palette    |
+| `invert`      | pulse      | `intensity`: 0→1   | Colors flash inverted and back         |
+| `posterize`   | transition | `levels`: 32→4     | Gradually reduces color levels         |
+| `edge_detect` | transition | `intensity`: 0→1   | Photo fades to line art                |
+| `emboss`      | transition | `intensity`: 0→1   | 3D relief effect fades in              |
+| `motion_blur` | transition | `strength`: 0→30   | Motion blur streaks appear             |
+| `glass`       | transition | `strength`: 0→15   | Frosted glass effect fades in          |
+| `feather`     | transition | `radius`: 0→20     | Mask edges progressively soften        |
+| `pixelate`    | transition | `block_size`: 5→50 | Mosaic blocks get larger               |
+| `vignette`    | transition | `strength`: 0→0.8  | Edges gradually darken                 |
+| `shadow`      | transition | `opacity`: 0→200   | Drop shadow fades in                   |
 
 ---
 
@@ -1296,20 +1328,50 @@ How to animate each of the 35 operations. Every numeric parameter listed above c
   "fps": 30,
   "operations": [
     {
-      "type": "spotlight", "darkness": 0.8,
-      "animation": { "mode": "transition", "start": {"darkness": 0}, "end": {"darkness": 0.8}, "easing": "ease_in", "duration": 1.5 }
+      "type": "spotlight",
+      "darkness": 0.8,
+      "animation": {
+        "mode": "transition",
+        "start": { "darkness": 0 },
+        "end": { "darkness": 0.8 },
+        "easing": "ease_in",
+        "duration": 1.5
+      }
     },
     {
-      "type": "outline", "color": [0, 255, 255, 255], "thickness": 3,
-      "animation": { "mode": "draw", "easing": "ease_in_out", "delay": 1.0, "duration": 2.0 }
+      "type": "outline",
+      "color": [0, 255, 255, 255],
+      "thickness": 3,
+      "animation": {
+        "mode": "draw",
+        "easing": "ease_in_out",
+        "delay": 1.0,
+        "duration": 2.0
+      }
     },
     {
-      "type": "glow", "color": [0, 200, 255], "radius": 20,
-      "animation": { "mode": "pulse", "start": {"intensity": 0}, "end": {"intensity": 0.8}, "easing": "ease_in_out", "cycles": 3, "delay": 1.5 }
+      "type": "glow",
+      "color": [0, 200, 255],
+      "radius": 20,
+      "animation": {
+        "mode": "pulse",
+        "start": { "intensity": 0 },
+        "end": { "intensity": 0.8 },
+        "easing": "ease_in_out",
+        "cycles": 3,
+        "delay": 1.5
+      }
     },
     {
-      "type": "zoom", "target": "mask",
-      "animation": { "mode": "transition", "start": {"scale": 1.0}, "end": {"scale": 1.3}, "easing": "ease_out", "delay": 0.5 }
+      "type": "zoom",
+      "target": "mask",
+      "animation": {
+        "mode": "transition",
+        "start": { "scale": 1.0 },
+        "end": { "scale": 1.3 },
+        "easing": "ease_out",
+        "delay": 0.5
+      }
     }
   ],
   "save_url": "https://storage.example.com/reveal.mp4"
@@ -1330,8 +1392,14 @@ How to animate each of the 35 operations. Every numeric parameter listed above c
   "duration_seconds": 3,
   "operations": [
     {
-      "type": "sketch", "detail": 6,
-      "animation": { "mode": "transition", "start": {"intensity": 0}, "end": {"intensity": 1.0}, "easing": "ease_in_out" }
+      "type": "sketch",
+      "detail": 6,
+      "animation": {
+        "mode": "transition",
+        "start": { "intensity": 0 },
+        "end": { "intensity": 1.0 },
+        "easing": "ease_in_out"
+      }
     }
   ],
   "save_url": "https://storage.example.com/sketch.mp4"
@@ -1350,12 +1418,28 @@ How to animate each of the 35 operations. Every numeric parameter listed above c
   "duration_seconds": 3,
   "operations": [
     {
-      "type": "glitch", "rgb_shift": 15, "seed": 42,
-      "animation": { "mode": "pulse", "start": {"intensity": 0}, "end": {"intensity": 0.8}, "easing": "ease_out_elastic", "cycles": 5 }
+      "type": "glitch",
+      "rgb_shift": 15,
+      "seed": 42,
+      "animation": {
+        "mode": "pulse",
+        "start": { "intensity": 0 },
+        "end": { "intensity": 0.8 },
+        "easing": "ease_out_elastic",
+        "cycles": 5
+      }
     },
     {
-      "type": "glow", "color": [255, 50, 255], "radius": 15,
-      "animation": { "mode": "loop", "start": {"intensity": 0.2}, "end": {"intensity": 0.9}, "easing": "ease_in_out", "cycles": 4 }
+      "type": "glow",
+      "color": [255, 50, 255],
+      "radius": 15,
+      "animation": {
+        "mode": "loop",
+        "start": { "intensity": 0.2 },
+        "end": { "intensity": 0.9 },
+        "easing": "ease_in_out",
+        "cycles": 4
+      }
     }
   ],
   "save_url": "https://storage.example.com/glitch.mp4"
@@ -1379,8 +1463,15 @@ Operations on `POST /api/v1/segment/video` now also support `animation` configs.
   "operations": [
     { "type": "select", "target": "mask" },
     {
-      "type": "blur", "strength": 40,
-      "animation": { "mode": "transition", "start": {"strength": 0}, "end": {"strength": 40}, "easing": "ease_in", "duration": 2.0 }
+      "type": "blur",
+      "strength": 40,
+      "animation": {
+        "mode": "transition",
+        "start": { "strength": 0 },
+        "end": { "strength": 40 },
+        "easing": "ease_in",
+        "duration": 2.0
+      }
     }
   ],
   "save_url": "https://storage.example.com/blurred.mp4"
@@ -1572,9 +1663,27 @@ Cancel a batch. Currently-processing items will finish, but all pending items ar
   "created_at": 1715420000.0,
   "cancelled_at": 1715420030.0,
   "items": [
-    {"item_index": 0, "item_id": "img-1", "job_id": "batch-abc123__item_0", "status": "completed", "retry_count": 0},
-    {"item_index": 1, "item_id": "img-2", "job_id": "batch-abc123__item_1", "status": "processing", "retry_count": 0},
-    {"item_index": 2, "item_id": "img-3", "job_id": "batch-abc123__item_2", "status": "cancelled", "retry_count": 0}
+    {
+      "item_index": 0,
+      "item_id": "img-1",
+      "job_id": "batch-abc123__item_0",
+      "status": "completed",
+      "retry_count": 0
+    },
+    {
+      "item_index": 1,
+      "item_id": "img-2",
+      "job_id": "batch-abc123__item_1",
+      "status": "processing",
+      "retry_count": 0
+    },
+    {
+      "item_index": 2,
+      "item_id": "img-3",
+      "job_id": "batch-abc123__item_2",
+      "status": "cancelled",
+      "retry_count": 0
+    }
   ]
 }
 ```

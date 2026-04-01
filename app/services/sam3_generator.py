@@ -187,9 +187,35 @@ class SAM3Generator(Segmenter):
         masks_list = []
         boxes_list = []
         scores_list = []
+        labels_list = []  # Track which label each mask belongs to
+
+        # === Named object prompts (per-object targeting) ===
+        if params.object_prompts:
+            logger.info(f"Running {len(params.object_prompts)} named object prompts")
+            for obj_prompt in params.object_prompts:
+                obj_label = obj_prompt["label"]
+                obj_text = obj_prompt["text"]
+                logger.info(f"  Segmenting '{obj_label}': '{obj_text}'")
+
+                self._image_processor.reset_all_prompts(inference_state)
+                inference_state = self._image_processor.set_text_prompt(
+                    prompt=obj_text,
+                    state=inference_state,
+                )
+
+                # Track how many masks we had before this prompt
+                prev_count = len(masks_list)
+                self._extract_masks_from_state(
+                    inference_state, width, height, params.max_objects,
+                    masks_list, boxes_list, scores_list,
+                )
+                # Tag all new masks with this label
+                new_count = len(masks_list) - prev_count
+                labels_list.extend([obj_label] * new_count)
+                logger.info(f"  Found {new_count} objects for '{obj_label}'")
 
         # === Text prompt segmentation ===
-        if params.text_prompt:
+        elif params.text_prompt:
             logger.info(f"Running text prompt segmentation: '{params.text_prompt}'")
             self._image_processor.reset_all_prompts(inference_state)
             inference_state = self._image_processor.set_text_prompt(
@@ -256,7 +282,12 @@ class SAM3Generator(Segmenter):
 
             # Get raw masks as numpy arrays for effects pipeline
             raw_masks = self._get_raw_masks_from_state(inference_state)
-            pipeline = EffectsPipeline(image, raw_masks, boxes=boxes_list)
+
+            # For object_prompts, we need to re-gather raw masks from each prompt
+            if params.object_prompts:
+                raw_masks = self._get_raw_masks_multi_prompt(params, image, inference_state)
+
+            pipeline = EffectsPipeline(image, raw_masks, boxes=boxes_list, labels=labels_list if labels_list else None)
             pipeline.apply(params.operations)
             processed_bytes = pipeline.to_bytes(format="png")
 
@@ -269,6 +300,7 @@ class SAM3Generator(Segmenter):
                 width=width,
                 height=height,
                 content_type="image/png",
+                labels=labels_list if labels_list else None,
             )
         else:
             # Default: return raw masks as base64 JSON
@@ -287,6 +319,7 @@ class SAM3Generator(Segmenter):
                 width=width,
                 height=height,
                 content_type="application/json",
+                labels=labels_list if labels_list else None,
             )
 
     def _xyxy_to_norm_cxcywh(self, box_xyxy, width: int, height: int) -> list:
@@ -351,6 +384,35 @@ class SAM3Generator(Segmenter):
                 m = m.squeeze(0)
             raw_masks.append(m)
         return raw_masks
+
+    def _get_raw_masks_multi_prompt(self, params, image, inference_state) -> list:
+        """Re-run each object prompt to collect raw masks for the effects pipeline.
+        
+        When using object_prompts, we need to re-run each text prompt to gather
+        the raw mask arrays (as opposed to the PNG-encoded versions already collected).
+        """
+        import numpy as np
+
+        all_raw_masks = []
+        for obj_prompt in params.object_prompts:
+            self._image_processor.reset_all_prompts(inference_state)
+            inference_state = self._image_processor.set_text_prompt(
+                prompt=obj_prompt["text"],
+                state=inference_state,
+            )
+            masks = inference_state.get("masks")
+            if masks is not None:
+                for mask in masks[:params.max_objects]:
+                    if hasattr(mask, 'cpu'):
+                        m = mask.cpu().numpy()
+                    elif isinstance(mask, np.ndarray):
+                        m = mask
+                    else:
+                        m = np.array(mask)
+                    while m.ndim > 2:
+                        m = m.squeeze(0)
+                    all_raw_masks.append(m)
+        return all_raw_masks
 
     def _mask_to_png(self, mask, width: int, height: int) -> bytes:
         """Convert a mask tensor/array to PNG bytes."""

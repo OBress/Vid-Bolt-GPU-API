@@ -36,6 +36,7 @@ class EffectsPipeline:
         image: Image.Image,
         masks: List[np.ndarray],
         boxes: Optional[List[Tuple[int, int, int, int]]] = None,
+        labels: Optional[List[str]] = None,
     ):
         """Initialize pipeline with source image and segmentation masks.
         
@@ -43,6 +44,7 @@ class EffectsPipeline:
             image: Source PIL image
             masks: List of binary masks (H, W), one per detected object
             boxes: Optional bounding boxes per object [(x1,y1,x2,y2)]
+            labels: Optional string labels per object (from object_prompts)
         """
         # Convert to RGBA for alpha support
         self.original = image.convert("RGBA")
@@ -72,8 +74,17 @@ class EffectsPipeline:
         self.active_target = "mask"
         self.active_mask = self.combined_mask.copy()
 
-        # Store boxes for text labels
+        # Store boxes for bounding box operations
         self.boxes = boxes or []
+
+        # Store labels for per-object targeting via object_label
+        self.object_labels: Optional[List[str]] = labels
+        self._label_to_indices: Dict[str, List[int]] = {}
+        if labels:
+            for i, label in enumerate(labels):
+                if label not in self._label_to_indices:
+                    self._label_to_indices[label] = []
+                self._label_to_indices[label].append(i)
 
     def apply(self, operations: List[Dict[str, Any]]) -> Image.Image:
         """Apply a list of operations sequentially.
@@ -190,28 +201,58 @@ class EffectsPipeline:
     def _op_select(self, op: dict):
         """Switch which region subsequent operations apply to.
         
-        Supports optional 'object_index' (0-based) to target a single detected
-        object instead of all objects. Works with 'mask' and 'background' targets.
+        Supports:
+          - 'object_index' (int, 0-based): target a single object by index
+          - 'object_label' (str): target all objects with this label
+          - 'object_labels' (list[str]): target all objects matching any of these labels (union)
+          - No index/label: target all objects (default)
+        
+        When using 'background' with a label/index, it inverts that specific mask
+        (NOT the combined mask), so other objects may be included in the background.
+        For background blur that excludes ALL objects, use 'background' without any label.
         """
         target = op.get("target", "mask")
         object_index = op.get("object_index", None)
+        object_label = op.get("object_label", None)
+        object_labels = op.get("object_labels", None)
         self.active_target = target
 
-        if object_index is not None and isinstance(object_index, int):
-            # Per-object targeting
+        # Resolve which mask indices to use
+        selected_indices = None
+
+        if object_label is not None and self._label_to_indices:
+            # Single label → find all objects with this label
+            selected_indices = self._label_to_indices.get(object_label, [])
+            if not selected_indices:
+                logger.warning(f"object_label '{object_label}' not found. Available: {list(self._label_to_indices.keys())}")
+        elif object_labels is not None and self._label_to_indices:
+            # Multiple labels → union of all matching objects
+            selected_indices = []
+            for lbl in object_labels:
+                selected_indices.extend(self._label_to_indices.get(lbl, []))
+            if not selected_indices:
+                logger.warning(f"No objects found for labels {object_labels}. Available: {list(self._label_to_indices.keys())}")
+        elif object_index is not None and isinstance(object_index, int):
+            # Single index
             if 0 <= object_index < len(self.object_masks):
-                single_mask = self.object_masks[object_index]
-                if target == "mask":
-                    self.active_mask = single_mask.copy()
-                elif target == "background":
-                    self.active_mask = ~single_mask
-                else:
-                    self.active_mask = np.ones((self.height, self.width), dtype=bool)
+                selected_indices = [object_index]
             else:
-                logger.warning(f"object_index {object_index} out of range (have {len(self.object_masks)} objects), using all masks")
-                self.active_mask = self.combined_mask.copy()
+                logger.warning(f"object_index {object_index} out of range (have {len(self.object_masks)} objects)")
+
+        if selected_indices is not None and selected_indices:
+            # Build a combined mask from selected objects
+            combined = np.zeros((self.height, self.width), dtype=bool)
+            for idx in selected_indices:
+                if 0 <= idx < len(self.object_masks):
+                    combined |= self.object_masks[idx]
+            if target == "mask":
+                self.active_mask = combined
+            elif target == "background":
+                self.active_mask = ~combined
+            else:
+                self.active_mask = np.ones((self.height, self.width), dtype=bool)
         else:
-            # Original behavior: all objects
+            # Default: all objects
             if target == "mask":
                 self.active_mask = self.combined_mask.copy()
             elif target == "background":

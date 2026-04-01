@@ -18,6 +18,18 @@ class BoxPrompt(BaseModel):
     )
 
 
+class ObjectPrompt(BaseModel):
+    """A named object prompt for per-object targeting."""
+    label: str = Field(
+        ...,
+        description="A unique label to reference this object in operations (e.g., 'person', 'table')",
+    )
+    text: str = Field(
+        ...,
+        description="Text describing the object to segment (e.g., 'white man sitting', 'metal table')",
+    )
+
+
 class ImageSegmentRequest(BaseModel):
     """Request body for image segmentation."""
     job_id: str = Field(
@@ -43,6 +55,11 @@ class ImageSegmentRequest(BaseModel):
     box_prompts_labeled: Optional[List[BoxPrompt]] = Field(
         None,
         description="List of box prompts with positive/negative labels for include/exclude regions",
+    )
+    object_prompts: Optional[List[ObjectPrompt]] = Field(
+        None,
+        description="Named object prompts for per-object targeting. Each has a 'label' and 'text'. "
+                    "Use the label in select operations with 'object_label' to target specific objects.",
     )
     confidence_threshold: float = Field(
         0.5,

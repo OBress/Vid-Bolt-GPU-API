@@ -83,10 +83,10 @@ async def segment_image(
     """Segment objects in an image (Async)."""
 
     # Validate at least one prompt type is provided
-    if not body.text_prompt and not body.point_prompts and not body.box_prompts and not body.box_prompts_labeled:
+    if not body.text_prompt and not body.point_prompts and not body.box_prompts and not body.box_prompts_labeled and not body.object_prompts:
         raise HTTPException(
             status_code=400,
-            detail="At least one prompt type required: text_prompt, point_prompts, box_prompts, or box_prompts_labeled",
+            detail="At least one prompt type required: text_prompt, point_prompts, box_prompts, box_prompts_labeled, or object_prompts",
         )
 
     # Download and validate input image
@@ -112,6 +112,11 @@ async def segment_image(
     if body.box_prompts_labeled:
         box_prompts_labeled = [((bp.box[0], bp.box[1], bp.box[2], bp.box[3]), bp.label) for bp in body.box_prompts_labeled]
 
+    # Convert object_prompts to dict list for internal dataclass
+    object_prompts = None
+    if body.object_prompts:
+        object_prompts = [{"label": op.label, "text": op.text} for op in body.object_prompts]
+
     params = ImageSegmentationParams(
         job_id=body.job_id,
         input_image_data=input_image_data,
@@ -119,6 +124,7 @@ async def segment_image(
         point_prompts=point_prompts,
         box_prompts=box_prompts,
         box_prompts_labeled=box_prompts_labeled,
+        object_prompts=object_prompts,
         confidence_threshold=body.confidence_threshold,
         max_objects=body.max_objects,
         output_type=body.output_type,
@@ -166,17 +172,21 @@ async def _run_image_segment(
         content_type=result.content_type,
     )
 
+    metadata = {
+        "object_count": result.object_count,
+        "width": result.width,
+        "height": result.height,
+        "boxes": [list(b) for b in result.boxes],
+        "scores": result.scores,
+        "output_type": params.output_type,
+    }
+    if result.labels:
+        metadata["labels"] = result.labels
+
     return JobResult(
         save_url=final_url,
         generation_time=round(time.time() - start_time, 2),
-        metadata={
-            "object_count": result.object_count,
-            "width": result.width,
-            "height": result.height,
-            "boxes": [list(b) for b in result.boxes],
-            "scores": result.scores,
-            "output_type": params.output_type,
-        },
+        metadata=metadata,
     )
 
 
