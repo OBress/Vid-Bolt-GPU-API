@@ -34,6 +34,8 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from app.config import Settings
 from app.models.internal import (
+    ImageAnimationParams,
+    ImageAnimationResult,
     ImageSegmentationParams,
     ImageSegmentationResult,
     VideoSegmentationParams,
@@ -85,7 +87,7 @@ class SAM3Generator(Segmenter):
             return
 
         try:
-            from sam3.model_builder import build_sam3_image_model, build_sam3_video_predictor
+            from sam3.model_builder import build_sam3_image_model, build_sam3_predictor
             from sam3.model.sam3_image_processor import Sam3Processor
 
             logger.info("Loading SAM 3 image model...")
@@ -93,12 +95,12 @@ class SAM3Generator(Segmenter):
             self._image_processor = Sam3Processor(self._image_model)
             logger.info("SAM 3 image model loaded")
 
-            logger.info("Loading SAM 3 video predictor...")
-            self._video_predictor = build_sam3_video_predictor()
-            logger.info("SAM 3 video predictor loaded")
+            logger.info("Loading SAM 3.1 video predictor (Object Multiplex)...")
+            self._video_predictor = build_sam3_predictor(version="sam3.1")
+            logger.info("SAM 3.1 video predictor loaded (multiplex: up to 16 objects/pass)")
 
             self._is_loaded = True
-            logger.info("SAM 3 models fully loaded (~3.5 GB VRAM)")
+            logger.info("SAM 3 / 3.1 models fully loaded (~3.5 GB VRAM)")
 
         except ImportError as e:
             logger.error(f"SAM 3 package not installed: {e}")
@@ -516,11 +518,26 @@ class SAM3Generator(Segmenter):
                 fourcc = cv2.VideoWriter_fourcc(*'mp4v')
                 out = cv2.VideoWriter(out_path, fourcc, source_fps, (frame_width, frame_height))
 
+                # Check if any operations have animation configs
+                has_animation = params.operations and any(
+                    isinstance(op, dict) and "animation" in op for op in params.operations
+                )
+                total_video_frames = len(source_frames)
+                video_duration = total_video_frames / max(1, source_fps)
+
                 for fi in sorted(source_frames.keys()):
                     frame_rgb = source_frames[fi]
                     masks = per_frame_masks.get(fi, [])
                     if masks and params.operations:
-                        processed = apply_effects_to_frame(frame_rgb, masks, params.operations)
+                        # Interpolate operations temporally if they have animation configs
+                        if has_animation:
+                            from app.services.segmentation_animation import interpolate_video_operations
+                            frame_ops = interpolate_video_operations(
+                                params.operations, fi, total_video_frames, video_duration
+                            )
+                        else:
+                            frame_ops = params.operations
+                        processed = apply_effects_to_frame(frame_rgb, masks, frame_ops)
                         out.write(cv2.cvtColor(processed, cv2.COLOR_RGB2BGR))
                     else:
                         out.write(cv2.cvtColor(frame_rgb, cv2.COLOR_RGB2BGR))
@@ -625,6 +642,120 @@ class SAM3Generator(Segmenter):
                 os.unlink(tmp_path)
             except OSError:
                 pass
+
+    # --- Image Animation (Image→Video) ---
+
+    async def animate_image(self, params: ImageAnimationParams) -> ImageAnimationResult:
+        """Generate an animated video from a segmented image.
+        
+        1. Run SAM 3 segmentation on the image (get masks)
+        2. Pass image + masks + animated operations to AnimationPipeline
+        3. AnimationPipeline renders N frames with interpolated effects
+        4. Return MP4 bytes
+        """
+        if self._dry_run:
+            return self._mock_image_animation(params)
+
+        return await asyncio.to_thread(self._animate_image_sync, params)
+
+    def _animate_image_sync(self, params: ImageAnimationParams) -> ImageAnimationResult:
+        """Synchronous image animation (runs in thread)."""
+        import numpy as np
+        from PIL import Image
+        from app.services.segmentation_animation import AnimationPipeline
+
+        # 1. Open image
+        image = Image.open(io.BytesIO(params.input_image_data)).convert("RGB")
+        width, height = image.size
+        logger.info(f"Animate: image loaded {width}x{height}")
+
+        # 2. Run SAM 3 segmentation to get masks
+        inference_state = self._image_processor.set_image(image)
+
+        if params.text_prompt:
+            inference_state = self._image_processor.set_text_prompt(params.text_prompt, inference_state)
+        elif params.box_prompts_labeled:
+            for (box_xyxy, label) in params.box_prompts_labeled[:params.max_objects]:
+                norm_box = self._xyxy_to_norm_cxcywh(box_xyxy, width, height)
+                inference_state = self._image_processor.add_geometric_prompt(
+                    state=inference_state, box=norm_box, label=label,
+                )
+        elif params.box_prompts:
+            for box_xyxy in params.box_prompts[:params.max_objects]:
+                norm_box = self._xyxy_to_norm_cxcywh(box_xyxy, width, height)
+                inference_state = self._image_processor.add_geometric_prompt(
+                    state=inference_state, box=norm_box, label=True,
+                )
+        elif params.point_prompts:
+            for point in params.point_prompts[:params.max_objects]:
+                px, py = point
+                norm_box = [px / width, py / height, 0.02, 0.02]
+                inference_state = self._image_processor.add_geometric_prompt(
+                    state=inference_state, box=norm_box, label=True,
+                )
+
+        # Get raw masks and boxes
+        raw_masks = self._get_raw_masks_from_state(inference_state)
+        boxes_list = []
+        boxes = inference_state.get("boxes")
+        if boxes is not None:
+            for box in boxes:
+                if hasattr(box, 'tolist'):
+                    box = box.tolist()
+                boxes_list.append(tuple(int(v) for v in box[:4]))
+
+        object_count = len(raw_masks)
+        logger.info(f"Animate: segmented {object_count} objects, rendering animation...")
+
+        if object_count == 0:
+            logger.warning("No objects found for animation, using full-frame mask")
+            full_mask = np.ones((height, width), dtype=bool)
+            raw_masks = [full_mask]
+
+        # 3. Build and render animation
+        pipeline = AnimationPipeline(
+            image=image,
+            masks=raw_masks,
+            boxes=boxes_list,
+            fps=params.fps,
+            duration=params.duration_seconds,
+        )
+
+        operations = params.operations or []
+        mp4_bytes = pipeline.render(operations)
+
+        total_frames = min(int(params.fps * params.duration_seconds), 600)
+        logger.info(
+            f"Animation complete: {total_frames} frames, "
+            f"{len(mp4_bytes)} bytes MP4"
+        )
+
+        return ImageAnimationResult(
+            video_data=mp4_bytes,
+            width=width,
+            height=height,
+            duration_seconds=params.duration_seconds,
+            fps=params.fps,
+            frame_count=total_frames,
+            object_count=object_count,
+        )
+
+    def _mock_image_animation(self, params: ImageAnimationParams) -> ImageAnimationResult:
+        """Generate mock animation result for dry-run testing."""
+        from PIL import Image
+        image = Image.open(io.BytesIO(params.input_image_data))
+        width, height = image.size
+        total_frames = min(int(params.fps * params.duration_seconds), 600)
+
+        return ImageAnimationResult(
+            video_data=b"mock_mp4_data",
+            width=width,
+            height=height,
+            duration_seconds=params.duration_seconds,
+            fps=params.fps,
+            frame_count=total_frames,
+            object_count=1,
+        )
 
     # --- Mock/Dry-Run Methods ---
 

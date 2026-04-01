@@ -9,6 +9,8 @@ from typing import Any, Dict, List, Optional
 
 from app.config import Settings
 from app.models.internal import (
+    ImageAnimationParams,
+    ImageAnimationResult,
     ImageEditParams,
     ImageEditResult,
     ImageGenerationParams,
@@ -141,7 +143,7 @@ class MusicGenerator(BaseModelGenerator):
 
 
 class Segmenter(BaseModelGenerator):
-    """Interface for image/video segmentation."""
+    """Interface for image/video segmentation and animation."""
 
     @abstractmethod
     async def segment_image(self, params: ImageSegmentationParams) -> ImageSegmentationResult:
@@ -152,3 +154,9 @@ class Segmenter(BaseModelGenerator):
     async def segment_video(self, params: VideoSegmentationParams) -> VideoSegmentationResult:
         """Track and segment objects across video frames."""
         pass
+
+    @abstractmethod
+    async def animate_image(self, params: ImageAnimationParams) -> ImageAnimationResult:
+        """Generate animated video from a segmented image."""
+        pass
+

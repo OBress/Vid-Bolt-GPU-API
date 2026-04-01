@@ -14,8 +14,9 @@ from app.dependencies import APIKeyDep, StorageDep, JobManagerDep, ModelManagerD
 from app.exceptions import ValidationError
 from app.models.common import ErrorResponse
 from app.models.segmentation import ImageSegmentRequest, VideoSegmentRequest
+from app.models.segmentation_animation import AnimateSegmentRequest
 from app.models.job import AsyncJobResponse, JobResult
-from app.models.internal import ImageSegmentationParams, VideoSegmentationParams
+from app.models.internal import ImageSegmentationParams, VideoSegmentationParams, ImageAnimationParams
 from app.services.model_manager import JobType
 
 logger = logging.getLogger(__name__)
@@ -293,3 +294,141 @@ async def _run_video_segment(
             "output_format": result.output_format,
         },
     )
+
+
+# =============================================================================
+# Animated Segmentation (Image → Video)
+# =============================================================================
+
+@router.post(
+    "/animate",
+    response_model=AsyncJobResponse,
+    status_code=202,
+    responses={
+        400: {"model": ErrorResponse, "description": "Validation error"},
+        401: {"model": ErrorResponse, "description": "Authentication error"},
+        429: {"model": ErrorResponse, "description": "System busy"},
+        503: {"model": ErrorResponse, "description": "Segmentation mode not active"},
+        500: {"model": ErrorResponse, "description": "Internal error"},
+    },
+    summary="Animate Segmented Image",
+    description=(
+        "Generate an animated video from a segmented image. Segments the image "
+        "using SAM 3, then renders animated visual effects (with easing, "
+        "transitions, draw-on, pulse, etc.) to produce an MP4 video."
+    ),
+)
+async def animate_segment(
+    request: Request,
+    body: AnimateSegmentRequest,
+    api_key: APIKeyDep,
+    storage: StorageDep,
+    job_manager: JobManagerDep,
+    model_manager: ModelManagerDep,
+    settings: SettingsDep,
+) -> AsyncJobResponse:
+    """Animate segmented image to video (Async)."""
+
+    # Validate at least one prompt type is provided
+    if not body.text_prompt and not body.point_prompts and not body.box_prompts and not body.box_prompts_labeled:
+        raise HTTPException(
+            status_code=400,
+            detail="At least one prompt type required: text_prompt, point_prompts, box_prompts, or box_prompts_labeled",
+        )
+
+    if not body.operations:
+        raise HTTPException(
+            status_code=400,
+            detail="At least one operation is required for animation",
+        )
+
+    # Download and validate input image
+    try:
+        input_image_data = await storage.download_from_url(body.input_image_url)
+        if not _validate_image_magic_bytes(input_image_data):
+            raise ValidationError("input_image_url is not a valid image")
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+    # Convert prompts
+    point_prompts = None
+    if body.point_prompts:
+        point_prompts = [(p[0], p[1]) for p in body.point_prompts]
+
+    box_prompts = None
+    if body.box_prompts:
+        box_prompts = [(b[0], b[1], b[2], b[3]) for b in body.box_prompts]
+
+    box_prompts_labeled = None
+    if body.box_prompts_labeled:
+        box_prompts_labeled = [((bp.box[0], bp.box[1], bp.box[2], bp.box[3]), bp.label) for bp in body.box_prompts_labeled]
+
+    params = ImageAnimationParams(
+        job_id=body.job_id,
+        input_image_data=input_image_data,
+        text_prompt=body.text_prompt,
+        point_prompts=point_prompts,
+        box_prompts=box_prompts,
+        box_prompts_labeled=box_prompts_labeled,
+        confidence_threshold=body.confidence_threshold,
+        max_objects=body.max_objects,
+        duration_seconds=body.duration_seconds,
+        fps=body.fps,
+        operations=body.operations,
+    )
+
+    submitted = await job_manager.try_submit_job(
+        job_id=body.job_id,
+        job_type=JobType.SEGMENTATION,
+        task_func=_run_animate_segment,
+        webhook_url=body.webhook_url,
+        item_id=body.item_id,
+        webhook_secret=body.webhook_secret,
+        model_manager=model_manager,
+        storage=storage,
+        params=params,
+        save_url=body.save_url,
+    )
+
+    if not submitted:
+        raise HTTPException(status_code=429, detail="System busy: Max concurrent jobs reached")
+
+    return AsyncJobResponse(
+        job_id=body.job_id,
+        status_url=str(request.url_for("get_job_status", job_id=body.job_id)),
+    )
+
+
+async def _run_animate_segment(
+    model_manager: ModelManagerDep,
+    storage: StorageDep,
+    params: ImageAnimationParams,
+    save_url: str,
+) -> JobResult:
+    """Background task for animated segmentation."""
+    start_time = time.time()
+
+    segmenter = model_manager.get_segmenter()
+    result = await segmenter.animate_image(params)
+
+    final_url = await storage.upload_to_url(
+        data=result.video_data,
+        url=save_url,
+        content_type="video/mp4",
+    )
+
+    return JobResult(
+        save_url=final_url,
+        generation_time=round(time.time() - start_time, 2),
+        metadata={
+            "width": result.width,
+            "height": result.height,
+            "duration_seconds": result.duration_seconds,
+            "fps": result.fps,
+            "frame_count": result.frame_count,
+            "object_count": result.object_count,
+        },
+    )
+

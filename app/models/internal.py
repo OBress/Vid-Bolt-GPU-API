@@ -191,3 +191,33 @@ class VideoSegmentationResult:
     object_count: int
     tracked_ids: List[int]        # Unique IDs for tracked objects
 
+
+# --- Segmentation Animation ---
+
+@dataclass
+class ImageAnimationParams:
+    """Parameters for image-to-video animated segmentation."""
+    job_id: str
+    input_image_data: bytes
+    text_prompt: Optional[str] = None
+    point_prompts: Optional[List[Tuple[int, int]]] = None
+    box_prompts: Optional[List[Tuple[int, int, int, int]]] = None
+    box_prompts_labeled: Optional[List[Tuple[Tuple[int, int, int, int], bool]]] = None
+    confidence_threshold: float = 0.5
+    max_objects: int = 100
+    duration_seconds: float = 3.0
+    fps: int = 30
+    operations: Optional[List[Dict]] = None
+
+@dataclass
+class ImageAnimationResult:
+    """Result of image-to-video animation."""
+    video_data: bytes
+    width: int
+    height: int
+    duration_seconds: float
+    fps: int
+    frame_count: int
+    object_count: int
+
+

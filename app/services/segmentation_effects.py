@@ -127,6 +127,40 @@ class EffectsPipeline:
                     self._op_shadow(op)
                 elif op_type == "vignette":
                     self._op_vignette(op)
+                elif op_type == "grayscale":
+                    self._op_grayscale(op)
+                elif op_type == "invert":
+                    self._op_invert(op)
+                elif op_type == "sharpen":
+                    self._op_sharpen(op)
+                elif op_type == "sepia":
+                    self._op_sepia(op)
+                elif op_type == "posterize":
+                    self._op_posterize(op)
+                elif op_type == "edge_detect":
+                    self._op_edge_detect(op)
+                elif op_type == "emboss":
+                    self._op_emboss(op)
+                elif op_type == "noise":
+                    self._op_noise(op)
+                elif op_type == "sketch":
+                    self._op_sketch(op)
+                elif op_type == "duotone":
+                    self._op_duotone(op)
+                elif op_type == "halftone":
+                    self._op_halftone(op)
+                elif op_type == "glitch":
+                    self._op_glitch(op)
+                elif op_type == "motion_blur":
+                    self._op_motion_blur(op)
+                elif op_type == "glass":
+                    self._op_glass(op)
+                elif op_type == "feather":
+                    self._op_feather(op)
+                elif op_type == "zoom":
+                    pass  # Handled by AnimationPipeline camera layer
+                elif op_type == "pan":
+                    pass  # Handled by AnimationPipeline camera layer
                 else:
                     logger.warning(f"Unknown operation type: {op_type}, skipping")
             except Exception as e:
@@ -325,17 +359,25 @@ class EffectsPipeline:
     # =========================================================================
 
     def _op_outline(self, op: dict):
-        """Draw contour lines around detected objects."""
+        """Draw contour lines around detected objects.
+        
+        Supports 'progress' param (0.0-1.0) for progressive draw animation.
+        """
         color = tuple(op.get("color", [0, 255, 0, 255]))
         if len(color) == 3:
             color = color + (255,)
         thickness = op.get("thickness", 3)
+        progress = max(0.0, min(1.0, op.get("progress", 1.0)))
 
-        # Find contours using edge detection on the mask
         for obj_mask in self.object_masks:
             if not np.any(obj_mask):
                 continue
             contour = self._find_contour_pixels(obj_mask, thickness)
+
+            # If progress < 1.0, only show partial contour (for draw animation)
+            if progress < 1.0:
+                contour = self._partial_contour(contour, progress)
+
             overlay = Image.new("RGBA", (self.width, self.height), (0, 0, 0, 0))
             overlay_arr = np.array(overlay)
             overlay_arr[contour] = color
@@ -549,6 +591,330 @@ class EffectsPipeline:
         self.image = Image.alpha_composite(self.image, overlay)
 
     # =========================================================================
+    # Filters
+    # =========================================================================
+
+    def _op_grayscale(self, op: dict):
+        """Convert selection to grayscale with blend intensity."""
+        intensity = max(0.0, min(1.0, op.get("intensity", 1.0)))
+
+        img_arr = np.array(self.image)
+        mask = self.active_mask
+
+        luminance = np.dot(img_arr[mask, :3].astype(np.float32), [0.299, 0.587, 0.114])
+        gray_rgb = np.stack([luminance] * 3, axis=-1)
+        img_arr[mask, :3] = (
+            img_arr[mask, :3].astype(np.float32) * (1 - intensity) + gray_rgb * intensity
+        ).astype(np.uint8)
+        self.image = Image.fromarray(img_arr)
+
+    def _op_invert(self, op: dict):
+        """Invert colors of selection with blend intensity."""
+        intensity = max(0.0, min(1.0, op.get("intensity", 1.0)))
+
+        img_arr = np.array(self.image)
+        mask = self.active_mask
+        inverted = 255 - img_arr[mask, :3]
+        img_arr[mask, :3] = (
+            img_arr[mask, :3].astype(np.float32) * (1 - intensity) + inverted.astype(np.float32) * intensity
+        ).astype(np.uint8)
+        self.image = Image.fromarray(img_arr)
+
+    def _op_sharpen(self, op: dict):
+        """Sharpen edges within selection."""
+        strength = max(0.0, min(10.0, op.get("strength", 2.0)))
+
+        sharpened = self.image.filter(ImageFilter.SHARPEN)
+        if strength > 1.0:
+            enhancer = ImageEnhance.Sharpness(self.image)
+            sharpened = enhancer.enhance(strength)
+        self._composite_with_mask(sharpened)
+
+    def _op_sepia(self, op: dict):
+        """Apply sepia tone to selection."""
+        intensity = max(0.0, min(1.0, op.get("intensity", 1.0)))
+
+        img_arr = np.array(self.image).astype(np.float32)
+        mask = self.active_mask
+        r, g, b = img_arr[mask, 0], img_arr[mask, 1], img_arr[mask, 2]
+
+        sepia_r = np.clip(r * 0.393 + g * 0.769 + b * 0.189, 0, 255)
+        sepia_g = np.clip(r * 0.349 + g * 0.686 + b * 0.168, 0, 255)
+        sepia_b = np.clip(r * 0.272 + g * 0.534 + b * 0.131, 0, 255)
+
+        img_arr[mask, 0] = (r * (1 - intensity) + sepia_r * intensity).astype(np.uint8)
+        img_arr[mask, 1] = (g * (1 - intensity) + sepia_g * intensity).astype(np.uint8)
+        img_arr[mask, 2] = (b * (1 - intensity) + sepia_b * intensity).astype(np.uint8)
+        self.image = Image.fromarray(img_arr.astype(np.uint8))
+
+    def _op_posterize(self, op: dict):
+        """Reduce color levels within selection."""
+        levels = max(2, min(32, int(op.get("levels", 4))))
+
+        img_arr = np.array(self.image)
+        mask = self.active_mask
+        factor = 256.0 / levels
+        img_arr[mask, :3] = (np.floor(img_arr[mask, :3].astype(np.float32) / factor) * factor).astype(np.uint8)
+        self.image = Image.fromarray(img_arr)
+
+    def _op_edge_detect(self, op: dict):
+        """Apply edge detection to selection with blend."""
+        intensity = max(0.0, min(1.0, op.get("intensity", 1.0)))
+
+        edges = self.image.filter(ImageFilter.FIND_EDGES)
+        edges_arr = np.array(edges)
+        img_arr = np.array(self.image)
+        mask = self.active_mask
+        img_arr[mask, :3] = (
+            img_arr[mask, :3].astype(np.float32) * (1 - intensity)
+            + edges_arr[mask, :3].astype(np.float32) * intensity
+        ).astype(np.uint8)
+        self.image = Image.fromarray(img_arr)
+
+    def _op_emboss(self, op: dict):
+        """Apply emboss relief effect to selection."""
+        intensity = max(0.0, min(1.0, op.get("intensity", 1.0)))
+
+        embossed = self.image.filter(ImageFilter.EMBOSS)
+        embossed_arr = np.array(embossed)
+        img_arr = np.array(self.image)
+        mask = self.active_mask
+        img_arr[mask, :3] = (
+            img_arr[mask, :3].astype(np.float32) * (1 - intensity)
+            + embossed_arr[mask, :3].astype(np.float32) * intensity
+        ).astype(np.uint8)
+        self.image = Image.fromarray(img_arr)
+
+    def _op_noise(self, op: dict):
+        """Add noise/grain to selection."""
+        amount = max(0.0, min(1.0, op.get("amount", 0.3)))
+        noise_type = op.get("noise_type", "gaussian")
+        seed = op.get("seed", None)
+
+        rng = np.random.RandomState(seed)
+        img_arr = np.array(self.image)
+        mask = self.active_mask
+        h, w = img_arr.shape[:2]
+
+        if noise_type == "grain":
+            noise_mono = rng.normal(0, 255 * amount * 0.5, (h, w)).astype(np.float32)
+            noise_rgb = np.stack([noise_mono] * 3, axis=-1)
+        else:  # gaussian
+            noise_rgb = rng.normal(0, 255 * amount * 0.5, (h, w, 3)).astype(np.float32)
+
+        pixels = img_arr[mask, :3].astype(np.float32)
+        noise_pixels = noise_rgb[mask]
+        img_arr[mask, :3] = np.clip(pixels + noise_pixels, 0, 255).astype(np.uint8)
+        self.image = Image.fromarray(img_arr)
+
+    def _op_sketch(self, op: dict):
+        """Convert selection to pencil sketch effect."""
+        intensity = max(0.0, min(1.0, op.get("intensity", 1.0)))
+        detail = max(1, min(10, int(op.get("detail", 5))))
+
+        img_arr = np.array(self.image)
+        mask = self.active_mask
+
+        # Create sketch: grayscale → invert → blur → blend (dodge)
+        gray = np.dot(img_arr[:, :, :3].astype(np.float32), [0.299, 0.587, 0.114])
+        inv_gray = 255.0 - gray
+        blur_radius = detail * 3
+        inv_blur = np.array(
+            Image.fromarray(inv_gray.astype(np.uint8), "L").filter(
+                ImageFilter.GaussianBlur(radius=blur_radius)
+            )
+        ).astype(np.float32)
+
+        # Color dodge blend
+        sketch_val = np.clip(gray / (256.0 - inv_blur + 1e-6) * 256.0, 0, 255)
+        sketch_rgb = np.stack([sketch_val] * 3, axis=-1).astype(np.uint8)
+
+        img_arr[mask, :3] = (
+            img_arr[mask, :3].astype(np.float32) * (1 - intensity)
+            + sketch_rgb[mask].astype(np.float32) * intensity
+        ).astype(np.uint8)
+        self.image = Image.fromarray(img_arr)
+
+    # =========================================================================
+    # Artistic
+    # =========================================================================
+
+    def _op_duotone(self, op: dict):
+        """Map selection to a two-color palette."""
+        color_dark = tuple(op.get("color_dark", [20, 0, 80]))
+        color_light = tuple(op.get("color_light", [255, 200, 100]))
+        intensity = max(0.0, min(1.0, op.get("intensity", 1.0)))
+
+        img_arr = np.array(self.image)
+        mask = self.active_mask
+        luminance = np.dot(img_arr[mask, :3].astype(np.float32), [0.299, 0.587, 0.114]) / 255.0
+
+        duo = np.zeros_like(img_arr[mask, :3], dtype=np.float32)
+        for c in range(3):
+            duo[:, c] = color_dark[c] * (1 - luminance) + color_light[c] * luminance
+
+        img_arr[mask, :3] = (
+            img_arr[mask, :3].astype(np.float32) * (1 - intensity) + duo * intensity
+        ).astype(np.uint8)
+        self.image = Image.fromarray(img_arr)
+
+    def _op_halftone(self, op: dict):
+        """Apply halftone dot pattern to selection."""
+        dot_size = max(2, min(30, int(op.get("dot_size", 6))))
+        intensity = max(0.0, min(1.0, op.get("intensity", 1.0)))
+
+        img_arr = np.array(self.image)
+        mask = self.active_mask
+
+        gray = np.dot(img_arr[:, :, :3].astype(np.float32), [0.299, 0.587, 0.114])
+        halftone = np.zeros_like(gray)
+
+        for y in range(0, self.height, dot_size):
+            for x in range(0, self.width, dot_size):
+                block = gray[y:y+dot_size, x:x+dot_size]
+                if block.size == 0:
+                    continue
+                avg = block.mean() / 255.0
+                radius = int(avg * dot_size * 0.5)
+                cy, cx = y + dot_size // 2, x + dot_size // 2
+                yy, xx = np.ogrid[max(0,cy-radius):min(self.height,cy+radius+1),
+                                  max(0,cx-radius):min(self.width,cx+radius+1)]
+                dist = (yy - cy)**2 + (xx - cx)**2
+                circle_mask = dist <= radius**2
+                halftone[max(0,cy-radius):min(self.height,cy+radius+1),
+                         max(0,cx-radius):min(self.width,cx+radius+1)][circle_mask] = 255
+
+        ht_rgb = np.stack([halftone] * 3, axis=-1).astype(np.float32)
+        img_arr[mask, :3] = (
+            img_arr[mask, :3].astype(np.float32) * (1 - intensity) + ht_rgb[mask] * intensity
+        ).astype(np.uint8)
+        self.image = Image.fromarray(img_arr)
+
+    def _op_glitch(self, op: dict):
+        """RGB channel shift + scanline glitch effect."""
+        intensity_val = max(0.0, min(1.0, op.get("intensity", 0.5)))
+        rgb_shift = max(0, min(30, int(op.get("rgb_shift", 10))))
+        seed = op.get("seed", 42)
+
+        rng = np.random.RandomState(seed)
+        img_arr = np.array(self.image)
+        mask = self.active_mask
+        glitched = img_arr.copy()
+        shift = int(rgb_shift * intensity_val)
+
+        if shift > 0:
+            # Shift red channel right
+            glitched[:, shift:, 0] = img_arr[:, :-shift, 0]
+            # Shift blue channel left
+            glitched[:, :-shift, 2] = img_arr[:, shift:, 2]
+
+        # Add random scanlines
+        num_lines = max(1, int(20 * intensity_val))
+        for _ in range(num_lines):
+            y = rng.randint(0, self.height)
+            line_h = rng.randint(1, max(2, int(4 * intensity_val)))
+            x_off = rng.randint(-shift * 2, shift * 2 + 1) if shift > 0 else 0
+            y_end = min(y + line_h, self.height)
+            if x_off > 0:
+                glitched[y:y_end, x_off:, :3] = img_arr[y:y_end, :-x_off or None, :3]
+            elif x_off < 0:
+                glitched[y:y_end, :x_off, :3] = img_arr[y:y_end, -x_off:, :3]
+
+        channels = img_arr.shape[2]
+        mask_exp = np.stack([mask] * channels, axis=-1)
+        img_arr[mask_exp] = glitched[mask_exp]
+        self.image = Image.fromarray(img_arr)
+
+    # =========================================================================
+    # Distortion
+    # =========================================================================
+
+    def _op_motion_blur(self, op: dict):
+        """Apply directional motion blur to selection."""
+        angle = op.get("angle", 0) % 360
+        strength = max(1, min(50, int(op.get("strength", 15))))
+
+        # Create motion blur kernel
+        kernel_size = strength * 2 + 1
+        kernel = np.zeros((kernel_size, kernel_size), dtype=np.float32)
+        center = strength
+        rad = np.deg2rad(angle)
+        cos_a, sin_a = np.cos(rad), np.sin(rad)
+
+        for i in range(-strength, strength + 1):
+            x = int(center + i * cos_a)
+            y = int(center + i * sin_a)
+            if 0 <= x < kernel_size and 0 <= y < kernel_size:
+                kernel[y, x] = 1.0
+        kernel /= max(1, kernel.sum())
+
+        kernel_img = ImageFilter.Kernel(
+            size=(kernel_size, kernel_size),
+            kernel=kernel.flatten().tolist(),
+            scale=1,
+            offset=0,
+        )
+
+        try:
+            blurred = self.image.filter(kernel_img)
+        except Exception:
+            # Fallback: use simple directional blur via multiple box blurs
+            blurred = self.image.filter(ImageFilter.GaussianBlur(radius=strength))
+
+        self._composite_with_mask(blurred)
+
+    def _op_glass(self, op: dict):
+        """Apply frosted glass distortion to selection."""
+        strength = max(1, min(30, int(op.get("strength", 8))))
+        scale = max(1, min(20, int(op.get("scale", 4))))
+
+        img_arr = np.array(self.image)
+        mask = self.active_mask
+        result = img_arr.copy()
+
+        rng = np.random.RandomState(op.get("seed", 0))
+        h, w = img_arr.shape[:2]
+
+        # Create displacement map
+        disp_y = (rng.rand(h // scale + 1, w // scale + 1) * 2 - 1) * strength
+        disp_x = (rng.rand(h // scale + 1, w // scale + 1) * 2 - 1) * strength
+
+        # Upscale displacement to full resolution
+        disp_y_img = Image.fromarray(disp_y.astype(np.float32)).resize((w, h), Image.BILINEAR)
+        disp_x_img = Image.fromarray(disp_x.astype(np.float32)).resize((w, h), Image.BILINEAR)
+        disp_y_full = np.array(disp_y_img)
+        disp_x_full = np.array(disp_x_img)
+
+        ys, xs = np.where(mask)
+        src_y = np.clip((ys + disp_y_full[ys, xs]).astype(int), 0, h - 1)
+        src_x = np.clip((xs + disp_x_full[ys, xs]).astype(int), 0, w - 1)
+        result[ys, xs] = img_arr[src_y, src_x]
+
+        self.image = Image.fromarray(result)
+
+    # =========================================================================
+    # Mask Processing
+    # =========================================================================
+
+    def _op_feather(self, op: dict):
+        """Soften mask edges with Gaussian feathering.
+        
+        Modifies the active mask to have soft (anti-aliased) edges,
+        then re-composites the original and processed image.
+        """
+        radius = max(1, min(50, int(op.get("radius", 10))))
+
+        # Create soft-edge mask by blurring the binary mask
+        mask_img = Image.fromarray(
+            (self.active_mask * 255).astype(np.uint8), "L"
+        )
+        soft_mask = mask_img.filter(ImageFilter.GaussianBlur(radius=radius))
+
+        # Update active mask to soft version (float)
+        self.active_mask = np.array(soft_mask).astype(np.float32) / 255.0 > 0.01
+        logger.debug(f"Feathered mask with radius {radius}")
+
+    # =========================================================================
     # Helpers
     # =========================================================================
 
@@ -566,12 +932,33 @@ class EffectsPipeline:
         """Find contour pixels of a binary mask using morphological operations."""
         from scipy import ndimage
 
-        # Dilate and erode to find boundary
         struct = ndimage.generate_binary_structure(2, 2)
         dilated = ndimage.binary_dilation(mask, structure=struct, iterations=thickness)
         eroded = ndimage.binary_erosion(mask, structure=struct, iterations=max(1, thickness // 2))
         contour = dilated & ~eroded
         return contour
+
+    def _partial_contour(self, contour: np.ndarray, progress: float) -> np.ndarray:
+        """Return only a percentage of contour pixels for draw animation.
+        
+        Traces the contour clockwise from the topmost point, revealing
+        only `progress` fraction of the total pixels.
+        """
+        ys, xs = np.where(contour)
+        if len(ys) == 0:
+            return contour
+
+        # Find centroid and compute angles for clockwise ordering
+        cy, cx = ys.mean(), xs.mean()
+        angles = np.arctan2(ys - cy, xs - cx)
+        order = np.argsort(angles)
+
+        # Keep only first N% of ordered contour pixels
+        n_show = max(1, int(len(order) * progress))
+        partial_mask = np.zeros_like(contour)
+        show_idx = order[:n_show]
+        partial_mask[ys[show_idx], xs[show_idx]] = True
+        return partial_mask
 
 
 def apply_effects_to_frame(
