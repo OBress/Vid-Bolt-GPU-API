@@ -122,6 +122,9 @@ RUN pip install --no-cache-dir soundfile==0.13.1
 # Lightweight model (~848M params, ~3.5GB weights) for image/video segmentation
 COPY repos/sam3 /app/repos/sam3
 RUN pip install --no-cache-dir -e /app/repos/sam3
+# pycocotools is imported transitively by SAM 3's training data module (coco_json_loaders)
+# which gets pulled in at import time via model_builder → tracker_base → collator
+RUN pip install --no-cache-dir pycocotools
 
 # =============================================================================
 # Copy Application Code
