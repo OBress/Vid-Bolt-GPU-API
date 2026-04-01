@@ -1,7 +1,21 @@
 """Pydantic models for segmentation API endpoints."""
 
-from typing import List, Optional, Tuple
+from typing import List, Literal, Optional, Tuple
 from pydantic import BaseModel, Field
+
+
+class BoxPrompt(BaseModel):
+    """A box prompt with optional positive/negative label."""
+    box: List[int] = Field(
+        ...,
+        min_length=4,
+        max_length=4,
+        description="Bounding box in [x1, y1, x2, y2] pixel coordinates",
+    )
+    label: bool = Field(
+        True,
+        description="True = include this region (positive), False = exclude this region (negative)",
+    )
 
 
 class ImageSegmentRequest(BaseModel):
@@ -24,7 +38,17 @@ class ImageSegmentRequest(BaseModel):
     )
     box_prompts: Optional[List[List[int]]] = Field(
         None,
-        description="List of [x1, y1, x2, y2] bounding boxes to prompt specific regions",
+        description="List of [x1, y1, x2, y2] bounding boxes (simple format, all positive)",
+    )
+    box_prompts_labeled: Optional[List[BoxPrompt]] = Field(
+        None,
+        description="List of box prompts with positive/negative labels for include/exclude regions",
+    )
+    confidence_threshold: float = Field(
+        0.5,
+        ge=0.0,
+        le=1.0,
+        description="Minimum confidence score to include an object (0.0-1.0)",
     )
     max_objects: int = Field(
         100,
@@ -60,9 +84,40 @@ class VideoSegmentRequest(BaseModel):
         ...,
         description="URL of the video to segment (MP4)",
     )
-    text_prompt: str = Field(
-        ...,
+    text_prompt: Optional[str] = Field(
+        None,
         description="Text describing objects to track (e.g., 'yellow school bus')",
+    )
+    point_prompts: Optional[List[List[float]]] = Field(
+        None,
+        description="List of [x, y] pixel coordinates for point prompts on the initial frame",
+    )
+    point_labels: Optional[List[int]] = Field(
+        None,
+        description="Labels for each point prompt: 1 = positive (include), 0 = negative (exclude)",
+    )
+    box_prompts: Optional[List[List[float]]] = Field(
+        None,
+        description="List of [x, y, w, h] bounding boxes for initial frame prompts",
+    )
+    box_labels: Optional[List[int]] = Field(
+        None,
+        description="Labels for each box prompt: 1 = positive, 0 = negative",
+    )
+    prompt_frame_index: int = Field(
+        0,
+        ge=0,
+        description="Frame index to apply prompts on (default: first frame)",
+    )
+    propagation_direction: Literal["forward", "backward", "both"] = Field(
+        "forward",
+        description="Direction to propagate tracking: 'forward', 'backward', or 'both'",
+    )
+    confidence_threshold: float = Field(
+        0.5,
+        ge=0.0,
+        le=1.0,
+        description="Minimum confidence threshold for object detection",
     )
     output_format: str = Field(
         "masks_json",

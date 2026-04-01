@@ -146,7 +146,9 @@ class ImageSegmentationParams:
     input_image_data: bytes
     text_prompt: Optional[str] = None         # e.g., "all cars", "person in red"
     point_prompts: Optional[List[Tuple[int, int]]] = None  # [(x, y)] click coords
-    box_prompts: Optional[List[Tuple[int, int, int, int]]] = None  # [(x1,y1,x2,y2)]
+    box_prompts: Optional[List[Tuple[int, int, int, int]]] = None  # [(x1,y1,x2,y2)] all positive
+    box_prompts_labeled: Optional[List[Tuple[Tuple[int, int, int, int], bool]]] = None  # [((x1,y1,x2,y2), label)]
+    confidence_threshold: float = 0.5
     max_objects: int = 100
 
 @dataclass
@@ -164,7 +166,14 @@ class VideoSegmentationParams:
     """Parameters for video segmentation/tracking (SAM 3)."""
     job_id: str
     input_video_data: bytes       # MP4 video bytes
-    text_prompt: str              # Concept to track (e.g., "yellow school bus")
+    text_prompt: Optional[str] = None         # Text concept to track
+    point_prompts: Optional[List[List[float]]] = None  # [[x, y]] pixel coords
+    point_labels: Optional[List[int]] = None  # 1 = positive, 0 = negative
+    box_prompts: Optional[List[List[float]]] = None  # [[x, y, w, h]] bounding boxes
+    box_labels: Optional[List[int]] = None    # 1 = positive, 0 = negative
+    prompt_frame_index: int = 0   # Frame to apply prompts on
+    propagation_direction: str = "forward"  # "forward", "backward", "both"
+    confidence_threshold: float = 0.5
     output_format: str = "masks_json"  # "masks_json" or "overlay_video"
     max_frames: int = 300         # Max frames to process
 
@@ -176,3 +185,4 @@ class VideoSegmentationResult:
     frame_count: int
     object_count: int
     tracked_ids: List[int]        # Unique IDs for tracked objects
+

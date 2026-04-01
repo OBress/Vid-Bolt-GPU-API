@@ -82,10 +82,10 @@ async def segment_image(
     """Segment objects in an image (Async)."""
 
     # Validate at least one prompt type is provided
-    if not body.text_prompt and not body.point_prompts and not body.box_prompts:
+    if not body.text_prompt and not body.point_prompts and not body.box_prompts and not body.box_prompts_labeled:
         raise HTTPException(
             status_code=400,
-            detail="At least one prompt type required: text_prompt, point_prompts, or box_prompts",
+            detail="At least one prompt type required: text_prompt, point_prompts, box_prompts, or box_prompts_labeled",
         )
 
     # Download and validate input image
@@ -107,12 +107,18 @@ async def segment_image(
     if body.box_prompts:
         box_prompts = [(b[0], b[1], b[2], b[3]) for b in body.box_prompts]
 
+    box_prompts_labeled = None
+    if body.box_prompts_labeled:
+        box_prompts_labeled = [((bp.box[0], bp.box[1], bp.box[2], bp.box[3]), bp.label) for bp in body.box_prompts_labeled]
+
     params = ImageSegmentationParams(
         job_id=body.job_id,
         input_image_data=input_image_data,
         text_prompt=body.text_prompt,
         point_prompts=point_prompts,
         box_prompts=box_prompts,
+        box_prompts_labeled=box_prompts_labeled,
+        confidence_threshold=body.confidence_threshold,
         max_objects=body.max_objects,
     )
 
@@ -199,6 +205,13 @@ async def segment_video(
 ) -> AsyncJobResponse:
     """Track and segment objects across video frames (Async)."""
 
+    # Validate at least one prompt type is provided
+    if not body.text_prompt and not body.point_prompts and not body.box_prompts:
+        raise HTTPException(
+            status_code=400,
+            detail="At least one prompt type required: text_prompt, point_prompts, or box_prompts",
+        )
+
     # Download and validate input video
     try:
         input_video_data = await storage.download_from_url(body.input_video_url)
@@ -213,6 +226,13 @@ async def segment_video(
         job_id=body.job_id,
         input_video_data=input_video_data,
         text_prompt=body.text_prompt,
+        point_prompts=body.point_prompts,
+        point_labels=body.point_labels,
+        box_prompts=body.box_prompts,
+        box_labels=body.box_labels,
+        prompt_frame_index=body.prompt_frame_index,
+        propagation_direction=body.propagation_direction,
+        confidence_threshold=body.confidence_threshold,
         output_format=body.output_format,
         max_frames=body.max_frames,
     )
