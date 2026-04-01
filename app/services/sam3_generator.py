@@ -4,6 +4,18 @@ Provides image segmentation (text + visual prompts) and video object tracking
 using Meta's SAM 3 model (848M params, ~4-10GB VRAM).
 
 Implements the Segmenter interface for integration with the ModelManager.
+
+API Reference (from sam3/model/sam3_image_processor.py):
+  - Sam3Processor.set_image(image) -> state dict
+  - Sam3Processor.set_text_prompt(prompt, state) -> state (with state["masks"], state["boxes"], state["scores"])
+  - Sam3Processor.add_geometric_prompt(box, label, state) -> state  (box in normalized [cx, cy, w, h])
+  - Sam3Processor.reset_all_prompts(state)
+
+Video API (from sam3/model/sam3_base_predictor.py):
+  - handle_request({"type": "start_session", "resource_path": ...}) -> {"session_id": ...}
+  - handle_request({"type": "add_prompt", "session_id": ..., "frame_index": 0, "text": ...})
+  - handle_stream_request({"type": "propagate_in_video", "session_id": ...}) -> yields per-frame results
+  - handle_request({"type": "close_session", "session_id": ...})
 """
 
 import asyncio
@@ -97,6 +109,13 @@ class SAM3Generator(Segmenter):
         """Unload SAM 3 models and free VRAM."""
         logger.info("Unloading SAM 3 models...")
 
+        # Shutdown video predictor sessions
+        if self._video_predictor is not None:
+            try:
+                self._video_predictor.shutdown()
+            except Exception as e:
+                logger.warning(f"Error shutting down video predictor: {e}")
+
         self._image_model = None
         self._image_processor = None
         self._video_predictor = None
@@ -134,14 +153,22 @@ class SAM3Generator(Segmenter):
         return await asyncio.to_thread(self._segment_image_sync, params)
 
     def _segment_image_sync(self, params: ImageSegmentationParams) -> ImageSegmentationResult:
-        """Synchronous image segmentation (runs in thread)."""
+        """Synchronous image segmentation (runs in thread).
+        
+        Uses Sam3Processor API:
+          - set_image(image) -> state dict
+          - set_text_prompt(prompt, state) -> state (masks/boxes/scores in state)
+          - add_geometric_prompt(box, label, state) -> state (box = normalized [cx, cy, w, h])
+        """
+        import torch
         from PIL import Image
+        from sam3.model.box_ops import box_xywh_to_cxcywh
 
         # Load image from bytes
-        image = Image.open(io.BytesIO(params.input_image_data))
+        image = Image.open(io.BytesIO(params.input_image_data)).convert("RGB")
         width, height = image.size
 
-        # Set up the image in the processor
+        # Set up the image in the processor (returns state dict with backbone features)
         inference_state = self._image_processor.set_image(image)
 
         masks_list = []
@@ -150,71 +177,154 @@ class SAM3Generator(Segmenter):
 
         # Text prompt segmentation
         if params.text_prompt:
-            output = self._image_processor.set_text_prompt(
-                state=inference_state,
+            logger.info(f"Running text prompt segmentation: '{params.text_prompt}'")
+            self._image_processor.reset_all_prompts(inference_state)
+            inference_state = self._image_processor.set_text_prompt(
                 prompt=params.text_prompt,
+                state=inference_state,
             )
-            masks = output["masks"]
-            boxes = output["boxes"]
-            scores = output["scores"]
 
-            # Limit to max_objects
-            count = min(len(scores), params.max_objects)
+            # Results are stored directly in the state dict
+            masks = inference_state.get("masks")
+            boxes = inference_state.get("boxes")
+            scores = inference_state.get("scores")
 
-            for i in range(count):
-                # Convert mask to PNG bytes
-                mask_png = self._mask_to_png(masks[i], width, height)
-                masks_list.append(mask_png)
-                # Convert box tensor to tuple
-                box = boxes[i]
-                if hasattr(box, 'tolist'):
-                    box = box.tolist()
-                boxes_list.append(tuple(int(v) for v in box[:4]))
-                score = scores[i]
-                if hasattr(score, 'item'):
-                    score = score.item()
-                scores_list.append(float(score))
+            if masks is not None and len(masks) > 0:
+                count = min(len(masks), params.max_objects)
+                logger.info(f"Found {len(masks)} objects, keeping {count}")
+
+                for i in range(count):
+                    # Convert mask to PNG bytes
+                    mask_png = self._mask_to_png(masks[i], width, height)
+                    masks_list.append(mask_png)
+
+                    # Convert box tensor to pixel coords list
+                    if boxes is not None and i < len(boxes):
+                        box = boxes[i]
+                        if hasattr(box, 'tolist'):
+                            box = box.tolist()
+                        boxes_list.append(tuple(int(v) for v in box[:4]))
+                    else:
+                        boxes_list.append((0, 0, width, height))
+
+                    # Extract score
+                    if scores is not None and i < len(scores):
+                        score = scores[i]
+                        if hasattr(score, 'item'):
+                            score = score.item()
+                        scores_list.append(float(score))
+                    else:
+                        scores_list.append(1.0)
+            else:
+                logger.info("No objects found matching text prompt")
 
         # Box prompt segmentation
         elif params.box_prompts:
-            for box in params.box_prompts[:params.max_objects]:
-                output = self._image_processor.set_box_prompt(
-                    state=inference_state,
-                    box=list(box),
-                )
-                if output.get("masks") is not None and len(output["masks"]) > 0:
-                    mask_png = self._mask_to_png(output["masks"][0], width, height)
-                    masks_list.append(mask_png)
-                    boxes_list.append(box)
-                    score = output.get("scores", [1.0])[0]
-                    if hasattr(score, 'item'):
-                        score = score.item()
-                    scores_list.append(float(score))
+            logger.info(f"Running box prompt segmentation with {len(params.box_prompts)} boxes")
+            self._image_processor.reset_all_prompts(inference_state)
 
-        # Point prompt segmentation
+            for box_xyxy in params.box_prompts[:params.max_objects]:
+                # Convert [x1, y1, x2, y2] pixel coords to [cx, cy, w, h] normalized
+                x1, y1, x2, y2 = box_xyxy
+                # First to [x, y, w, h] format
+                bw = x2 - x1
+                bh = y2 - y1
+                # Then to [cx, cy, w, h]
+                cx = (x1 + x2) / 2.0
+                cy = (y1 + y2) / 2.0
+                # Normalize to [0, 1]
+                norm_box = [cx / width, cy / height, bw / width, bh / height]
+
+                inference_state = self._image_processor.add_geometric_prompt(
+                    state=inference_state,
+                    box=norm_box,
+                    label=True,  # Positive box
+                )
+
+            # After all prompts, extract results from state
+            masks = inference_state.get("masks")
+            boxes = inference_state.get("boxes")
+            scores = inference_state.get("scores")
+
+            if masks is not None and len(masks) > 0:
+                count = min(len(masks), params.max_objects)
+                logger.info(f"Found {len(masks)} objects from box prompts, keeping {count}")
+
+                for i in range(count):
+                    mask_png = self._mask_to_png(masks[i], width, height)
+                    masks_list.append(mask_png)
+
+                    if boxes is not None and i < len(boxes):
+                        box = boxes[i]
+                        if hasattr(box, 'tolist'):
+                            box = box.tolist()
+                        boxes_list.append(tuple(int(v) for v in box[:4]))
+                    else:
+                        boxes_list.append((0, 0, width, height))
+
+                    if scores is not None and i < len(scores):
+                        score = scores[i]
+                        if hasattr(score, 'item'):
+                            score = score.item()
+                        scores_list.append(float(score))
+                    else:
+                        scores_list.append(1.0)
+
+        # Point prompt segmentation (using geometric prompt with small boxes)
         elif params.point_prompts:
-            for point in params.point_prompts[:params.max_objects]:
-                output = self._image_processor.set_point_prompt(
-                    state=inference_state,
-                    point=list(point),
-                    label=1,  # Positive point
-                )
-                if output.get("masks") is not None and len(output["masks"]) > 0:
-                    mask_png = self._mask_to_png(output["masks"][0], width, height)
-                    masks_list.append(mask_png)
-                    # Derive box from mask if not provided
-                    boxes_list.append((0, 0, width, height))
-                    score = output.get("scores", [1.0])[0]
-                    if hasattr(score, 'item'):
-                        score = score.item()
-                    scores_list.append(float(score))
+            logger.info(f"Running point prompt segmentation with {len(params.point_prompts)} points")
+            self._image_processor.reset_all_prompts(inference_state)
 
-        # Encode masks as base64 JSON
+            # For point prompts, create small normalized boxes around each point
+            # SAM 3's geometric prompt API works with boxes, so we create tiny boxes
+            for point in params.point_prompts[:params.max_objects]:
+                px, py = point
+                # Small box around the point (2% of image size)
+                box_size_w = 0.02
+                box_size_h = 0.02
+                norm_box = [px / width, py / height, box_size_w, box_size_h]
+
+                inference_state = self._image_processor.add_geometric_prompt(
+                    state=inference_state,
+                    box=norm_box,
+                    label=True,
+                )
+
+            masks = inference_state.get("masks")
+            boxes = inference_state.get("boxes")
+            scores = inference_state.get("scores")
+
+            if masks is not None and len(masks) > 0:
+                count = min(len(masks), params.max_objects)
+                logger.info(f"Found {len(masks)} objects from point prompts, keeping {count}")
+
+                for i in range(count):
+                    mask_png = self._mask_to_png(masks[i], width, height)
+                    masks_list.append(mask_png)
+
+                    if boxes is not None and i < len(boxes):
+                        box = boxes[i]
+                        if hasattr(box, 'tolist'):
+                            box = box.tolist()
+                        boxes_list.append(tuple(int(v) for v in box[:4]))
+                    else:
+                        boxes_list.append((0, 0, width, height))
+
+                    if scores is not None and i < len(scores):
+                        score = scores[i]
+                        if hasattr(score, 'item'):
+                            score = score.item()
+                        scores_list.append(float(score))
+                    else:
+                        scores_list.append(1.0)
+
+        # Encode masks as base64 JSON array
         encoded_masks = []
         for mask_bytes in masks_list:
             encoded_masks.append(base64.b64encode(mask_bytes).decode("utf-8"))
 
         masks_json = json.dumps(encoded_masks).encode("utf-8")
+        logger.info(f"Segmentation complete: {len(encoded_masks)} masks, {len(masks_json)} bytes output")
 
         return ImageSegmentationResult(
             masks_data=masks_json,
@@ -238,7 +348,7 @@ class SAM3Generator(Segmenter):
         else:
             mask_np = np.array(mask)
 
-        # Squeeze extra dimensions
+        # Squeeze extra dimensions (masks can be [1, 1, H, W] or [1, H, W])
         while mask_np.ndim > 2:
             mask_np = mask_np.squeeze(0)
 
@@ -264,16 +374,25 @@ class SAM3Generator(Segmenter):
         return await asyncio.to_thread(self._segment_video_sync, params)
 
     def _segment_video_sync(self, params: VideoSegmentationParams) -> VideoSegmentationResult:
-        """Synchronous video segmentation (runs in thread)."""
-        import numpy as np
+        """Synchronous video segmentation (runs in thread).
         
+        Uses Sam3VideoPredictor API:
+          1. handle_request({"type": "start_session", "resource_path": ...}) -> {"session_id": ...}
+          2. handle_request({"type": "add_prompt", "session_id": ..., "frame_index": 0, "text": ...})
+          3. handle_stream_request({"type": "propagate_in_video", "session_id": ...}) -> per-frame results
+          4. handle_request({"type": "close_session", "session_id": ...})
+        """
+        import numpy as np
+
         # Write video bytes to temp file for SAM 3 video predictor
         with tempfile.NamedTemporaryFile(suffix=".mp4", delete=False) as tmp:
             tmp.write(params.input_video_data)
             tmp_path = tmp.name
 
+        session_id = None
         try:
-            # Start a video session
+            # 1. Start a video session
+            logger.info(f"Starting video session for: {tmp_path}")
             response = self._video_predictor.handle_request(
                 request=dict(
                     type="start_session",
@@ -281,8 +400,10 @@ class SAM3Generator(Segmenter):
                 )
             )
             session_id = response["session_id"]
+            logger.info(f"Video session started: {session_id}")
 
-            # Add text prompt on the first frame
+            # 2. Add text prompt on the first frame
+            logger.info(f"Adding text prompt: '{params.text_prompt}' on frame 0")
             response = self._video_predictor.handle_request(
                 request=dict(
                     type="add_prompt",
@@ -291,32 +412,43 @@ class SAM3Generator(Segmenter):
                     text=params.text_prompt,
                 )
             )
+            logger.info(f"Prompt added, initial outputs: {list(response.get('outputs', {}).keys()) if response.get('outputs') else 'none'}")
 
-            outputs = response.get("outputs", {})
-            
-            # Collect tracking results
+            # 3. Propagate through video frames (streaming API)
             tracked_ids = set()
             frame_results = {}
             frame_count = 0
 
-            # Process outputs from the propagation
-            for frame_idx, frame_output in outputs.items():
+            logger.info("Propagating through video frames...")
+            for frame_output in self._video_predictor.handle_stream_request(
+                request=dict(
+                    type="propagate_in_video",
+                    session_id=session_id,
+                    propagation_direction="forward",
+                    max_frame_num_to_track=params.max_frames,
+                )
+            ):
+                frame_idx = frame_output["frame_index"]
+                outputs = frame_output.get("outputs", {})
                 frame_count += 1
+
                 if frame_count > params.max_frames:
                     break
 
                 frame_masks = {}
-                for obj_id, mask_data in frame_output.items():
-                    tracked_ids.add(int(obj_id))
+                for obj_id_key, mask_data in outputs.items():
+                    obj_id = int(obj_id_key) if isinstance(obj_id_key, str) else obj_id_key
+                    tracked_ids.add(obj_id)
+
                     # Convert mask to base64 PNG
                     if hasattr(mask_data, 'cpu'):
                         mask_np = mask_data.cpu().numpy()
                     else:
                         mask_np = np.array(mask_data)
-                    
+
                     while mask_np.ndim > 2:
                         mask_np = mask_np.squeeze(0)
-                    
+
                     mask_uint8 = (mask_np > 0.5).astype(np.uint8) * 255
                     from PIL import Image
                     mask_img = Image.fromarray(mask_uint8, mode="L")
@@ -325,6 +457,8 @@ class SAM3Generator(Segmenter):
                     frame_masks[str(obj_id)] = base64.b64encode(buf.getvalue()).decode("utf-8")
 
                 frame_results[str(frame_idx)] = frame_masks
+
+            logger.info(f"Video segmentation complete: {frame_count} frames, {len(tracked_ids)} tracked objects")
 
             result_json = json.dumps({
                 "frames": frame_results,
@@ -342,6 +476,19 @@ class SAM3Generator(Segmenter):
             )
 
         finally:
+            # 4. Close the session to free GPU memory
+            if session_id is not None:
+                try:
+                    self._video_predictor.handle_request(
+                        request=dict(
+                            type="close_session",
+                            session_id=session_id,
+                        )
+                    )
+                    logger.info(f"Closed video session: {session_id}")
+                except Exception as e:
+                    logger.warning(f"Error closing video session {session_id}: {e}")
+
             # Clean up temp file
             try:
                 os.unlink(tmp_path)
