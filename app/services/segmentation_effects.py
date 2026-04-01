@@ -114,7 +114,7 @@ class EffectsPipeline:
                 elif op_type == "outline":
                     self._op_outline(op)
                 elif op_type == "text_label":
-                    self._op_text_label(op)
+                    pass  # Removed: text labels are no longer supported
                 elif op_type == "bounding_box":
                     self._op_bounding_box(op)
                 elif op_type == "spotlight":
@@ -373,15 +373,18 @@ class EffectsPipeline:
     # =========================================================================
 
     def _op_outline(self, op: dict):
-        """Draw contour lines around detected objects.
+        """Draw smooth, anti-aliased contour lines around detected objects.
         
         Supports 'progress' param (0.0-1.0) for progressive draw animation.
+        Uses Gaussian blur on the contour mask for smooth edges.
         """
         color = tuple(op.get("color", [0, 255, 0, 255]))
         if len(color) == 3:
             color = color + (255,)
         thickness = op.get("thickness", 3)
         progress = max(0.0, min(1.0, op.get("progress", 1.0)))
+        # Anti-aliasing blur radius — proportional to thickness for consistent smoothness
+        smooth_radius = max(1, thickness // 2 + 1)
 
         for obj_mask in self.object_masks:
             if not np.any(obj_mask):
@@ -392,65 +395,26 @@ class EffectsPipeline:
             if progress < 1.0:
                 contour = self._partial_contour(contour, progress)
 
+            # Create a grayscale contour mask and smooth it with Gaussian blur
+            contour_gray = (contour.astype(np.float32) * 255).astype(np.uint8)
+            contour_img = Image.fromarray(contour_gray, "L")
+            contour_img = contour_img.filter(ImageFilter.GaussianBlur(radius=smooth_radius))
+            contour_smooth = np.array(contour_img)  # 0-255 alpha values
+
+            # Create RGBA overlay using the smooth alpha
             overlay = Image.new("RGBA", (self.width, self.height), (0, 0, 0, 0))
             overlay_arr = np.array(overlay)
-            overlay_arr[contour] = color
+            # Set color channels where contour has any value
+            mask_any = contour_smooth > 0
+            overlay_arr[mask_any, 0] = color[0]
+            overlay_arr[mask_any, 1] = color[1]
+            overlay_arr[mask_any, 2] = color[2]
+            # Alpha = min(contour_smooth, color_alpha) for smooth falloff
+            overlay_arr[mask_any, 3] = np.minimum(contour_smooth[mask_any], color[3])
             overlay = Image.fromarray(overlay_arr)
             self.image = Image.alpha_composite(self.image, overlay)
 
-    def _op_text_label(self, op: dict):
-        """Add text labels at each object's bounding box."""
-        text = op.get("text", "")
-        font_size = op.get("font_size", 24)
-        color = tuple(op.get("color", [255, 255, 255]))
-        bg_color = tuple(op.get("bg_color", [0, 0, 0, 180]))
-        position = op.get("position", "top")
-
-        if len(color) == 3:
-            color = color + (255,)
-        if len(bg_color) == 3:
-            bg_color = bg_color + (180,)
-
-        try:
-            font = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", font_size)
-        except (IOError, OSError):
-            font = ImageFont.load_default()
-
-        overlay = Image.new("RGBA", (self.width, self.height), (0, 0, 0, 0))
-        draw = ImageDraw.Draw(overlay)
-
-        for i, box in enumerate(self.boxes):
-            x1, y1, x2, y2 = box
-            label = text if text else f"Object {i+1}"
-
-            # Get text dimensions
-            bbox = draw.textbbox((0, 0), label, font=font)
-            tw = bbox[2] - bbox[0]
-            th = bbox[3] - bbox[1]
-            pad = 4
-
-            # Position
-            if position == "top":
-                tx = x1
-                ty = max(0, y1 - th - pad * 2)
-            elif position == "center":
-                tx = x1 + (x2 - x1 - tw) // 2
-                ty = y1 + (y2 - y1 - th) // 2
-            elif position == "bottom":
-                tx = x1
-                ty = min(self.height - th - pad * 2, y2)
-            else:
-                tx, ty = x1, y1
-
-            # Draw background pill
-            draw.rectangle(
-                [tx - pad, ty - pad, tx + tw + pad, ty + th + pad],
-                fill=bg_color,
-            )
-            # Draw text
-            draw.text((tx, ty), label, fill=color, font=font)
-
-        self.image = Image.alpha_composite(self.image, overlay)
+    # text_label operation removed — no longer supported
 
     def _op_bounding_box(self, op: dict):
         """Draw bounding boxes around detected objects."""

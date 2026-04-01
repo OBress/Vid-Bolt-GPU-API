@@ -1070,8 +1070,7 @@ Operations are applied sequentially. Use `select` to target which region subsequ
 
 | Operation      | Description                      | Parameters                                                                       |
 | -------------- | -------------------------------- | -------------------------------------------------------------------------------- |
-| `outline`      | Draw contour lines               | `color`: [R,G,B,A] (default: [0,255,0,255]), `thickness`: 1-20, `progress`: 0.0-1.0 (for draw animation) |
-| `text_label`   | Add text at bounding boxes       | `text`: string, `font_size`: 12-72, `color`: [R,G,B], `bg_color`: [R,G,B,A], `position`: `"top"`/`"center"`/`"bottom"` |
+| `outline`      | Draw smooth contour lines        | `color`: [R,G,B,A] (default: [0,255,0,255]), `thickness`: 1-20, `progress`: 0.0-1.0 (for draw animation) |
 | `bounding_box` | Draw bounding boxes              | `color`: [R,G,B,A] (default: [255,0,0,255]), `thickness`: 1-10 (default: 2)     |
 
 **Creative Effects:**
@@ -1136,7 +1135,7 @@ Operations are applied sequentially. Use `select` to target which region subsequ
 | Redact all faces | `text_prompt: "face"` + `[{select: mask}, {pixelate: 20}]` |
 | Green screen removal | `text_prompt: "person"` + `[{greenscreen}]` |
 | Spotlight subject | `[{spotlight: 0.6}, {select: background}, {bokeh: 15}]` |
-| Annotate objects | `[{outline}, {text_label: {text: "Vehicle", position: "top"}}]` |
+| Annotate objects | `[{outline}, {bounding_box: {color: [255,0,0], thickness: 2}}]` |
 | Vintage film look | `[{sepia: {intensity: 0.7}}, {noise: {amount: 0.2, noise_type: "grain"}}]` |
 | Neon outline | `[{outline: {color: [0,255,255], thickness: 3}}, {glow: {color: [0,200,255], radius: 20}}]` |
 | Pencil sketch | `[{sketch: {intensity: 0.9, detail: 6}}]` |
