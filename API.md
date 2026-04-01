@@ -843,47 +843,78 @@ Example prompts:
 
 ### Segmentation
 
-Image and video segmentation powered by Meta's **SAM 3** (Segment Anything Model 3). Supports text prompts ("segment all cars"), point prompts (click coordinates), and box prompts (bounding regions) for images, and text-based object tracking for videos.
+Image and video segmentation powered by Meta's **SAM 3** (Segment Anything Model 3). Supports:
+
+- **Text prompts** — open-vocabulary detection ("segment all cars")
+- **Point prompts** — click coordinates to segment specific objects
+- **Box prompts** — bounding regions (with positive/negative labels)
+- **Composable effects pipeline** — apply visual operations and get processed images/videos
+- **Video tracking** — track objects across frames with text, point, or box prompts
 
 #### `POST /api/v1/segment/image`
 
-**Returns HTTP 202 Accepted**. Segments objects in an image using text, point, or box prompts.
+**Returns HTTP 202 Accepted**. Segments objects in an image using text, point, or box prompts. Optionally applies visual effects.
 
 **Request:**
 
-| Field            | Type       | Required | Description                                         | Default |
-| ---------------- | ---------- | -------- | --------------------------------------------------- | ------- |
-| `job_id`         | string     | ✅       | Unique job identifier                               | -       |
-| `input_image_url`| string     | ✅       | URL of input image (PNG/JPEG/WebP)                  | -       |
-| `text_prompt`    | string     | ❌*      | Text describing objects to segment                  | -       |
-| `point_prompts`  | int[][]    | ❌*      | List of `[x, y]` click coordinates                  | -       |
-| `box_prompts`    | int[][]    | ❌*      | List of `[x1, y1, x2, y2]` bounding boxes          | -       |
-| `max_objects`    | int        | ❌       | Maximum objects to segment (1-500)                  | `100`   |
-| `save_url`       | string     | ✅       | Presigned PUT URL for output                        | -       |
-| `webhook_url`    | string     | ❌       | URL to POST when complete                           | -       |
-| `item_id`        | string     | ❌       | Client identifier (returned in webhook)             | -       |
-| `webhook_secret` | string     | ❌       | HMAC signing secret                                 | -       |
+| Field                 | Type       | Required | Description                                                        | Default        |
+| --------------------- | ---------- | -------- | ------------------------------------------------------------------ | -------------- |
+| `job_id`              | string     | ✅       | Unique job identifier                                              | -              |
+| `input_image_url`     | string     | ✅       | URL of input image (PNG/JPEG/WebP)                                 | -              |
+| `text_prompt`         | string     | ❌*      | Text describing objects to segment                                 | -              |
+| `point_prompts`       | int[][]    | ❌*      | List of `[x, y]` click coordinates                                 | -              |
+| `box_prompts`         | int[][]    | ❌*      | List of `[x1, y1, x2, y2]` bounding boxes (all positive)          | -              |
+| `box_prompts_labeled` | object[]   | ❌*      | List of `{box: [x1,y1,x2,y2], label: true/false}` (include/exclude) | -            |
+| `confidence_threshold`| float      | ❌       | Minimum confidence to include (0.0-1.0)                            | `0.5`          |
+| `max_objects`         | int        | ❌       | Maximum objects to segment (1-500)                                 | `100`          |
+| `output_type`         | string     | ❌       | `"masks_json"` for raw masks, `"image"` for processed image        | `"masks_json"` |
+| `operations`          | object[]   | ❌       | Ordered list of visual operations (only when `output_type="image"`)| -              |
+| `save_url`            | string     | ✅       | Presigned PUT URL for output                                       | -              |
+| `webhook_url`         | string     | ❌       | URL to POST when complete                                          | -              |
+| `item_id`             | string     | ❌       | Client identifier (returned in webhook)                            | -              |
+| `webhook_secret`      | string     | ❌       | HMAC signing secret                                                | -              |
 
-> **Note:** At least one prompt type is required (`text_prompt`, `point_prompts`, or `box_prompts`).
+> **Note:** At least one prompt type is required (`text_prompt`, `point_prompts`, `box_prompts`, or `box_prompts_labeled`).
 
 **Prompt Types:**
 
-| Prompt Type     | Use Case                                      | Example                                |
-| --------------- | --------------------------------------------- | -------------------------------------- |
-| `text_prompt`   | Open-vocabulary detection ("all cars")         | `"person in red shirt"`                |
-| `point_prompts` | Click specific objects                        | `[[512, 300], [100, 200]]`             |
-| `box_prompts`   | Segment within bounding regions               | `[[50, 50, 400, 300]]`                 |
+| Prompt Type          | Use Case                                      | Example                                |
+| -------------------- | --------------------------------------------- | -------------------------------------- |
+| `text_prompt`        | Open-vocabulary detection ("all cars")         | `"person in red shirt"`                |
+| `point_prompts`      | Click specific objects                        | `[[512, 300], [100, 200]]`             |
+| `box_prompts`        | Segment within bounding regions               | `[[50, 50, 400, 300]]`                 |
+| `box_prompts_labeled`| Include/exclude regions                       | `[{"box": [50,50,400,300], "label": true}, {"box": [100,100,200,200], "label": false}]` |
 
-**Response (Immediate - 202 Accepted):**
+**Example — Raw masks (default):**
 
 ```json
 {
-  "job_id": "550e8400-e29b...",
-  "status_url": "/api/v1/jobs/550e8400-e29b..."
+  "job_id": "seg-001",
+  "input_image_url": "https://storage.example.com/photo.jpg",
+  "text_prompt": "person",
+  "save_url": "https://storage.example.com/masks.json"
 }
 ```
 
-**Result Payload (via webhook/polling):**
+**Example — Processed image with effects:**
+
+```json
+{
+  "job_id": "seg-002",
+  "input_image_url": "https://storage.example.com/photo.jpg",
+  "text_prompt": "person",
+  "output_type": "image",
+  "operations": [
+    { "type": "select", "target": "background" },
+    { "type": "blur", "strength": 25 },
+    { "type": "select", "target": "mask" },
+    { "type": "outline", "color": [0, 255, 255, 200], "thickness": 3 }
+  ],
+  "save_url": "https://storage.example.com/processed.png"
+}
+```
+
+**Result Payload (masks_json):**
 
 ```json
 {
@@ -894,58 +925,91 @@ Image and video segmentation powered by Meta's **SAM 3** (Segment Anything Model
     "width": 1920,
     "height": 1080,
     "boxes": [[50, 100, 400, 350], [600, 200, 900, 500], [1000, 50, 1200, 300]],
-    "scores": [0.98, 0.95, 0.87]
+    "scores": [0.98, 0.95, 0.87],
+    "output_type": "masks_json"
   }
 }
 ```
 
-The `save_url` points to a JSON file containing an array of base64-encoded PNG masks, one per detected object.
+**Result Payload (image):**
+
+```json
+{
+  "save_url": "https://storage.example.com/processed.png",
+  "generation_time": 1.8,
+  "metadata": {
+    "object_count": 1,
+    "width": 1920,
+    "height": 1080,
+    "boxes": [[200, 100, 800, 900]],
+    "scores": [0.97],
+    "output_type": "image"
+  }
+}
+```
 
 ---
 
 #### `POST /api/v1/segment/video`
 
-**Returns HTTP 202 Accepted**. Tracks and segments objects across video frames using a text prompt.
+**Returns HTTP 202 Accepted**. Tracks and segments objects across video frames. Optionally applies visual effects and returns a processed MP4.
 
 **Request:**
 
-| Field              | Type   | Required | Description                                  | Default        |
-| ------------------ | ------ | -------- | -------------------------------------------- | -------------- |
-| `job_id`           | string | ✅       | Unique job identifier                        | -              |
-| `input_video_url`  | string | ✅       | URL of input video (MP4)                     | -              |
-| `text_prompt`      | string | ✅       | Objects to track (e.g., "yellow school bus") | -              |
-| `output_format`    | string | ❌       | `"masks_json"` for per-frame mask data       | `"masks_json"` |
-| `max_frames`       | int    | ❌       | Maximum frames to process (1-1000)           | `300`          |
-| `save_url`         | string | ✅       | Presigned PUT URL for output                 | -              |
-| `webhook_url`      | string | ❌       | URL to POST when complete                    | -              |
-| `item_id`          | string | ❌       | Client identifier (returned in webhook)      | -              |
-| `webhook_secret`   | string | ❌       | HMAC signing secret                          | -              |
+| Field                   | Type     | Required | Description                                                        | Default        |
+| ----------------------- | -------- | -------- | ------------------------------------------------------------------ | -------------- |
+| `job_id`                | string   | ✅       | Unique job identifier                                              | -              |
+| `input_video_url`       | string   | ✅       | URL of input video (MP4)                                           | -              |
+| `text_prompt`           | string   | ❌*      | Objects to track (e.g., "yellow school bus")                       | -              |
+| `point_prompts`         | float[][]| ❌*      | List of `[x, y]` coordinates for point prompts on initial frame    | -              |
+| `point_labels`          | int[]    | ❌       | Labels per point: `1` = positive, `0` = negative                   | all `1`        |
+| `box_prompts`           | float[][]| ❌*      | List of `[x, y, w, h]` bounding boxes for initial frame           | -              |
+| `box_labels`            | int[]    | ❌       | Labels per box: `1` = positive, `0` = negative                     | all `1`        |
+| `prompt_frame_index`    | int      | ❌       | Frame to apply prompts on                                          | `0`            |
+| `propagation_direction` | string   | ❌       | `"forward"`, `"backward"`, or `"both"`                             | `"forward"`    |
+| `confidence_threshold`  | float    | ❌       | Minimum confidence (0.0-1.0)                                       | `0.5`          |
+| `output_format`         | string   | ❌       | `"masks_json"` or `"video"`                                        | `"masks_json"` |
+| `operations`            | object[] | ❌       | Visual operations per frame (only when `output_format="video"`)    | -              |
+| `max_frames`            | int      | ❌       | Maximum frames to process (1-1000)                                 | `300`          |
+| `save_url`              | string   | ✅       | Presigned PUT URL for output                                       | -              |
+| `webhook_url`           | string   | ❌       | URL to POST when complete                                          | -              |
+| `item_id`               | string   | ❌       | Client identifier                                                  | -              |
+| `webhook_secret`        | string   | ❌       | HMAC signing secret                                                | -              |
 
-**Response (Immediate - 202 Accepted):**
+> **Note:** At least one prompt type is required (`text_prompt`, `point_prompts`, or `box_prompts`).
+
+**Example — Raw masks (default):**
 
 ```json
 {
-  "job_id": "550e8400-e29b...",
-  "status_url": "/api/v1/jobs/550e8400-e29b..."
+  "job_id": "vseg-001",
+  "input_video_url": "https://storage.example.com/clip.mp4",
+  "text_prompt": "yellow school bus",
+  "save_url": "https://storage.example.com/tracking.json"
 }
 ```
 
-**Result Payload (via webhook/polling):**
+**Example — Processed video with blur + outline:**
 
 ```json
 {
-  "save_url": "https://storage.example.com/tracking.json",
-  "generation_time": 8.5,
-  "metadata": {
-    "frame_count": 120,
-    "object_count": 2,
-    "tracked_ids": [1, 2],
-    "output_format": "masks_json"
-  }
+  "job_id": "vseg-002",
+  "input_video_url": "https://storage.example.com/clip.mp4",
+  "text_prompt": "person",
+  "output_format": "video",
+  "operations": [
+    { "type": "select", "target": "background" },
+    { "type": "bokeh", "strength": 20 },
+    { "type": "select", "target": "mask" },
+    { "type": "outline", "color": [255, 255, 0, 200], "thickness": 2 }
+  ],
+  "save_url": "https://storage.example.com/processed.mp4"
 }
 ```
 
-The `save_url` points to a JSON file with per-frame masks for each tracked object, structured as:
+**Result Payload (masks_json):**
+
+The `save_url` points to a JSON file with per-frame masks:
 
 ```json
 {
@@ -958,6 +1022,76 @@ The `save_url` points to a JSON file with per-frame masks for each tracked objec
   "text_prompt": "yellow school bus"
 }
 ```
+
+**Result Payload (video):**
+
+The `save_url` points to the processed MP4 video with effects applied per-frame. FPS matches the source video.
+
+---
+
+#### Operations Reference
+
+Operations are applied sequentially. Use `select` to target which region subsequent operations apply to.
+
+**Selection:**
+
+| Operation | Description | Parameters |
+| --------- | ----------- | ---------- |
+| `select` | Switch target region | `target`: `"mask"` (detected objects), `"background"` (everything else), `"all"` (entire image) |
+
+**Blur / Privacy:**
+
+| Operation  | Description             | Parameters                              |
+| ---------- | ----------------------- | --------------------------------------- |
+| `blur`     | Gaussian blur           | `strength`: 1-100 (default: 25)         |
+| `pixelate` | Mosaic pixelation       | `block_size`: 5-50 px (default: 15)     |
+| `redact`   | Solid color fill        | `color`: [R,G,B] (default: [0,0,0])     |
+
+**Color & Appearance:**
+
+| Operation       | Description                    | Parameters                                                                 |
+| --------------- | ------------------------------ | -------------------------------------------------------------------------- |
+| `color_overlay` | Semi-transparent color fill    | `color`: [R,G,B,A] (default: [255,0,0,128])                               |
+| `color_grade`   | Brightness/contrast/saturation | `brightness`, `contrast`, `saturation`: -100 to 100                        |
+| `opacity`       | Adjust transparency            | `value`: 0.0-1.0                                                           |
+| `replace_color` | Hue shift + saturation scale   | `hue_shift`: -180 to 180, `saturation_scale`: 0.0-3.0                     |
+
+**Compositing:**
+
+| Operation            | Description                    | Parameters                                        |
+| -------------------- | ------------------------------ | ------------------------------------------------- |
+| `remove_background`  | Make background transparent    | *(outputs RGBA PNG)*                              |
+| `replace_background` | Replace background             | `color`: [R,G,B] or `image_url`: string           |
+| `greenscreen`        | Replace background with green  | *(no params)*                                     |
+
+**Drawing & Annotation:**
+
+| Operation      | Description                      | Parameters                                                                       |
+| -------------- | -------------------------------- | -------------------------------------------------------------------------------- |
+| `outline`      | Draw contour lines               | `color`: [R,G,B,A] (default: [0,255,0,255]), `thickness`: 1-20 (default: 3)     |
+| `text_label`   | Add text at bounding boxes       | `text`: string, `font_size`: 12-72, `color`: [R,G,B], `bg_color`: [R,G,B,A], `position`: `"top"`/`"center"`/`"bottom"` |
+| `bounding_box` | Draw bounding boxes              | `color`: [R,G,B,A] (default: [255,0,0,255]), `thickness`: 1-10 (default: 2)     |
+
+**Creative Effects:**
+
+| Operation  | Description                      | Parameters                                                                    |
+| ---------- | -------------------------------- | ----------------------------------------------------------------------------- |
+| `spotlight`| Darken everything except objects | `darkness`: 0.0-1.0 (default: 0.7)                                           |
+| `bokeh`    | Depth-of-field blur on background| `strength`: 5-50 (default: 15)                                               |
+| `glow`     | Glow/bloom around object edges   | `color`: [R,G,B], `radius`: 5-50, `intensity`: 0.0-1.0                       |
+| `shadow`   | Drop shadow on objects           | `offset`: [x,y], `blur`: 5-30, `color`: [R,G,B,A]                            |
+| `vignette` | Vignette focused on objects      | `strength`: 0.0-1.0 (default: 0.5)                                           |
+
+**Common Recipes:**
+
+| Use Case | Operations |
+| --- | --- |
+| Blur background (portrait mode) | `[{select: background}, {blur: 25}]` |
+| Redact all faces | `text_prompt: "face"` + `[{select: mask}, {pixelate: 20}]` |
+| Green screen removal | `text_prompt: "person"` + `[{greenscreen}]` |
+| Spotlight subject + dim background | `text_prompt: "dog"` + `[{spotlight: 0.6}, {select: background}, {bokeh: 15}]` |
+| Annotate objects with labels | `text_prompt: "car"` + `[{outline}, {text_label: {text: "Vehicle", position: "top"}}]` |
+| Make sky more vivid | `text_prompt: "sky"` + `[{select: mask}, {color_grade: {saturation: 60}}]` |
 
 ---
 
@@ -1389,6 +1523,21 @@ Retry downloading any failed models. **Requires authentication.**
 
 ## Changelog
 
+### v0.8.1
+
+- **Composable Effects Pipeline**: 20 visual operations for SAM 3 segmentation output
+  - Image: `output_type: "image"` + `operations` → returns processed PNG
+  - Video: `output_format: "video"` + `operations` → returns processed MP4
+  - Operations: `blur`, `pixelate`, `redact`, `color_overlay`, `color_grade`, `opacity`, `replace_color`, `remove_background`, `replace_background`, `greenscreen`, `outline`, `text_label`, `bounding_box`, `spotlight`, `bokeh`, `glow`, `shadow`, `vignette`, `select`
+  - `select` operation targets: `mask` (objects), `background`, `all`
+  - Backward compatible: default `masks_json` unchanged
+- **SAM 3 Full Feature Coverage**:
+  - Labeled box prompts with positive/negative include/exclude
+  - Configurable `confidence_threshold` (0.0-1.0)
+  - Video: point prompts, box prompts, configurable `prompt_frame_index`
+  - Video: `propagation_direction`: forward/backward/both
+- **Dependency**: Added `opencv-python-headless` for video frame processing
+
 ### v0.8.0
 
 - **Segmentation**: Added SAM 3 (Segment Anything Model 3) integration
@@ -1396,7 +1545,6 @@ Retry downloading any failed models. **Requires authentication.**
   - `POST /api/v1/segment/video` — text prompt video object tracking
   - New `segmentation` VRAM mode (~4-10GB)
   - Dynamic loading in `all` mode
-  - 848M parameter model, ~3.5GB weights
 
 ### v0.7.0
 
