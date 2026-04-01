@@ -5,7 +5,7 @@ They are distinct from the Pydantic models used for the public HTTP API.
 """
 
 from dataclasses import dataclass
-from typing import Any, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 @dataclass
 class ImageGenerationParams:
@@ -150,16 +150,20 @@ class ImageSegmentationParams:
     box_prompts_labeled: Optional[List[Tuple[Tuple[int, int, int, int], bool]]] = None  # [((x1,y1,x2,y2), label)]
     confidence_threshold: float = 0.5
     max_objects: int = 100
+    output_type: str = "masks_json"    # "masks_json" or "image"
+    operations: Optional[List[Dict]] = None  # Ordered visual operations
 
 @dataclass
 class ImageSegmentationResult:
     """Result of image segmentation."""
-    masks_data: bytes             # JSON-encoded list of base64 PNG masks
+    masks_data: bytes             # JSON-encoded list of base64 PNG masks OR processed image
     boxes: List[Tuple[int, int, int, int]]  # Bounding boxes per object
     scores: List[float]           # Confidence scores per object
     object_count: int
     width: int
     height: int
+    content_type: str = "application/json"  # "application/json" or "image/png"
+    raw_masks: Optional[List[Any]] = None   # Raw mask tensors for effects pipeline
 
 @dataclass
 class VideoSegmentationParams:
@@ -174,7 +178,8 @@ class VideoSegmentationParams:
     prompt_frame_index: int = 0   # Frame to apply prompts on
     propagation_direction: str = "forward"  # "forward", "backward", "both"
     confidence_threshold: float = 0.5
-    output_format: str = "masks_json"  # "masks_json" or "overlay_video"
+    output_format: str = "masks_json"  # "masks_json" or "video"
+    operations: Optional[List[Dict]] = None  # Ordered visual operations per frame
     max_frames: int = 300         # Max frames to process
 
 @dataclass

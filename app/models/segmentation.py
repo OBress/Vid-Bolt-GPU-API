@@ -56,9 +56,20 @@ class ImageSegmentRequest(BaseModel):
         le=500,
         description="Maximum number of objects to segment",
     )
+    output_type: Literal["masks_json", "image"] = Field(
+        "masks_json",
+        description="'masks_json' returns raw mask data, 'image' applies operations and returns processed image",
+    )
+    operations: Optional[List[dict]] = Field(
+        None,
+        description="Ordered list of visual operations to apply (only used when output_type='image'). "
+                    "Each operation is a dict with 'type' and params. Types: select, blur, pixelate, redact, "
+                    "color_overlay, color_grade, opacity, replace_color, remove_background, replace_background, "
+                    "greenscreen, outline, text_label, bounding_box, spotlight, bokeh, glow, shadow, vignette",
+    )
     save_url: str = Field(
         ...,
-        description="Pre-signed URL to upload the segmentation result JSON",
+        description="Pre-signed URL to upload the result (JSON for masks_json, PNG/JPEG for image)",
     )
     webhook_url: Optional[str] = Field(
         None,
@@ -119,9 +130,14 @@ class VideoSegmentRequest(BaseModel):
         le=1.0,
         description="Minimum confidence threshold for object detection",
     )
-    output_format: str = Field(
+    output_format: Literal["masks_json", "video"] = Field(
         "masks_json",
-        description="Output format: 'masks_json' for per-frame mask data",
+        description="'masks_json' returns raw mask data, 'video' applies operations and returns processed MP4",
+    )
+    operations: Optional[List[dict]] = Field(
+        None,
+        description="Ordered list of visual operations to apply per-frame (only used when output_format='video'). "
+                    "Same operation types as image segmentation.",
     )
     max_frames: int = Field(
         300,
@@ -131,7 +147,7 @@ class VideoSegmentRequest(BaseModel):
     )
     save_url: str = Field(
         ...,
-        description="Pre-signed URL to upload the segmentation result",
+        description="Pre-signed URL to upload the result (JSON for masks_json, MP4 for video)",
     )
     webhook_url: Optional[str] = Field(
         None,

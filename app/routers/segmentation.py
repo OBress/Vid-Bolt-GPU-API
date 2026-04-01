@@ -120,6 +120,8 @@ async def segment_image(
         box_prompts_labeled=box_prompts_labeled,
         confidence_threshold=body.confidence_threshold,
         max_objects=body.max_objects,
+        output_type=body.output_type,
+        operations=body.operations,
     )
 
     submitted = await job_manager.try_submit_job(
@@ -156,11 +158,11 @@ async def _run_image_segment(
     segmenter = model_manager.get_segmenter()
     result = await segmenter.segment_image(params)
 
-    # Upload the masks JSON
+    # Upload the result (masks JSON or processed image)
     final_url = await storage.upload_to_url(
         data=result.masks_data,
         url=save_url,
-        content_type="application/json",
+        content_type=result.content_type,
     )
 
     return JobResult(
@@ -172,6 +174,7 @@ async def _run_image_segment(
             "height": result.height,
             "boxes": [list(b) for b in result.boxes],
             "scores": result.scores,
+            "output_type": params.output_type,
         },
     )
 
@@ -234,6 +237,7 @@ async def segment_video(
         propagation_direction=body.propagation_direction,
         confidence_threshold=body.confidence_threshold,
         output_format=body.output_format,
+        operations=body.operations,
         max_frames=body.max_frames,
     )
 

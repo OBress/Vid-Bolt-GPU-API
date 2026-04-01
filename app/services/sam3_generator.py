@@ -247,22 +247,45 @@ class SAM3Generator(Segmenter):
             self._extract_masks_from_state(inference_state, width, height, params.max_objects,
                                            masks_list, boxes_list, scores_list)
 
-        # Encode masks as base64 JSON array
-        encoded_masks = []
-        for mask_bytes in masks_list:
-            encoded_masks.append(base64.b64encode(mask_bytes).decode("utf-8"))
+        # === Apply effects pipeline or return raw masks ===
+        if params.output_type == "image" and params.operations:
+            logger.info(f"Applying {len(params.operations)} visual operations")
+            from app.services.segmentation_effects import EffectsPipeline
 
-        masks_json = json.dumps(encoded_masks).encode("utf-8")
-        logger.info(f"Segmentation complete: {len(encoded_masks)} masks, {len(masks_json)} bytes output")
+            # Get raw masks as numpy arrays for effects pipeline
+            raw_masks = self._get_raw_masks_from_state(inference_state)
+            pipeline = EffectsPipeline(image, raw_masks, boxes=boxes_list)
+            pipeline.apply(params.operations)
+            processed_bytes = pipeline.to_bytes(format="png")
 
-        return ImageSegmentationResult(
-            masks_data=masks_json,
-            boxes=boxes_list,
-            scores=scores_list,
-            object_count=len(masks_list),
-            width=width,
-            height=height,
-        )
+            logger.info(f"Effects applied: {len(processed_bytes)} bytes processed image")
+            return ImageSegmentationResult(
+                masks_data=processed_bytes,
+                boxes=boxes_list,
+                scores=scores_list,
+                object_count=len(masks_list),
+                width=width,
+                height=height,
+                content_type="image/png",
+            )
+        else:
+            # Default: return raw masks as base64 JSON
+            encoded_masks = []
+            for mask_bytes in masks_list:
+                encoded_masks.append(base64.b64encode(mask_bytes).decode("utf-8"))
+
+            masks_json = json.dumps(encoded_masks).encode("utf-8")
+            logger.info(f"Segmentation complete: {len(encoded_masks)} masks, {len(masks_json)} bytes output")
+
+            return ImageSegmentationResult(
+                masks_data=masks_json,
+                boxes=boxes_list,
+                scores=scores_list,
+                object_count=len(masks_list),
+                width=width,
+                height=height,
+                content_type="application/json",
+            )
 
     def _xyxy_to_norm_cxcywh(self, box_xyxy, width: int, height: int) -> list:
         """Convert [x1, y1, x2, y2] pixel coords to normalized [cx, cy, w, h] for SAM 3."""
@@ -305,6 +328,27 @@ class SAM3Generator(Segmenter):
                     scores_list.append(1.0)
         else:
             logger.info("No objects found matching prompts")
+
+    def _get_raw_masks_from_state(self, state) -> list:
+        """Extract raw mask tensors/arrays from SAM 3 inference state for effects pipeline."""
+        import numpy as np
+
+        masks = state.get("masks")
+        if masks is None:
+            return []
+
+        raw_masks = []
+        for mask in masks:
+            if hasattr(mask, 'cpu'):
+                m = mask.cpu().numpy()
+            elif isinstance(mask, np.ndarray):
+                m = mask
+            else:
+                m = np.array(mask)
+            while m.ndim > 2:
+                m = m.squeeze(0)
+            raw_masks.append(m)
+        return raw_masks
 
     def _mask_to_png(self, mask, width: int, height: int) -> bytes:
         """Convert a mask tensor/array to PNG bytes."""
@@ -406,68 +450,161 @@ class SAM3Generator(Segmenter):
 
             # 3. Propagate through video frames (streaming API)
             tracked_ids = set()
-            frame_results = {}
             frame_count = 0
 
             propagation_direction = params.propagation_direction
+            wants_video_output = params.output_format == "video" and params.operations
             logger.info(f"Propagating {propagation_direction} through video frames (max {params.max_frames})...")
 
-            for frame_output in self._video_predictor.handle_stream_request(
-                request=dict(
-                    type="propagate_in_video",
-                    session_id=session_id,
-                    propagation_direction=propagation_direction,
-                    max_frame_num_to_track=params.max_frames,
-                    output_prob_thresh=params.confidence_threshold,
-                )
-            ):
-                frame_idx = frame_output["frame_index"]
-                outputs = frame_output.get("outputs", {})
-                frame_count += 1
+            if wants_video_output:
+                # === Video output mode: apply effects per-frame and encode MP4 ===
+                import cv2
+                from app.services.segmentation_effects import apply_effects_to_frame
 
-                if frame_count > params.max_frames:
-                    break
+                # Open source video to read frames
+                cap = cv2.VideoCapture(tmp_path)
+                source_fps = cap.get(cv2.CAP_PROP_FPS) or 30.0
+                frame_width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+                frame_height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+                total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+                logger.info(f"Source video: {frame_width}x{frame_height} @ {source_fps} FPS, {total_frames} frames")
 
-                frame_masks = {}
-                for obj_id_key, mask_data in outputs.items():
-                    obj_id = int(obj_id_key) if isinstance(obj_id_key, str) else obj_id_key
-                    tracked_ids.add(obj_id)
+                # Read all source frames into memory (bounded by max_frames)
+                source_frames = {}
+                for fi in range(min(total_frames, params.max_frames)):
+                    ret, frame = cap.read()
+                    if not ret:
+                        break
+                    source_frames[fi] = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+                cap.release()
 
-                    # Convert mask to base64 PNG
-                    if hasattr(mask_data, 'cpu'):
-                        mask_np = mask_data.cpu().numpy()
+                # Collect per-frame masks from SAM 3
+                per_frame_masks = {}
+                for frame_output in self._video_predictor.handle_stream_request(
+                    request=dict(
+                        type="propagate_in_video",
+                        session_id=session_id,
+                        propagation_direction=propagation_direction,
+                        max_frame_num_to_track=params.max_frames,
+                        output_prob_thresh=params.confidence_threshold,
+                    )
+                ):
+                    frame_idx = frame_output["frame_index"]
+                    outputs = frame_output.get("outputs", {})
+                    frame_count += 1
+
+                    if frame_count > params.max_frames:
+                        break
+
+                    masks_for_frame = []
+                    for obj_id_key, mask_data in outputs.items():
+                        obj_id = int(obj_id_key) if isinstance(obj_id_key, str) else obj_id_key
+                        tracked_ids.add(obj_id)
+
+                        if hasattr(mask_data, 'cpu'):
+                            mask_np = mask_data.cpu().numpy()
+                        else:
+                            mask_np = np.array(mask_data)
+                        while mask_np.ndim > 2:
+                            mask_np = mask_np.squeeze(0)
+                        masks_for_frame.append(mask_np)
+
+                    per_frame_masks[frame_idx] = masks_for_frame
+
+                # Apply effects and encode MP4
+                out_path = tmp_path + "_out.mp4"
+                fourcc = cv2.VideoWriter_fourcc(*'mp4v')
+                out = cv2.VideoWriter(out_path, fourcc, source_fps, (frame_width, frame_height))
+
+                for fi in sorted(source_frames.keys()):
+                    frame_rgb = source_frames[fi]
+                    masks = per_frame_masks.get(fi, [])
+                    if masks and params.operations:
+                        processed = apply_effects_to_frame(frame_rgb, masks, params.operations)
+                        out.write(cv2.cvtColor(processed, cv2.COLOR_RGB2BGR))
                     else:
-                        mask_np = np.array(mask_data)
+                        out.write(cv2.cvtColor(frame_rgb, cv2.COLOR_RGB2BGR))
 
-                    while mask_np.ndim > 2:
-                        mask_np = mask_np.squeeze(0)
+                out.release()
 
-                    mask_uint8 = (mask_np > 0.5).astype(np.uint8) * 255
-                    from PIL import Image
-                    mask_img = Image.fromarray(mask_uint8, mode="L")
-                    buf = io.BytesIO()
-                    mask_img.save(buf, format="PNG")
-                    frame_masks[str(obj_id)] = base64.b64encode(buf.getvalue()).decode("utf-8")
+                # Read the output video bytes
+                with open(out_path, "rb") as f:
+                    result_data = f.read()
 
-                frame_results[str(frame_idx)] = frame_masks
+                try:
+                    os.unlink(out_path)
+                except OSError:
+                    pass
 
-            logger.info(f"Video segmentation complete: {frame_count} frames, {len(tracked_ids)} tracked objects")
+                logger.info(f"Video effects applied: {frame_count} frames, {len(result_data)} bytes output")
 
-            result_json = json.dumps({
-                "frames": frame_results,
-                "tracked_ids": sorted(tracked_ids),
-                "frame_count": frame_count,
-                "text_prompt": params.text_prompt,
-                "propagation_direction": propagation_direction,
-            }).encode("utf-8")
+                return VideoSegmentationResult(
+                    result_data=result_data,
+                    output_format="video",
+                    frame_count=frame_count,
+                    object_count=len(tracked_ids),
+                    tracked_ids=sorted(tracked_ids),
+                )
 
-            return VideoSegmentationResult(
-                result_data=result_json,
-                output_format=params.output_format,
-                frame_count=frame_count,
-                object_count=len(tracked_ids),
-                tracked_ids=sorted(tracked_ids),
-            )
+            else:
+                # === Default: masks_json output ===
+                frame_results = {}
+
+                for frame_output in self._video_predictor.handle_stream_request(
+                    request=dict(
+                        type="propagate_in_video",
+                        session_id=session_id,
+                        propagation_direction=propagation_direction,
+                        max_frame_num_to_track=params.max_frames,
+                        output_prob_thresh=params.confidence_threshold,
+                    )
+                ):
+                    frame_idx = frame_output["frame_index"]
+                    outputs = frame_output.get("outputs", {})
+                    frame_count += 1
+
+                    if frame_count > params.max_frames:
+                        break
+
+                    frame_masks = {}
+                    for obj_id_key, mask_data in outputs.items():
+                        obj_id = int(obj_id_key) if isinstance(obj_id_key, str) else obj_id_key
+                        tracked_ids.add(obj_id)
+
+                        if hasattr(mask_data, 'cpu'):
+                            mask_np = mask_data.cpu().numpy()
+                        else:
+                            mask_np = np.array(mask_data)
+
+                        while mask_np.ndim > 2:
+                            mask_np = mask_np.squeeze(0)
+
+                        mask_uint8 = (mask_np > 0.5).astype(np.uint8) * 255
+                        from PIL import Image
+                        mask_img = Image.fromarray(mask_uint8, mode="L")
+                        buf = io.BytesIO()
+                        mask_img.save(buf, format="PNG")
+                        frame_masks[str(obj_id)] = base64.b64encode(buf.getvalue()).decode("utf-8")
+
+                    frame_results[str(frame_idx)] = frame_masks
+
+                logger.info(f"Video segmentation complete: {frame_count} frames, {len(tracked_ids)} tracked objects")
+
+                result_json = json.dumps({
+                    "frames": frame_results,
+                    "tracked_ids": sorted(tracked_ids),
+                    "frame_count": frame_count,
+                    "text_prompt": params.text_prompt,
+                    "propagation_direction": propagation_direction,
+                }).encode("utf-8")
+
+                return VideoSegmentationResult(
+                    result_data=result_json,
+                    output_format=params.output_format,
+                    frame_count=frame_count,
+                    object_count=len(tracked_ids),
+                    tracked_ids=sorted(tracked_ids),
+                )
 
         finally:
             # 4. Close the session to free GPU memory
