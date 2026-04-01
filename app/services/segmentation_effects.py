@@ -206,11 +206,25 @@ class EffectsPipeline:
     # =========================================================================
 
     def _op_blur(self, op: dict):
-        """Apply Gaussian blur to the selected region."""
+        """Apply Gaussian blur to the selected region (edge-aware).
+        
+        To prevent bleed from non-selected pixels into the blurred region,
+        the non-selected area is filled with the average color of the selected
+        region before blurring, then composited back.
+        """
         strength = op.get("strength", 25)
         radius = max(1, int(strength))
+        mask = self.active_mask
 
-        blurred = self.image.filter(ImageFilter.GaussianBlur(radius=radius))
+        # Create a copy where the non-target region is filled with the
+        # average color of the target region, preventing edge bleed
+        img_arr = np.array(self.image)
+        fill_img = img_arr.copy()
+        if np.any(mask):
+            avg_color = img_arr[mask, :].mean(axis=0).astype(np.uint8)
+            fill_img[~mask] = avg_color
+
+        blurred = Image.fromarray(fill_img).filter(ImageFilter.GaussianBlur(radius=radius))
         self._composite_with_mask(blurred)
 
     def _op_pixelate(self, op: dict):
