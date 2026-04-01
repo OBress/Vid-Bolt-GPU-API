@@ -1039,7 +1039,7 @@ Operations are applied sequentially. Use `select` to target which region subsequ
 
 | Operation | Description | Parameters |
 | --------- | ----------- | ---------- |
-| `select` | Switch target region | `target`: `"mask"` (detected objects), `"background"` (everything else), `"all"` (entire image) |
+| `select` | Switch target region | `target`: `"mask"`, `"background"`, or `"all"`. Optional: `object_index`: 0-based index to target a single object instead of all. |
 
 **Blur / Privacy:**
 

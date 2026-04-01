@@ -188,18 +188,39 @@ class EffectsPipeline:
     # =========================================================================
 
     def _op_select(self, op: dict):
-        """Switch which region subsequent operations apply to."""
+        """Switch which region subsequent operations apply to.
+        
+        Supports optional 'object_index' (0-based) to target a single detected
+        object instead of all objects. Works with 'mask' and 'background' targets.
+        """
         target = op.get("target", "mask")
+        object_index = op.get("object_index", None)
         self.active_target = target
-        if target == "mask":
-            self.active_mask = self.combined_mask.copy()
-        elif target == "background":
-            self.active_mask = ~self.combined_mask
-        elif target == "all":
-            self.active_mask = np.ones((self.height, self.width), dtype=bool)
+
+        if object_index is not None and isinstance(object_index, int):
+            # Per-object targeting
+            if 0 <= object_index < len(self.object_masks):
+                single_mask = self.object_masks[object_index]
+                if target == "mask":
+                    self.active_mask = single_mask.copy()
+                elif target == "background":
+                    self.active_mask = ~single_mask
+                else:
+                    self.active_mask = np.ones((self.height, self.width), dtype=bool)
+            else:
+                logger.warning(f"object_index {object_index} out of range (have {len(self.object_masks)} objects), using all masks")
+                self.active_mask = self.combined_mask.copy()
         else:
-            logger.warning(f"Unknown select target: {target}, defaulting to 'mask'")
-            self.active_mask = self.combined_mask.copy()
+            # Original behavior: all objects
+            if target == "mask":
+                self.active_mask = self.combined_mask.copy()
+            elif target == "background":
+                self.active_mask = ~self.combined_mask
+            elif target == "all":
+                self.active_mask = np.ones((self.height, self.width), dtype=bool)
+            else:
+                logger.warning(f"Unknown select target: {target}, defaulting to 'mask'")
+                self.active_mask = self.combined_mask.copy()
 
     # =========================================================================
     # Blur / Privacy
@@ -896,15 +917,29 @@ class EffectsPipeline:
     # Helpers
     # =========================================================================
 
-    def _composite_with_mask(self, modified: Image.Image):
-        """Replace pixels in self.image with modified image where active_mask is True."""
-        img_arr = np.array(self.image)
-        mod_arr = np.array(modified)
-        mask = self.active_mask
+    def _composite_with_mask(self, modified: Image.Image, feather_radius: int = 3):
+        """Alpha-blend modified image into self.image using active_mask.
+        
+        Applies automatic edge feathering (Gaussian blur on the mask boundary)
+        to eliminate jagged pixel edges on all operations.
+        """
+        img_arr = np.array(self.image).astype(np.float32)
+        mod_arr = np.array(modified).astype(np.float32)
+
+        # Create a soft mask by blurring the binary mask edges
+        mask_uint8 = (self.active_mask * 255).astype(np.uint8)
+        mask_img = Image.fromarray(mask_uint8, "L")
+        if feather_radius > 0:
+            mask_img = mask_img.filter(ImageFilter.GaussianBlur(radius=feather_radius))
+        alpha = np.array(mask_img).astype(np.float32) / 255.0  # 0.0-1.0
+
+        # Expand alpha to match channel count
         channels = img_arr.shape[2]
-        mask_expanded = np.stack([mask] * channels, axis=-1)
-        img_arr[mask_expanded] = mod_arr[mask_expanded]
-        self.image = Image.fromarray(img_arr)
+        alpha_expanded = np.stack([alpha] * channels, axis=-1)
+
+        # Alpha-blend: result = modified * alpha + original * (1 - alpha)
+        blended = mod_arr * alpha_expanded + img_arr * (1.0 - alpha_expanded)
+        self.image = Image.fromarray(blended.astype(np.uint8))
 
     def _find_contour_pixels(self, mask: np.ndarray, thickness: int = 3) -> np.ndarray:
         """Find contour pixels of a binary mask using morphological operations."""
