@@ -94,16 +94,18 @@ class JobManager:
             if job.status in (JobStatus.PENDING, JobStatus.PROCESSING)
         ]
 
-    def has_pending_or_active_jobs(self) -> bool:
+    def has_pending_or_active_jobs(self, ignore_job_ids: Optional[set[str]] = None) -> bool:
         """Check if there are any pending or processing jobs.
         
         Used by ModelManager to prevent mode switches while jobs are queued.
         This closes the race condition where _is_busy is False between
         sequential batch jobs but the queue still has work to process.
         """
-        if self._pending_jobs_set:
+        ignored = ignore_job_ids or set()
+        if any(job_id not in ignored for job_id in self._pending_jobs_set):
             return True
         return any(
+            job.job_id not in ignored and
             job.status in (JobStatus.PENDING, JobStatus.PROCESSING)
             for job in self._jobs.values()
         )
@@ -593,7 +595,14 @@ class JobManager:
         try:
             # 1. Ensure correct model mode
             if self._model_manager and job_type:
-                await self._model_manager.ensure_mode_for_job(job_type)
+                ready = await self._model_manager.ensure_mode_for_job(
+                    job_type,
+                    ignore_job_ids={job.job_id for job in jobs},
+                )
+                if not ready:
+                    raise RuntimeError(
+                        f"Unable to auto-switch to {job_type.value} mode for queued batch"
+                    )
             
             # 2. Update all jobs to PROCESSING
             for job in jobs:
@@ -795,7 +804,14 @@ class JobManager:
         try:
             # 1. Ensure correct model mode for this job type
             if self._model_manager and hasattr(job, '_job_type'):
-                await self._model_manager.ensure_mode_for_job(job._job_type)
+                ready = await self._model_manager.ensure_mode_for_job(
+                    job._job_type,
+                    ignore_job_ids={job.job_id},
+                )
+                if not ready:
+                    raise RuntimeError(
+                        f"Unable to auto-switch to {job._job_type.value} mode for queued job"
+                    )
             
             # 2. Determine timeout based on job type
             job_type = getattr(job, '_job_type', None)

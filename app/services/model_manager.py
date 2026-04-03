@@ -193,11 +193,18 @@ class ModelManager:
             switching_progress=self._switching_progress,
         )
 
-    async def set_vram_mode(self, mode: VRAMLoadMode) -> None:
+    async def set_vram_mode(
+        self,
+        mode: VRAMLoadMode,
+        ignore_job_ids: Optional[set[str]] = None,
+    ) -> None:
         """Set the VRAM loading mode.
         
         Args:
             mode: Target VRAM mode
+            ignore_job_ids: Internal-only set of queued job IDs to ignore when
+                checking whether a worker may auto-switch for the job it is
+                about to process.
             
         Raises:
             RuntimeError: If currently busy with a job
@@ -206,7 +213,9 @@ class ModelManager:
             raise RuntimeError("Cannot change VRAM mode while a job is in progress")
         
         # Also check if any jobs are queued (prevents race between batch jobs)
-        if self._job_manager and self._job_manager.has_pending_or_active_jobs():
+        if self._job_manager and self._job_manager.has_pending_or_active_jobs(
+            ignore_job_ids=ignore_job_ids
+        ):
             raise RuntimeError("Cannot change VRAM mode while jobs are queued or processing")
         
         if self._is_switching:
@@ -259,7 +268,11 @@ class ModelManager:
         self._switching_progress = progress
         logger.info(f"Mode switch progress: {step} ({progress*100:.0f}%)")
 
-    async def ensure_mode_for_job(self, job_type: JobType) -> bool:
+    async def ensure_mode_for_job(
+        self,
+        job_type: JobType,
+        ignore_job_ids: Optional[set[str]] = None,
+    ) -> bool:
         """Ensure the system can handle the given job type.
         
         This handles automatic mode switching logic:
@@ -358,7 +371,7 @@ class ModelManager:
         # Switch mode
         logger.info(f"Auto-switching from {self._mode.value} to {required_mode.value}...")
         try:
-            await self.set_vram_mode(required_mode)
+            await self.set_vram_mode(required_mode, ignore_job_ids=ignore_job_ids)
             return True
         except Exception as e:
             logger.error(f"Auto-switch failed: {e}")

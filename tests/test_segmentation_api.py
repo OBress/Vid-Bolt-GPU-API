@@ -10,9 +10,11 @@ from PIL import Image
 from pydantic import ValidationError as PydanticValidationError
 
 from app.config import Settings, get_settings
+from app.models.job import JobInfo, JobStatus
 from app.models.internal import VideoSegmentationParams
 from app.models.segmentation import ImageSegmentRequest, VideoSegmentRequest
 from app.routers.segmentation import _hydrate_segmentation_operations
+from app.services.job_manager import JobManager
 from app.services.sam3_generator import SAM3Generator
 from app.services.segmentation_effects import EffectsPipeline
 
@@ -240,3 +242,20 @@ def test_sam3_load_models_passes_sdpa_fallback_to_video_builder(monkeypatch):
     assert captured["video_kwargs"]["version"] == settings.sam3_video_model_version
     assert captured["video_kwargs"]["use_fa3"] is False
     assert generator.get_status()["video_attention_backend"] == "torch_sdpa"
+
+
+def test_sam3_coerce_output_sequence_handles_numpy_arrays():
+    assert SAM3Generator._coerce_output_sequence(None) == []
+    assert SAM3Generator._coerce_output_sequence(np.array([], dtype=np.int64)) == []
+    assert SAM3Generator._coerce_output_sequence(np.array([1, 2], dtype=np.int64)) == [1, 2]
+
+
+def test_job_manager_pending_check_can_ignore_current_job_ids():
+    manager = JobManager(get_settings())
+    current_job = JobInfo(job_id="seg-job-1", status=JobStatus.PENDING, created_at=0.0)
+
+    manager._jobs[current_job.job_id] = current_job
+    manager._pending_jobs_set.add(current_job.job_id)
+
+    assert manager.has_pending_or_active_jobs() is True
+    assert manager.has_pending_or_active_jobs(ignore_job_ids={current_job.job_id}) is False

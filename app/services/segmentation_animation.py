@@ -393,9 +393,27 @@ class AnimationPipeline:
         Returns:
             MP4 video as bytes
         """
-        import cv2
-
         frames: List[np.ndarray] = []
+        animated_ops = [
+            op.get("type", "unknown")
+            for op in operations
+            if isinstance(op, dict) and op.get("animation")
+        ]
+        if not animated_ops:
+            logger.warning(
+                "Animation request contains no animation configs; output will be a static processed image repeated across frames",
+                extra={
+                    "operation_types": [
+                        op.get("type", "unknown") for op in operations if isinstance(op, dict)
+                    ],
+                    "frame_count": self.total_frames,
+                },
+            )
+        else:
+            logger.info(
+                "Animation request contains animated operations",
+                extra={"animated_operation_types": animated_ops, "frame_count": self.total_frames},
+            )
 
         for frame_idx in range(self.total_frames):
             t = frame_idx / max(1, self.total_frames - 1)

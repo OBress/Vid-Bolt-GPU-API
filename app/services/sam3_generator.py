@@ -527,6 +527,37 @@ class SAM3Generator(Segmenter):
         mask_img.save(buf, format="PNG")
         return base64.b64encode(buf.getvalue()).decode("utf-8")
 
+    @staticmethod
+    def _coerce_output_sequence(value) -> List[Any]:
+        """Normalize SAM outputs into a plain Python list.
+
+        SAM sometimes returns numpy arrays for fields like `out_obj_ids`. Using
+        Python truthiness on those arrays raises `ValueError`, so we normalize
+        everything explicitly instead of relying on `or []`.
+        """
+        if value is None:
+            return []
+        if isinstance(value, list):
+            return value
+        if isinstance(value, tuple):
+            return list(value)
+
+        tolist = getattr(value, "tolist", None)
+        if callable(tolist):
+            converted = tolist()
+            if converted is None:
+                return []
+            if isinstance(converted, list):
+                return converted
+            if isinstance(converted, tuple):
+                return list(converted)
+            return [converted]
+
+        try:
+            return list(value)
+        except TypeError:
+            return [value]
+
     def _video_box_xywh_to_xyxy_pixels(
         self,
         box_xywh,
@@ -902,8 +933,10 @@ class SAM3Generator(Segmenter):
                         add_prompt_request["bounding_box_labels"] = params.box_labels or [1] * len(params.box_prompts)
 
                     add_prompt_response = self._video_predictor.handle_request(request=add_prompt_request)
-                    prompt_outputs = add_prompt_response.get("outputs", {}) or {}
-                    for local_obj_id in prompt_outputs.get("out_obj_ids", []) or []:
+                    prompt_outputs = add_prompt_response.get("outputs") or {}
+                    for local_obj_id in self._coerce_output_sequence(
+                        prompt_outputs.get("out_obj_ids")
+                    ):
                         local_id = int(local_obj_id)
                         local_to_global[local_id] = assign_global_id(local_id, prompt_label)
 
@@ -917,12 +950,12 @@ class SAM3Generator(Segmenter):
                         )
                     ):
                         frame_idx = frame_output["frame_index"]
-                        outputs = frame_output.get("outputs", {}) or {}
+                        outputs = frame_output.get("outputs") or {}
 
-                        out_obj_ids = outputs.get("out_obj_ids", []) or []
-                        out_masks = outputs.get("out_binary_masks", []) or []
-                        out_scores = outputs.get("out_probs", []) or []
-                        out_boxes = outputs.get("out_boxes_xywh", []) or []
+                        out_obj_ids = self._coerce_output_sequence(outputs.get("out_obj_ids"))
+                        out_masks = self._coerce_output_sequence(outputs.get("out_binary_masks"))
+                        out_scores = self._coerce_output_sequence(outputs.get("out_probs"))
+                        out_boxes = self._coerce_output_sequence(outputs.get("out_boxes_xywh"))
 
                         frame_bucket = frame_records.setdefault(frame_idx, {})
                         for idx, local_obj_id in enumerate(out_obj_ids):
