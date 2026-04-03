@@ -2,6 +2,7 @@
 
 import asyncio
 import logging
+from urllib.parse import urlparse
 
 import httpx
 
@@ -18,6 +19,8 @@ class StorageService:
     This service does not require any storage credentials. All uploads
     are performed via presigned URLs provided by the calling client.
     """
+
+    _R2_HOST_SUFFIX = ".r2.cloudflarestorage.com"
 
     def __init__(self, settings: Settings):
         """Initialize storage service.
@@ -63,6 +66,40 @@ class StorageService:
             logger.error(f"Failed to download asset: {e}")
             raise ValidationError(f"Failed to download image from URL: {e}")
 
+    @staticmethod
+    def _strip_query_params(url: str) -> str:
+        """Remove query parameters from a URL."""
+        return url.split("?", 1)[0]
+
+    def resolve_public_url(self, upload_url: str) -> str:
+        """Resolve a public playback URL from a presigned upload URL."""
+        upload_url_base = self._strip_query_params(upload_url)
+        parsed = urlparse(upload_url_base)
+
+        if not parsed.scheme or not parsed.netloc:
+            return upload_url_base
+
+        if not parsed.netloc.endswith(self._R2_HOST_SUFFIX):
+            return upload_url_base
+
+        public_base = (self.settings.public_asset_base_url or "").strip()
+        if not public_base:
+            logger.warning(
+                "PUBLIC_ASSET_BASE_URL not configured; falling back to upload URL for R2 object",
+                extra={"upload_url_base": upload_url_base},
+            )
+            return upload_url_base
+
+        object_key = parsed.path.lstrip("/")
+        if not object_key:
+            logger.warning(
+                "Unable to resolve public URL from R2 upload URL with empty object key",
+                extra={"upload_url_base": upload_url_base},
+            )
+            return upload_url_base
+
+        return f"{public_base.rstrip('/')}/{object_key}"
+
     async def upload_to_url(
         self,
         data: bytes,
@@ -81,13 +118,15 @@ class StorageService:
             content_type: MIME type of the content
 
         Returns:
-            The URL uploaded to (without query parameters)
+            Resolved public URL when available, otherwise the stripped upload URL
 
         Raises:
             UploadError: If upload fails after retries
         """
         # Validate URL to prevent SSRF
         validate_external_url(url)
+
+        upload_url_base = self._strip_query_params(url)
         
         max_retries = 3
 
@@ -101,21 +140,22 @@ class StorageService:
                     )
                     response.raise_for_status()
 
+                public_url = self.resolve_public_url(url)
                 logger.info(
                     f"Uploaded to presigned URL",
                     extra={
-                        "url_base": url.split("?")[0],
+                        "upload_url_base": upload_url_base,
+                        "public_url": public_url,
                         "size_bytes": len(data),
                         "content_type": content_type,
                     },
                 )
-                # Return URL without query params (the clean public URL)
-                return url.split("?")[0]
+                return public_url
 
             except httpx.HTTPError as e:
                 logger.warning(
                     f"Upload attempt {attempt + 1} failed",
-                    extra={"url": url.split("?")[0], "error": str(e)},
+                    extra={"upload_url_base": upload_url_base, "error": str(e)},
                 )
                 if attempt == max_retries - 1:
                     raise UploadError(f"Failed to upload after {max_retries} attempts: {e}")

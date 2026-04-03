@@ -153,14 +153,22 @@ RUN pip install --no-cache-dir --force-reinstall \
     torchaudio==2.9.1 \
     --index-url https://download.pytorch.org/whl/cu128
 
-# flash-attn MUST be compiled AFTER the final torch install to avoid ABI mismatch
-# (undefined symbol: _ZNK3c106SymInt6sym_neERKS0_)
-# Uses --no-build-isolation so it finds the installed torch; ninja speeds up CUDA compilation
-RUN pip install --no-cache-dir ninja && \
-    pip install --no-cache-dir flash-attn --no-build-isolation
+ARG INSTALL_FLASH_ATTN=false
 
-# NOTE: xformers is intentionally NOT installed - Blackwell GPU compatibility
-# PyTorch native SDPA is used instead (automatic fallback in all libraries)
+# NOTE: flash-attn is disabled by default in the base image.
+# On Blackwell, the application prefers PyTorch SDPA (and other model-specific
+# attention backends) to avoid ABI / architecture mismatches from a global
+# flash-attn install. SAM 3 video now auto-disables FA3 unless the runtime is
+# both compatible and explicitly provides flash_attn_interface.
+RUN if [ "$INSTALL_FLASH_ATTN" = "true" ]; then \
+        pip install --no-cache-dir ninja && \
+        pip install --no-cache-dir flash-attn --no-build-isolation; \
+    else \
+        echo "Skipping flash-attn install (Blackwell-safe default)"; \
+    fi
+
+# NOTE: xformers is intentionally NOT installed for Blackwell compatibility.
+# PyTorch native SDPA is used instead (automatic fallback in all libraries).
 
 # Upgrade core libraries for Blackwell GPU compatibility (Issue #10)
 RUN pip install --no-cache-dir --upgrade peft diffusers accelerate \

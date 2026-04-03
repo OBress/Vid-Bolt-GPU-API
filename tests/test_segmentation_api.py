@@ -1,5 +1,7 @@
 import inspect
 import json
+import sys
+import types
 from unittest.mock import AsyncMock
 
 import numpy as np
@@ -7,7 +9,7 @@ import pytest
 from PIL import Image
 from pydantic import ValidationError as PydanticValidationError
 
-from app.config import get_settings
+from app.config import Settings, get_settings
 from app.models.internal import VideoSegmentationParams
 from app.models.segmentation import ImageSegmentRequest, VideoSegmentRequest
 from app.routers.segmentation import _hydrate_segmentation_operations
@@ -167,3 +169,74 @@ def test_segmentation_stack_exposes_no_prompt_enhancement_surface():
     sam3_source = inspect.getsource(SAM3Generator)
     assert "enhance_prompt" not in sam3_source
     assert "apply_chat_template" not in sam3_source
+
+
+def test_sam3_disables_fa3_on_blackwell_even_if_module_is_present(monkeypatch):
+    fake_torch = types.SimpleNamespace(
+        cuda=types.SimpleNamespace(
+            is_available=lambda: True,
+            get_device_name=lambda index: "NVIDIA RTX PRO 6000 Blackwell Server Edition",
+        )
+    )
+
+    monkeypatch.setattr(
+        "app.services.sam3_generator.importlib.util.find_spec",
+        lambda name: object() if name == "flash_attn_interface" else None,
+    )
+    monkeypatch.setitem(sys.modules, "torch", fake_torch)
+
+    enabled, reason = SAM3Generator._resolve_video_use_fa3()
+
+    assert enabled is False
+    assert "Blackwell" in reason
+
+
+def test_sam3_load_models_passes_sdpa_fallback_to_video_builder(monkeypatch):
+    settings = Settings(mock_mode=False, api_key="test-key", sam3_dry_run_override=False)
+    generator = SAM3Generator(settings)
+    captured = {}
+
+    fake_sam3_pkg = types.ModuleType("sam3")
+    fake_sam3_pkg.__path__ = []
+    fake_sam3_model_pkg = types.ModuleType("sam3.model")
+    fake_sam3_model_pkg.__path__ = []
+    fake_model_builder = types.ModuleType("sam3.model_builder")
+    fake_processor_module = types.ModuleType("sam3.model.sam3_image_processor")
+
+    def fake_download_ckpt_from_hf(version):
+        return f"/tmp/{version}.pt"
+
+    def fake_build_sam3_image_model(**kwargs):
+        captured["image_kwargs"] = kwargs
+        return object()
+
+    def fake_build_sam3_predictor(**kwargs):
+        captured["video_kwargs"] = kwargs
+        return object()
+
+    class FakeProcessor:
+        def __init__(self, model):
+            self.model = model
+
+    fake_model_builder.download_ckpt_from_hf = fake_download_ckpt_from_hf
+    fake_model_builder.build_sam3_image_model = fake_build_sam3_image_model
+    fake_model_builder.build_sam3_predictor = fake_build_sam3_predictor
+    fake_processor_module.Sam3Processor = FakeProcessor
+
+    monkeypatch.setitem(sys.modules, "sam3", fake_sam3_pkg)
+    monkeypatch.setitem(sys.modules, "sam3.model", fake_sam3_model_pkg)
+    monkeypatch.setitem(sys.modules, "sam3.model_builder", fake_model_builder)
+    monkeypatch.setitem(sys.modules, "sam3.model.sam3_image_processor", fake_processor_module)
+    monkeypatch.setattr(
+        SAM3Generator,
+        "_resolve_video_use_fa3",
+        staticmethod(lambda: (False, "detected Blackwell GPU")),
+    )
+
+    generator.load_models()
+
+    assert captured["image_kwargs"]["checkpoint_path"] == "/tmp/sam3.1.pt"
+    assert captured["image_kwargs"]["load_from_HF"] is False
+    assert captured["video_kwargs"]["version"] == settings.sam3_video_model_version
+    assert captured["video_kwargs"]["use_fa3"] is False
+    assert generator.get_status()["video_attention_backend"] == "torch_sdpa"

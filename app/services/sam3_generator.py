@@ -24,6 +24,7 @@ Video API (from sam3/model/sam3_base_predictor.py):
 import asyncio
 import base64
 import gc
+import importlib.util
 import io
 import json
 import logging
@@ -42,6 +43,7 @@ from app.models.internal import (
     VideoSegmentationResult,
 )
 from app.services.interfaces import Segmenter
+from app.utils.video_encoding import encode_mp4_h264
 
 logger = logging.getLogger(__name__)
 
@@ -71,11 +73,37 @@ class SAM3Generator(Segmenter):
         self._device = settings.sam3_device
         self._image_model_version = settings.sam3_image_model_version
         self._video_model_version = settings.sam3_video_model_version
+        self._video_use_fa3: Optional[bool] = None
 
     @property
     def _loaded(self) -> bool:
         """Check if models are loaded."""
         return self._is_loaded
+
+    @staticmethod
+    def _resolve_video_use_fa3() -> Tuple[bool, str]:
+        """Decide whether SAM 3 video should use FA3 on this runtime."""
+        if importlib.util.find_spec("flash_attn_interface") is None:
+            return False, "flash_attn_interface is not installed"
+
+        try:
+            import torch
+        except ImportError:
+            return False, "torch is unavailable during FA3 capability detection"
+
+        cuda = getattr(torch, "cuda", None)
+        if cuda is None or not cuda.is_available():
+            return False, "CUDA is not available"
+
+        try:
+            device_name = cuda.get_device_name(0)
+        except Exception:
+            device_name = "unknown GPU"
+
+        if "blackwell" in device_name.lower():
+            return False, f"detected Blackwell GPU ({device_name})"
+
+        return True, f"flash_attn_interface is installed for GPU {device_name}"
 
     def load_models(self) -> None:
         """Load SAM 3 image and video models."""
@@ -106,7 +134,21 @@ class SAM3Generator(Segmenter):
             logger.info(f"SAM image model loaded ({self._image_model_version})")
 
             logger.info(f"Loading SAM video predictor ({self._video_model_version})...")
-            self._video_predictor = build_sam3_predictor(version=self._video_model_version)
+            self._video_use_fa3, fa3_reason = self._resolve_video_use_fa3()
+            if self._video_use_fa3:
+                logger.info(
+                    "Using FlashAttention 3 for SAM video predictor: %s",
+                    fa3_reason,
+                )
+            else:
+                logger.info(
+                    "Using PyTorch SDPA for SAM video predictor: %s",
+                    fa3_reason,
+                )
+            self._video_predictor = build_sam3_predictor(
+                version=self._video_model_version,
+                use_fa3=self._video_use_fa3,
+            )
             logger.info(f"SAM video predictor loaded ({self._video_model_version})")
 
             self._is_loaded = True
@@ -161,6 +203,8 @@ class SAM3Generator(Segmenter):
             "max_frames": self._max_frames,
             "image_model_version": self._image_model_version,
             "video_model_version": self._video_model_version,
+            "video_use_fa3": self._video_use_fa3,
+            "video_attention_backend": "fa3" if self._video_use_fa3 else "torch_sdpa",
         }
 
     # --- Image Segmentation ---
@@ -629,11 +673,6 @@ class SAM3Generator(Segmenter):
 
                     per_frame_masks[frame_idx] = masks_for_frame
 
-                # Apply effects and encode MP4
-                out_path = tmp_path + "_out.mp4"
-                fourcc = cv2.VideoWriter_fourcc(*'mp4v')
-                out = cv2.VideoWriter(out_path, fourcc, source_fps, (frame_width, frame_height))
-
                 # Check if any operations have animation configs
                 has_animation = params.operations and any(
                     isinstance(op, dict) and "animation" in op for op in params.operations
@@ -641,35 +680,33 @@ class SAM3Generator(Segmenter):
                 total_video_frames = len(source_frames)
                 video_duration = total_video_frames / max(1, source_fps)
 
-                for fi in sorted(source_frames.keys()):
-                    frame_rgb = source_frames[fi]
-                    masks = per_frame_masks.get(fi, [])
-                    if masks and params.operations:
-                        # Interpolate operations temporally if they have animation configs
-                        if has_animation:
-                            from app.services.segmentation_animation import interpolate_video_operations
-                            frame_ops = interpolate_video_operations(
-                                params.operations, fi, total_video_frames, video_duration
-                            )
+                def iter_processed_frames():
+                    for fi in sorted(source_frames.keys()):
+                        frame_rgb = source_frames[fi]
+                        masks = per_frame_masks.get(fi, [])
+                        if masks and params.operations:
+                            # Interpolate operations temporally if they have animation configs
+                            if has_animation:
+                                from app.services.segmentation_animation import interpolate_video_operations
+                                frame_ops = interpolate_video_operations(
+                                    params.operations, fi, total_video_frames, video_duration
+                                )
+                            else:
+                                frame_ops = params.operations
+                            yield apply_effects_to_frame(frame_rgb, masks, frame_ops)
                         else:
-                            frame_ops = params.operations
-                        processed = apply_effects_to_frame(frame_rgb, masks, frame_ops)
-                        out.write(cv2.cvtColor(processed, cv2.COLOR_RGB2BGR))
-                    else:
-                        out.write(cv2.cvtColor(frame_rgb, cv2.COLOR_RGB2BGR))
+                            yield frame_rgb
 
-                out.release()
+                result_data, encode_info = encode_mp4_h264(iter_processed_frames(), source_fps)
 
-                # Read the output video bytes
-                with open(out_path, "rb") as f:
-                    result_data = f.read()
-
-                try:
-                    os.unlink(out_path)
-                except OSError:
-                    pass
-
-                logger.info(f"Video effects applied: {frame_count} frames, {len(result_data)} bytes output")
+                logger.info(
+                    f"Video effects applied: {frame_count} frames, {len(result_data)} bytes output",
+                    extra={
+                        "codec": encode_info["codec"],
+                        "pixel_format": encode_info["pixel_format"],
+                        "movflags": encode_info["movflags"],
+                    },
+                )
 
                 return VideoSegmentationResult(
                     result_data=result_data,
@@ -930,59 +967,52 @@ class SAM3Generator(Segmenter):
             tracked_ids_sorted = sorted(tracked_ids)
 
             if wants_video_output:
-                out_path = tmp_path + "_out.mp4"
-                fourcc = cv2.VideoWriter_fourcc(*"mp4v")
-                out = cv2.VideoWriter(out_path, fourcc, source_fps, (frame_width, frame_height))
-
                 has_animation = params.operations and any(
                     isinstance(op, dict) and "animation" in op for op in params.operations
                 )
                 total_video_frames = len(source_frames)
                 video_duration = total_video_frames / max(1, source_fps)
 
-                for fi in sorted(source_frames.keys()):
-                    frame_rgb = source_frames[fi]
-                    frame_objects = frame_records.get(fi, {})
+                def iter_processed_frames():
+                    for fi in sorted(source_frames.keys()):
+                        frame_rgb = source_frames[fi]
+                        frame_objects = frame_records.get(fi, {})
 
-                    if frame_objects and params.operations:
-                        if has_animation:
-                            from app.services.segmentation_animation import interpolate_video_operations
+                        if frame_objects and params.operations:
+                            if has_animation:
+                                from app.services.segmentation_animation import interpolate_video_operations
 
-                            frame_ops = interpolate_video_operations(
-                                params.operations, fi, total_video_frames, video_duration
+                                frame_ops = interpolate_video_operations(
+                                    params.operations, fi, total_video_frames, video_duration
+                                )
+                            else:
+                                frame_ops = params.operations
+
+                            ordered_ids = sorted(frame_objects.keys())
+                            masks = [frame_objects[obj_id]["mask"] for obj_id in ordered_ids]
+                            boxes = [tuple(frame_objects[obj_id]["box"]) for obj_id in ordered_ids]
+                            labels = [frame_objects[obj_id]["label"] for obj_id in ordered_ids]
+                            yield apply_effects_to_frame(
+                                frame_rgb,
+                                masks,
+                                frame_ops,
+                                boxes=boxes,
+                                labels=labels,
+                                object_ids=ordered_ids,
                             )
                         else:
-                            frame_ops = params.operations
+                            yield frame_rgb
 
-                        ordered_ids = sorted(frame_objects.keys())
-                        masks = [frame_objects[obj_id]["mask"] for obj_id in ordered_ids]
-                        boxes = [tuple(frame_objects[obj_id]["box"]) for obj_id in ordered_ids]
-                        labels = [frame_objects[obj_id]["label"] for obj_id in ordered_ids]
-                        processed = apply_effects_to_frame(
-                            frame_rgb,
-                            masks,
-                            frame_ops,
-                            boxes=boxes,
-                            labels=labels,
-                            object_ids=ordered_ids,
-                        )
-                        out.write(cv2.cvtColor(processed, cv2.COLOR_RGB2BGR))
-                    else:
-                        out.write(cv2.cvtColor(frame_rgb, cv2.COLOR_RGB2BGR))
-
-                out.release()
-
-                with open(out_path, "rb") as f:
-                    result_data = f.read()
-
-                try:
-                    os.unlink(out_path)
-                except OSError:
-                    pass
+                result_data, encode_info = encode_mp4_h264(iter_processed_frames(), source_fps)
 
                 logger.info(
                     f"Video effects applied with stable object routing: "
-                    f"{frame_count} tracked frames, {len(tracked_ids_sorted)} objects"
+                    f"{frame_count} tracked frames, {len(tracked_ids_sorted)} objects",
+                    extra={
+                        "codec": encode_info["codec"],
+                        "pixel_format": encode_info["pixel_format"],
+                        "movflags": encode_info["movflags"],
+                    },
                 )
 
                 return VideoSegmentationResult(

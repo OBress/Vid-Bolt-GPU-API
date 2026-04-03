@@ -13,14 +13,14 @@ Usage:
 """
 
 import copy
-import io
 import logging
 import math
-import tempfile
 from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
 from PIL import Image
+
+from app.utils.video_encoding import encode_mp4_h264
 
 logger = logging.getLogger(__name__)
 
@@ -491,45 +491,21 @@ class AnimationPipeline:
         return cropped.resize((w, h), Image.LANCZOS)
 
     def _encode_mp4(self, frames: List[np.ndarray]) -> bytes:
-        """Encode a list of RGB numpy frames to MP4 bytes via OpenCV.
-        
-        Uses the same proven encoding approach as the video segmentation pipeline.
-        """
-        import cv2
-        import os
-
+        """Encode a list of RGB numpy frames to H.264 MP4 bytes."""
         if not frames:
             raise ValueError("No frames to encode")
 
-        h, w = frames[0].shape[:2]
-
-        # Write to temp file, then read back
-        tmp_fd, tmp_path = tempfile.mkstemp(suffix=".mp4")
-        os.close(tmp_fd)
-
-        try:
-            fourcc = cv2.VideoWriter_fourcc(*'mp4v')
-            writer = cv2.VideoWriter(tmp_path, fourcc, self.fps, (w, h))
-
-            for frame_rgb in frames:
-                frame_bgr = cv2.cvtColor(frame_rgb, cv2.COLOR_RGB2BGR)
-                writer.write(frame_bgr)
-
-            writer.release()
-
-            with open(tmp_path, "rb") as f:
-                mp4_bytes = f.read()
-
-            logger.info(
-                f"MP4 encoded: {len(frames)} frames, {w}x{h}, "
-                f"{len(mp4_bytes)} bytes ({len(mp4_bytes) / 1024 / 1024:.1f} MB)"
-            )
-            return mp4_bytes
-        finally:
-            try:
-                os.unlink(tmp_path)
-            except OSError:
-                pass
+        mp4_bytes, encode_info = encode_mp4_h264(frames, self.fps)
+        logger.info(
+            f"MP4 encoded: {encode_info['frame_count']} frames, {encode_info['width']}x{encode_info['height']}, "
+            f"{len(mp4_bytes)} bytes ({len(mp4_bytes) / 1024 / 1024:.1f} MB)",
+            extra={
+                "codec": encode_info["codec"],
+                "pixel_format": encode_info["pixel_format"],
+                "movflags": encode_info["movflags"],
+            },
+        )
+        return mp4_bytes
 
 
 def interpolate_video_operations(

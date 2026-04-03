@@ -152,6 +152,7 @@ class Settings(BaseSettings):
     api_key: str = ""
     log_level: str = "INFO"
     cors_allowed_origins: str = "http://localhost:3000"
+    public_asset_base_url: Optional[str] = "https://assets.vidbolt.app"
     
     # Model mode (default startup mode)
     default_model_mode: Literal["image", "video"] = "image"
