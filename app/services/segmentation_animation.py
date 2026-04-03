@@ -348,6 +348,8 @@ class AnimationPipeline:
         image: Image.Image,
         masks: List[np.ndarray],
         boxes: Optional[List[Tuple[int, int, int, int]]] = None,
+        labels: Optional[List[str]] = None,
+        object_ids: Optional[List[int]] = None,
         fps: int = 30,
         duration: float = 3.0,
     ):
@@ -355,6 +357,8 @@ class AnimationPipeline:
         self.width, self.height = self.source_image.size
         self.masks = masks
         self.boxes = boxes or []
+        self.labels = labels
+        self.object_ids = object_ids
         self.fps = fps
         self.duration = duration
         self.total_frames = min(int(fps * duration), self.MAX_FRAMES)
@@ -416,7 +420,13 @@ class AnimationPipeline:
 
             # Apply visual effects using the existing EffectsPipeline
             from app.services.segmentation_effects import EffectsPipeline
-            pipeline = EffectsPipeline(working_image, self.masks, self.boxes)
+            pipeline = EffectsPipeline(
+                working_image,
+                self.masks,
+                self.boxes,
+                labels=self.labels,
+                object_ids=self.object_ids,
+            )
             pipeline.apply(frame_ops)
 
             # Convert to RGB numpy array for video encoding

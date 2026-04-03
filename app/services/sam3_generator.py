@@ -69,6 +69,8 @@ class SAM3Generator(Segmenter):
         self._max_objects = settings.sam3_max_objects
         self._max_frames = settings.sam3_video_max_frames
         self._device = settings.sam3_device
+        self._image_model_version = settings.sam3_image_model_version
+        self._video_model_version = settings.sam3_video_model_version
 
     @property
     def _loaded(self) -> bool:
@@ -87,20 +89,31 @@ class SAM3Generator(Segmenter):
             return
 
         try:
-            from sam3.model_builder import build_sam3_image_model, build_sam3_predictor
+            from sam3.model_builder import build_sam3_image_model, build_sam3_predictor, download_ckpt_from_hf
             from sam3.model.sam3_image_processor import Sam3Processor
 
-            logger.info("Loading SAM 3 image model...")
-            self._image_model = build_sam3_image_model()
+            logger.info(f"Loading SAM image model ({self._image_model_version})...")
+            image_model_kwargs = {}
+            if self._image_model_version == "sam3.1":
+                image_model_kwargs["checkpoint_path"] = download_ckpt_from_hf(version="sam3.1")
+                image_model_kwargs["load_from_HF"] = False
+            elif self._image_model_version != "sam3":
+                raise ValueError(
+                    f"Unsupported SAM image model version: {self._image_model_version!r}"
+                )
+            self._image_model = build_sam3_image_model(**image_model_kwargs)
             self._image_processor = Sam3Processor(self._image_model)
-            logger.info("SAM 3 image model loaded")
+            logger.info(f"SAM image model loaded ({self._image_model_version})")
 
-            logger.info("Loading SAM 3.1 video predictor (Object Multiplex)...")
-            self._video_predictor = build_sam3_predictor(version="sam3.1")
-            logger.info("SAM 3.1 video predictor loaded (multiplex: up to 16 objects/pass)")
+            logger.info(f"Loading SAM video predictor ({self._video_model_version})...")
+            self._video_predictor = build_sam3_predictor(version=self._video_model_version)
+            logger.info(f"SAM video predictor loaded ({self._video_model_version})")
 
             self._is_loaded = True
-            logger.info("SAM 3 / 3.1 models fully loaded (~3.5 GB VRAM)")
+            logger.info(
+                f"SAM models fully loaded (image={self._image_model_version}, "
+                f"video={self._video_model_version})"
+            )
 
         except ImportError as e:
             logger.error(f"SAM 3 package not installed: {e}")
@@ -146,6 +159,8 @@ class SAM3Generator(Segmenter):
             "device": self._device,
             "max_objects": self._max_objects,
             "max_frames": self._max_frames,
+            "image_model_version": self._image_model_version,
+            "video_model_version": self._video_model_version,
         }
 
     # --- Image Segmentation ---
@@ -301,6 +316,7 @@ class SAM3Generator(Segmenter):
                 height=height,
                 content_type="image/png",
                 labels=labels_list if labels_list else None,
+                model_version=self._image_model_version,
             )
         else:
             # Default: return raw masks as base64 JSON
@@ -320,6 +336,7 @@ class SAM3Generator(Segmenter):
                 height=height,
                 content_type="application/json",
                 labels=labels_list if labels_list else None,
+                model_version=self._image_model_version,
             )
 
     def _xyxy_to_norm_cxcywh(self, box_xyxy, width: int, height: int) -> list:
@@ -443,6 +460,43 @@ class SAM3Generator(Segmenter):
         mask_img.save(buffer, format="PNG")
         return buffer.getvalue()
 
+    def _mask_data_to_numpy(self, mask_data) -> "np.ndarray":
+        """Convert predictor output mask data into a 2D numpy array."""
+        import numpy as np
+
+        if hasattr(mask_data, "cpu"):
+            mask_np = mask_data.cpu().numpy()
+        else:
+            mask_np = np.array(mask_data)
+
+        while mask_np.ndim > 2:
+            mask_np = mask_np.squeeze(0)
+        return mask_np
+
+    def _mask_numpy_to_base64(self, mask_np) -> str:
+        """Encode a binary mask array as a base64 PNG."""
+        from PIL import Image
+
+        mask_uint8 = (mask_np > 0.5).astype("uint8") * 255
+        mask_img = Image.fromarray(mask_uint8, mode="L")
+        buf = io.BytesIO()
+        mask_img.save(buf, format="PNG")
+        return base64.b64encode(buf.getvalue()).decode("utf-8")
+
+    def _video_box_xywh_to_xyxy_pixels(
+        self,
+        box_xywh,
+        frame_width: int,
+        frame_height: int,
+    ) -> List[int]:
+        """Convert normalized [x, y, w, h] video boxes to pixel [x1, y1, x2, y2]."""
+        x, y, w, h = [float(v) for v in box_xywh]
+        x1 = int(round(x * frame_width))
+        y1 = int(round(y * frame_height))
+        x2 = int(round((x + w) * frame_width))
+        y2 = int(round((y + h) * frame_height))
+        return [x1, y1, x2, y2]
+
     # --- Video Segmentation ---
 
     async def segment_video(self, params: VideoSegmentationParams) -> VideoSegmentationResult:
@@ -450,7 +504,7 @@ class SAM3Generator(Segmenter):
         if self._dry_run:
             return self._mock_video_segmentation(params)
 
-        return await asyncio.to_thread(self._segment_video_sync, params)
+        return await asyncio.to_thread(self._segment_video_sync_v2, params)
 
     def _segment_video_sync(self, params: VideoSegmentationParams) -> VideoSegmentationResult:
         """Synchronous video segmentation (runs in thread).
@@ -623,6 +677,9 @@ class SAM3Generator(Segmenter):
                     frame_count=frame_count,
                     object_count=len(tracked_ids),
                     tracked_ids=sorted(tracked_ids),
+                    prompt_to_obj_ids={},
+                    object_id_to_prompt_label={},
+                    model_version=self._video_model_version,
                 )
 
             else:
@@ -683,6 +740,9 @@ class SAM3Generator(Segmenter):
                     frame_count=frame_count,
                     object_count=len(tracked_ids),
                     tracked_ids=sorted(tracked_ids),
+                    prompt_to_obj_ids={},
+                    object_id_to_prompt_label={},
+                    model_version=self._video_model_version,
                 )
 
         finally:
@@ -706,6 +766,279 @@ class SAM3Generator(Segmenter):
                 pass
 
     # --- Image Animation (Image→Video) ---
+
+    def _segment_video_sync_v2(self, params: VideoSegmentationParams) -> VideoSegmentationResult:
+        """Video segmentation with stable API-level object IDs and prompt mappings."""
+        import cv2
+
+        from app.services.segmentation_effects import apply_effects_to_frame
+
+        prompt_specs = params.object_prompts or []
+        if not prompt_specs:
+            if params.text_prompt:
+                prompt_specs = [{"label": params.text_prompt, "text": params.text_prompt}]
+            else:
+                prompt_specs = [{"label": "visual_prompt", "text": None}]
+
+        wants_video_output = params.output_format == "video" and params.operations
+
+        with tempfile.NamedTemporaryFile(suffix=".mp4", delete=False) as tmp:
+            tmp.write(params.input_video_data)
+            tmp_path = tmp.name
+
+        source_fps = 30.0
+        frame_width = 0
+        frame_height = 0
+        total_frames = 0
+        source_frames = {}
+
+        try:
+            cap = cv2.VideoCapture(tmp_path)
+            source_fps = cap.get(cv2.CAP_PROP_FPS) or 30.0
+            frame_width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+            frame_height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+            total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+
+            if wants_video_output:
+                for fi in range(min(total_frames, params.max_frames)):
+                    ret, frame = cap.read()
+                    if not ret:
+                        break
+                    source_frames[fi] = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+            cap.release()
+
+            logger.info(
+                f"Video source loaded for segmentation: {frame_width}x{frame_height} @ "
+                f"{source_fps} FPS, {total_frames} frames"
+            )
+
+            prompt_to_obj_ids: Dict[str, List[int]] = {
+                spec["label"]: [] for spec in prompt_specs
+            }
+            object_id_to_prompt_label: Dict[int, str] = {}
+            frame_records: Dict[int, Dict[int, Dict[str, Any]]] = {}
+            tracked_ids = set()
+            next_global_id = 1
+
+            def assign_global_id(local_obj_id: int, prompt_label: str) -> int:
+                nonlocal next_global_id
+                global_id = next_global_id
+                next_global_id += 1
+                prompt_to_obj_ids.setdefault(prompt_label, []).append(global_id)
+                object_id_to_prompt_label[global_id] = prompt_label
+                logger.info(
+                    f"Mapped local SAM object {local_obj_id} to API object {global_id} "
+                    f"for prompt '{prompt_label}'"
+                )
+                return global_id
+
+            for prompt_spec in prompt_specs:
+                session_id = None
+                local_to_global: Dict[int, int] = {}
+                prompt_label = prompt_spec["label"]
+                prompt_text = prompt_spec.get("text")
+
+                try:
+                    start_response = self._video_predictor.handle_request(
+                        request=dict(
+                            type="start_session",
+                            resource_path=tmp_path,
+                        )
+                    )
+                    session_id = start_response["session_id"]
+                    logger.info(f"Video session started for prompt '{prompt_label}': {session_id}")
+
+                    add_prompt_request = dict(
+                        type="add_prompt",
+                        session_id=session_id,
+                        frame_index=params.prompt_frame_index,
+                        output_prob_thresh=params.confidence_threshold,
+                    )
+
+                    if prompt_text:
+                        add_prompt_request["text"] = prompt_text
+                    if params.point_prompts:
+                        add_prompt_request["points"] = params.point_prompts
+                        add_prompt_request["point_labels"] = params.point_labels or [1] * len(params.point_prompts)
+                    if params.box_prompts:
+                        add_prompt_request["bounding_boxes"] = params.box_prompts
+                        add_prompt_request["bounding_box_labels"] = params.box_labels or [1] * len(params.box_prompts)
+
+                    add_prompt_response = self._video_predictor.handle_request(request=add_prompt_request)
+                    prompt_outputs = add_prompt_response.get("outputs", {}) or {}
+                    for local_obj_id in prompt_outputs.get("out_obj_ids", []) or []:
+                        local_id = int(local_obj_id)
+                        local_to_global[local_id] = assign_global_id(local_id, prompt_label)
+
+                    for frame_output in self._video_predictor.handle_stream_request(
+                        request=dict(
+                            type="propagate_in_video",
+                            session_id=session_id,
+                            propagation_direction=params.propagation_direction,
+                            max_frame_num_to_track=params.max_frames,
+                            output_prob_thresh=params.confidence_threshold,
+                        )
+                    ):
+                        frame_idx = frame_output["frame_index"]
+                        outputs = frame_output.get("outputs", {}) or {}
+
+                        out_obj_ids = outputs.get("out_obj_ids", []) or []
+                        out_masks = outputs.get("out_binary_masks", []) or []
+                        out_scores = outputs.get("out_probs", []) or []
+                        out_boxes = outputs.get("out_boxes_xywh", []) or []
+
+                        frame_bucket = frame_records.setdefault(frame_idx, {})
+                        for idx, local_obj_id in enumerate(out_obj_ids):
+                            local_id = int(local_obj_id)
+                            global_id = local_to_global.get(local_id)
+                            if global_id is None:
+                                global_id = assign_global_id(local_id, prompt_label)
+                                local_to_global[local_id] = global_id
+
+                            tracked_ids.add(global_id)
+
+                            mask_np = self._mask_data_to_numpy(out_masks[idx])
+                            score = float(out_scores[idx]) if idx < len(out_scores) else 1.0
+                            if idx < len(out_boxes):
+                                box_xyxy = self._video_box_xywh_to_xyxy_pixels(
+                                    out_boxes[idx], frame_width, frame_height
+                                )
+                            else:
+                                box_xyxy = [0, 0, frame_width, frame_height]
+
+                            frame_bucket[global_id] = {
+                                "mask": mask_np,
+                                "box": box_xyxy,
+                                "score": score,
+                                "label": prompt_label,
+                            }
+
+                finally:
+                    if session_id is not None:
+                        try:
+                            self._video_predictor.handle_request(
+                                request=dict(
+                                    type="close_session",
+                                    session_id=session_id,
+                                )
+                            )
+                            logger.info(f"Closed prompt-scoped video session: {session_id}")
+                        except Exception as e:
+                            logger.warning(f"Error closing prompt-scoped session {session_id}: {e}")
+
+            frame_count = len(frame_records)
+            tracked_ids_sorted = sorted(tracked_ids)
+
+            if wants_video_output:
+                out_path = tmp_path + "_out.mp4"
+                fourcc = cv2.VideoWriter_fourcc(*"mp4v")
+                out = cv2.VideoWriter(out_path, fourcc, source_fps, (frame_width, frame_height))
+
+                has_animation = params.operations and any(
+                    isinstance(op, dict) and "animation" in op for op in params.operations
+                )
+                total_video_frames = len(source_frames)
+                video_duration = total_video_frames / max(1, source_fps)
+
+                for fi in sorted(source_frames.keys()):
+                    frame_rgb = source_frames[fi]
+                    frame_objects = frame_records.get(fi, {})
+
+                    if frame_objects and params.operations:
+                        if has_animation:
+                            from app.services.segmentation_animation import interpolate_video_operations
+
+                            frame_ops = interpolate_video_operations(
+                                params.operations, fi, total_video_frames, video_duration
+                            )
+                        else:
+                            frame_ops = params.operations
+
+                        ordered_ids = sorted(frame_objects.keys())
+                        masks = [frame_objects[obj_id]["mask"] for obj_id in ordered_ids]
+                        boxes = [tuple(frame_objects[obj_id]["box"]) for obj_id in ordered_ids]
+                        labels = [frame_objects[obj_id]["label"] for obj_id in ordered_ids]
+                        processed = apply_effects_to_frame(
+                            frame_rgb,
+                            masks,
+                            frame_ops,
+                            boxes=boxes,
+                            labels=labels,
+                            object_ids=ordered_ids,
+                        )
+                        out.write(cv2.cvtColor(processed, cv2.COLOR_RGB2BGR))
+                    else:
+                        out.write(cv2.cvtColor(frame_rgb, cv2.COLOR_RGB2BGR))
+
+                out.release()
+
+                with open(out_path, "rb") as f:
+                    result_data = f.read()
+
+                try:
+                    os.unlink(out_path)
+                except OSError:
+                    pass
+
+                logger.info(
+                    f"Video effects applied with stable object routing: "
+                    f"{frame_count} tracked frames, {len(tracked_ids_sorted)} objects"
+                )
+
+                return VideoSegmentationResult(
+                    result_data=result_data,
+                    output_format="video",
+                    frame_count=frame_count,
+                    object_count=len(tracked_ids_sorted),
+                    tracked_ids=tracked_ids_sorted,
+                    prompt_to_obj_ids=prompt_to_obj_ids,
+                    object_id_to_prompt_label=object_id_to_prompt_label,
+                    model_version=self._video_model_version,
+                )
+
+            frame_results: Dict[str, Dict[str, Any]] = {}
+            for frame_idx, frame_objects in sorted(frame_records.items()):
+                serialized_frame = {}
+                for object_id, record in sorted(frame_objects.items()):
+                    mask_b64 = self._mask_numpy_to_base64(record["mask"])
+                    if params.include_tracking_metadata:
+                        serialized_frame[str(object_id)] = {
+                            "mask": mask_b64,
+                            "box": record["box"],
+                            "score": record["score"],
+                            "label": record["label"],
+                        }
+                    else:
+                        serialized_frame[str(object_id)] = mask_b64
+                frame_results[str(frame_idx)] = serialized_frame
+
+            result_json = json.dumps({
+                "frames": frame_results,
+                "tracked_ids": tracked_ids_sorted,
+                "frame_count": frame_count,
+                "prompt_to_obj_ids": prompt_to_obj_ids,
+                "object_id_to_prompt_label": {str(k): v for k, v in object_id_to_prompt_label.items()},
+                "propagation_direction": params.propagation_direction,
+                "include_tracking_metadata": params.include_tracking_metadata,
+                "model_version": self._video_model_version,
+            }).encode("utf-8")
+
+            return VideoSegmentationResult(
+                result_data=result_json,
+                output_format=params.output_format,
+                frame_count=frame_count,
+                object_count=len(tracked_ids_sorted),
+                tracked_ids=tracked_ids_sorted,
+                prompt_to_obj_ids=prompt_to_obj_ids,
+                object_id_to_prompt_label=object_id_to_prompt_label,
+                model_version=self._video_model_version,
+            )
+
+        finally:
+            try:
+                os.unlink(tmp_path)
+            except OSError:
+                pass
 
     async def animate_image(self, params: ImageAnimationParams) -> ImageAnimationResult:
         """Generate an animated video from a segmented image.
@@ -731,40 +1064,82 @@ class SAM3Generator(Segmenter):
         width, height = image.size
         logger.info(f"Animate: image loaded {width}x{height}")
 
+        if params.confidence_threshold != 0.5:
+            self._image_processor.set_confidence_threshold(params.confidence_threshold)
+        else:
+            self._image_processor.set_confidence_threshold(0.5)
+
         # 2. Run SAM 3 segmentation to get masks
         inference_state = self._image_processor.set_image(image)
 
-        if params.text_prompt:
+        raw_masks: List[np.ndarray] = []
+        boxes_list: List[Tuple[int, int, int, int]] = []
+        labels_list: List[str] = []
+
+        def collect_state_masks(state, label: Optional[str] = None) -> int:
+            masks = state.get("masks")
+            boxes = state.get("boxes")
+            if masks is None or len(masks) == 0:
+                return 0
+
+            count = min(len(masks), params.max_objects)
+            for i in range(count):
+                raw_masks.append(self._mask_data_to_numpy(masks[i]))
+
+                if boxes is not None and i < len(boxes):
+                    box = boxes[i]
+                    if hasattr(box, "tolist"):
+                        box = box.tolist()
+                    boxes_list.append(tuple(int(v) for v in box[:4]))
+                else:
+                    boxes_list.append((0, 0, width, height))
+
+                if label is not None:
+                    labels_list.append(label)
+
+            return count
+
+        if params.object_prompts:
+            logger.info(f"Animate: running {len(params.object_prompts)} named object prompts")
+            for obj_prompt in params.object_prompts:
+                obj_label = obj_prompt["label"]
+                obj_text = obj_prompt["text"]
+                self._image_processor.reset_all_prompts(inference_state)
+                prompt_state = self._image_processor.set_text_prompt(
+                    prompt=obj_text,
+                    state=inference_state,
+                )
+                found = collect_state_masks(prompt_state, label=obj_label)
+                logger.info(f"Animate: found {found} objects for '{obj_label}'")
+        elif params.text_prompt:
+            self._image_processor.reset_all_prompts(inference_state)
             inference_state = self._image_processor.set_text_prompt(params.text_prompt, inference_state)
+            collect_state_masks(inference_state)
         elif params.box_prompts_labeled:
+            self._image_processor.reset_all_prompts(inference_state)
             for (box_xyxy, label) in params.box_prompts_labeled[:params.max_objects]:
                 norm_box = self._xyxy_to_norm_cxcywh(box_xyxy, width, height)
                 inference_state = self._image_processor.add_geometric_prompt(
                     state=inference_state, box=norm_box, label=label,
                 )
+            collect_state_masks(inference_state)
         elif params.box_prompts:
+            self._image_processor.reset_all_prompts(inference_state)
             for box_xyxy in params.box_prompts[:params.max_objects]:
                 norm_box = self._xyxy_to_norm_cxcywh(box_xyxy, width, height)
                 inference_state = self._image_processor.add_geometric_prompt(
                     state=inference_state, box=norm_box, label=True,
                 )
+            collect_state_masks(inference_state)
         elif params.point_prompts:
+            self._image_processor.reset_all_prompts(inference_state)
             for point in params.point_prompts[:params.max_objects]:
                 px, py = point
                 norm_box = [px / width, py / height, 0.02, 0.02]
                 inference_state = self._image_processor.add_geometric_prompt(
                     state=inference_state, box=norm_box, label=True,
                 )
-
-        # Get raw masks and boxes
-        raw_masks = self._get_raw_masks_from_state(inference_state)
-        boxes_list = []
-        boxes = inference_state.get("boxes")
-        if boxes is not None:
-            for box in boxes:
-                if hasattr(box, 'tolist'):
-                    box = box.tolist()
-                boxes_list.append(tuple(int(v) for v in box[:4]))
+            collect_state_masks(inference_state)
 
         object_count = len(raw_masks)
         logger.info(f"Animate: segmented {object_count} objects, rendering animation...")
@@ -773,12 +1148,14 @@ class SAM3Generator(Segmenter):
             logger.warning("No objects found for animation, using full-frame mask")
             full_mask = np.ones((height, width), dtype=bool)
             raw_masks = [full_mask]
+            boxes_list = [(0, 0, width, height)]
 
         # 3. Build and render animation
         pipeline = AnimationPipeline(
             image=image,
             masks=raw_masks,
             boxes=boxes_list,
+            labels=labels_list if labels_list else None,
             fps=params.fps,
             duration=params.duration_seconds,
         )
@@ -800,6 +1177,8 @@ class SAM3Generator(Segmenter):
             fps=params.fps,
             frame_count=total_frames,
             object_count=object_count,
+            labels=labels_list if labels_list else None,
+            model_version=self._image_model_version,
         )
 
     def _mock_image_animation(self, params: ImageAnimationParams) -> ImageAnimationResult:
@@ -808,6 +1187,8 @@ class SAM3Generator(Segmenter):
         image = Image.open(io.BytesIO(params.input_image_data))
         width, height = image.size
         total_frames = min(int(params.fps * params.duration_seconds), 600)
+        labels = [prompt["label"] for prompt in params.object_prompts] if params.object_prompts else None
+        object_count = len(labels) if labels else 1
 
         return ImageAnimationResult(
             video_data=b"mock_mp4_data",
@@ -816,14 +1197,18 @@ class SAM3Generator(Segmenter):
             duration_seconds=params.duration_seconds,
             fps=params.fps,
             frame_count=total_frames,
-            object_count=1,
+            object_count=object_count,
+            labels=labels,
+            model_version=self._image_model_version,
         )
 
     # --- Mock/Dry-Run Methods ---
 
     def _mock_image_segmentation(self, params: ImageSegmentationParams) -> ImageSegmentationResult:
         """Generate mock segmentation results for testing."""
+        import numpy as np
         from PIL import Image
+        from app.services.segmentation_effects import EffectsPipeline
 
         image = Image.open(io.BytesIO(params.input_image_data))
         width, height = image.size
@@ -839,36 +1224,109 @@ class SAM3Generator(Segmenter):
         buf = io.BytesIO()
         mock_mask.save(buf, format="PNG")
         mask_bytes = buf.getvalue()
+        object_specs = params.object_prompts or [{"label": params.text_prompt or "object"}]
+        raw_masks = [np.array(mock_mask) > 0 for _ in object_specs]
+        boxes = [(x1, y1, x2, y2) for _ in object_specs]
+        scores = [0.95 for _ in object_specs]
+        labels = [spec["label"] for spec in object_specs] if params.object_prompts else None
 
-        encoded = [base64.b64encode(mask_bytes).decode("utf-8")]
+        if params.output_type == "image" and params.operations:
+            pipeline = EffectsPipeline(
+                image.convert("RGB"),
+                raw_masks,
+                boxes=boxes,
+                labels=labels,
+            )
+            pipeline.apply(params.operations)
+            result_bytes = pipeline.to_bytes(format="png")
+            return ImageSegmentationResult(
+                masks_data=result_bytes,
+                boxes=boxes,
+                scores=scores,
+                object_count=len(raw_masks),
+                width=width,
+                height=height,
+                content_type="image/png",
+                labels=labels,
+                model_version=self._image_model_version,
+            )
+
+        encoded = [base64.b64encode(mask_bytes).decode("utf-8") for _ in object_specs]
         masks_json = json.dumps(encoded).encode("utf-8")
 
         return ImageSegmentationResult(
             masks_data=masks_json,
-            boxes=[(x1, y1, x2, y2)],
-            scores=[0.95],
-            object_count=1,
+            boxes=boxes,
+            scores=scores,
+            object_count=len(object_specs),
             width=width,
             height=height,
+            labels=labels,
+            model_version=self._image_model_version,
         )
 
     def _mock_video_segmentation(self, params: VideoSegmentationParams) -> VideoSegmentationResult:
         """Generate mock video segmentation results for testing."""
+        prompt_specs = params.object_prompts or []
+        if not prompt_specs:
+            if params.text_prompts:
+                prompt_specs = [{"label": prompt, "text": prompt} for prompt in params.text_prompts]
+            elif params.text_prompt:
+                prompt_specs = [{"label": params.text_prompt, "text": params.text_prompt}]
+            else:
+                prompt_specs = [{"label": "visual_prompt", "text": None}]
+
+        prompt_to_obj_ids: Dict[str, List[int]] = {}
+        object_id_to_prompt_label: Dict[int, str] = {}
+        for index, prompt_spec in enumerate(prompt_specs, start=1):
+            prompt_to_obj_ids[prompt_spec["label"]] = [index]
+            object_id_to_prompt_label[index] = prompt_spec["label"]
+
+        if params.output_format == "video":
+            return VideoSegmentationResult(
+                result_data=b"mock_mp4_data",
+                output_format="video",
+                frame_count=2,
+                object_count=len(prompt_specs),
+                tracked_ids=sorted(object_id_to_prompt_label.keys()),
+                prompt_to_obj_ids=prompt_to_obj_ids,
+                object_id_to_prompt_label=object_id_to_prompt_label,
+                model_version=self._video_model_version,
+            )
+
+        frame_payload: Dict[str, Dict[str, Any]] = {}
+        for frame_idx in range(2):
+            objects = {}
+            for object_id, label in object_id_to_prompt_label.items():
+                if params.include_tracking_metadata:
+                    objects[str(object_id)] = {
+                        "mask": "mock_mask_base64",
+                        "box": [10 * object_id, 10 * object_id, 40, 40],
+                        "score": 0.95,
+                        "label": label,
+                    }
+                else:
+                    objects[str(object_id)] = "mock_mask_base64"
+            frame_payload[str(frame_idx)] = objects
+
         result_json = json.dumps({
-            "frames": {
-                "0": {"1": "mock_mask_base64"},
-                "1": {"1": "mock_mask_base64"},
-            },
-            "tracked_ids": [1],
+            "frames": frame_payload,
+            "tracked_ids": sorted(object_id_to_prompt_label.keys()),
             "frame_count": 2,
-            "text_prompt": params.text_prompt,
+            "prompt_to_obj_ids": prompt_to_obj_ids,
+            "object_id_to_prompt_label": {str(k): v for k, v in object_id_to_prompt_label.items()},
             "propagation_direction": params.propagation_direction,
+            "include_tracking_metadata": params.include_tracking_metadata,
+            "model_version": self._video_model_version,
         }).encode("utf-8")
 
         return VideoSegmentationResult(
             result_data=result_json,
             output_format=params.output_format,
             frame_count=2,
-            object_count=1,
-            tracked_ids=[1],
+            object_count=len(prompt_specs),
+            tracked_ids=sorted(object_id_to_prompt_label.keys()),
+            prompt_to_obj_ids=prompt_to_obj_ids,
+            object_id_to_prompt_label=object_id_to_prompt_label,
+            model_version=self._video_model_version,
         )

@@ -166,13 +166,16 @@ class ImageSegmentationResult:
     content_type: str = "application/json"  # "application/json" or "image/png"
     raw_masks: Optional[List[Any]] = None   # Raw mask tensors for effects pipeline
     labels: Optional[List[str]] = None  # Object labels from object_prompts
+    model_version: str = "sam3.1"
 
 @dataclass
 class VideoSegmentationParams:
-    """Parameters for video segmentation/tracking (SAM 3)."""
+    """Parameters for video segmentation/tracking."""
     job_id: str
     input_video_data: bytes       # MP4 video bytes
     text_prompt: Optional[str] = None         # Text concept to track
+    text_prompts: Optional[List[str]] = None  # Multi-prompt text tracking
+    object_prompts: Optional[List[Dict[str, str]]] = None  # [{"label": "person", "text": "person"}]
     point_prompts: Optional[List[List[float]]] = None  # [[x, y]] pixel coords
     point_labels: Optional[List[int]] = None  # 1 = positive, 0 = negative
     box_prompts: Optional[List[List[float]]] = None  # [[x, y, w, h]] bounding boxes
@@ -183,6 +186,7 @@ class VideoSegmentationParams:
     output_format: str = "masks_json"  # "masks_json" or "video"
     operations: Optional[List[Dict]] = None  # Ordered visual operations per frame
     max_frames: int = 300         # Max frames to process
+    include_tracking_metadata: bool = False
 
 @dataclass
 class VideoSegmentationResult:
@@ -192,6 +196,9 @@ class VideoSegmentationResult:
     frame_count: int
     object_count: int
     tracked_ids: List[int]        # Unique IDs for tracked objects
+    prompt_to_obj_ids: Dict[str, List[int]]
+    object_id_to_prompt_label: Dict[int, str]
+    model_version: str = "sam3.1"
 
 
 # --- Segmentation Animation ---
@@ -202,6 +209,7 @@ class ImageAnimationParams:
     job_id: str
     input_image_data: bytes
     text_prompt: Optional[str] = None
+    object_prompts: Optional[List[Dict[str, str]]] = None
     point_prompts: Optional[List[Tuple[int, int]]] = None
     box_prompts: Optional[List[Tuple[int, int, int, int]]] = None
     box_prompts_labeled: Optional[List[Tuple[Tuple[int, int, int, int], bool]]] = None
@@ -221,5 +229,7 @@ class ImageAnimationResult:
     fps: int
     frame_count: int
     object_count: int
+    labels: Optional[List[str]] = None
+    model_version: str = "sam3.1"
 
 

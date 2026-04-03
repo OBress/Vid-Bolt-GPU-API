@@ -1,7 +1,7 @@
 """Pydantic models for segmentation API endpoints."""
 
-from typing import List, Literal, Optional, Tuple
-from pydantic import BaseModel, Field
+from typing import List, Literal, Optional
+from pydantic import BaseModel, Field, model_validator
 
 
 class BoxPrompt(BaseModel):
@@ -28,6 +28,15 @@ class ObjectPrompt(BaseModel):
         ...,
         description="Text describing the object to segment (e.g., 'white man sitting', 'metal table')",
     )
+
+
+SEGMENTATION_OPERATION_TYPES = (
+    "select, blur, pixelate, redact, color_overlay, color_grade, opacity, "
+    "replace_color, remove_background, replace_background, greenscreen, outline, "
+    "bounding_box, spotlight, bokeh, glow, shadow, vignette, grayscale, invert, "
+    "sharpen, sepia, posterize, edge_detect, emboss, noise, sketch, duotone, "
+    "halftone, glitch, motion_blur, glass, feather, zoom, pan"
+)
 
 
 class ImageSegmentRequest(BaseModel):
@@ -80,9 +89,7 @@ class ImageSegmentRequest(BaseModel):
     operations: Optional[List[dict]] = Field(
         None,
         description="Ordered list of visual operations to apply (only used when output_type='image'). "
-                    "Each operation is a dict with 'type' and params. Types: select, blur, pixelate, redact, "
-                    "color_overlay, color_grade, opacity, replace_color, remove_background, replace_background, "
-                    "greenscreen, outline, text_label, bounding_box, spotlight, bokeh, glow, shadow, vignette",
+                    f"Each operation is a dict with 'type' and params. Types: {SEGMENTATION_OPERATION_TYPES}",
     )
     save_url: str = Field(
         ...,
@@ -115,6 +122,16 @@ class VideoSegmentRequest(BaseModel):
     text_prompt: Optional[str] = Field(
         None,
         description="Text describing objects to track (e.g., 'yellow school bus')",
+    )
+    text_prompts: Optional[List[str]] = Field(
+        None,
+        description="Multiple text prompts to track in one request. Use for deterministic multi-object tracking "
+                    "without relying on prompt rewriting.",
+    )
+    object_prompts: Optional[List[ObjectPrompt]] = Field(
+        None,
+        description="Named object prompts for deterministic multi-object tracking. Each has a stable 'label' and "
+                    "'text', and the label can be used in select operations with 'object_label'.",
     )
     point_prompts: Optional[List[List[float]]] = Field(
         None,
@@ -154,7 +171,11 @@ class VideoSegmentRequest(BaseModel):
     operations: Optional[List[dict]] = Field(
         None,
         description="Ordered list of visual operations to apply per-frame (only used when output_format='video'). "
-                    "Same operation types as image segmentation.",
+                    f"Same operation types as image segmentation. Types: {SEGMENTATION_OPERATION_TYPES}",
+    )
+    include_tracking_metadata: bool = Field(
+        False,
+        description="When true, masks_json output includes per-object labels, boxes, and scores in addition to masks.",
     )
     max_frames: int = Field(
         300,
@@ -178,3 +199,38 @@ class VideoSegmentRequest(BaseModel):
         None,
         description="Client-side identifier for this item",
     )
+
+    @model_validator(mode="after")
+    def validate_prompt_modes(self):
+        """Ensure the request uses one deterministic prompt mode."""
+        prompt_modes = [
+            bool(self.text_prompt),
+            bool(self.text_prompts),
+            bool(self.object_prompts),
+        ]
+        if sum(prompt_modes) > 1:
+            raise ValueError(
+                "Only one of text_prompt, text_prompts, or object_prompts may be provided"
+            )
+
+        if self.text_prompts:
+            normalized = [prompt.strip() for prompt in self.text_prompts if prompt and prompt.strip()]
+            if len(normalized) != len(self.text_prompts):
+                raise ValueError("text_prompts cannot contain empty values")
+            if len(set(normalized)) != len(normalized):
+                raise ValueError("text_prompts must be unique")
+
+        if self.object_prompts:
+            labels = [prompt.label.strip() for prompt in self.object_prompts]
+            if any(not label for label in labels):
+                raise ValueError("object_prompts labels cannot be empty")
+            if len(set(labels)) != len(labels):
+                raise ValueError("object_prompts labels must be unique")
+
+        multi_prompt_mode = bool(self.text_prompts or self.object_prompts)
+        if multi_prompt_mode and (self.point_prompts or self.box_prompts):
+            raise ValueError(
+                "point_prompts and box_prompts are only supported with the legacy single text_prompt video mode"
+            )
+
+        return self

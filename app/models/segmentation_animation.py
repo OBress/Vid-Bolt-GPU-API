@@ -3,7 +3,7 @@
 from typing import List, Literal, Optional
 from pydantic import BaseModel, Field
 
-from app.models.segmentation import BoxPrompt
+from app.models.segmentation import BoxPrompt, ObjectPrompt, SEGMENTATION_OPERATION_TYPES
 
 
 class AnimationConfig(BaseModel):
@@ -90,6 +90,11 @@ class AnimateSegmentRequest(BaseModel):
         None,
         description="Text describing objects to segment (e.g., 'person', 'all cars')",
     )
+    object_prompts: Optional[List[ObjectPrompt]] = Field(
+        None,
+        description="Named object prompts for per-object animation control. Each object label can be reused in "
+                    "select operations via object_label.",
+    )
     point_prompts: Optional[List[List[int]]] = Field(
         None,
         description="List of [x, y] click coordinates to prompt specific objects",
@@ -131,7 +136,7 @@ class AnimateSegmentRequest(BaseModel):
         description=(
             "Ordered list of visual operations with optional animation configs. "
             "Each operation is a dict with 'type', params, and optional 'animation' key. "
-            "See API documentation for all 35 operation types and animation options."
+            f"Supported types: {SEGMENTATION_OPERATION_TYPES}."
         ),
     )
     save_url: str = Field(

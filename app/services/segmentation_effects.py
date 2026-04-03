@@ -37,6 +37,7 @@ class EffectsPipeline:
         masks: List[np.ndarray],
         boxes: Optional[List[Tuple[int, int, int, int]]] = None,
         labels: Optional[List[str]] = None,
+        object_ids: Optional[List[int]] = None,
     ):
         """Initialize pipeline with source image and segmentation masks.
         
@@ -45,6 +46,7 @@ class EffectsPipeline:
             masks: List of binary masks (H, W), one per detected object
             boxes: Optional bounding boxes per object [(x1,y1,x2,y2)]
             labels: Optional string labels per object (from object_prompts)
+            object_ids: Optional stable object IDs for tracked video objects
         """
         # Convert to RGBA for alpha support
         self.original = image.convert("RGBA")
@@ -86,6 +88,15 @@ class EffectsPipeline:
                     self._label_to_indices[label] = []
                 self._label_to_indices[label].append(i)
 
+        # Store stable IDs for object-aware video routing via object_id
+        self.object_ids: Optional[List[int]] = object_ids
+        self._id_to_indices: Dict[int, List[int]] = {}
+        if object_ids:
+            for i, object_id in enumerate(object_ids):
+                self._id_to_indices.setdefault(int(object_id), []).append(i)
+
+        self.active_object_indices: List[int] = list(range(len(self.object_masks)))
+
     def apply(self, operations: List[Dict[str, Any]]) -> Image.Image:
         """Apply a list of operations sequentially.
         
@@ -101,7 +112,7 @@ class EffectsPipeline:
 
             try:
                 if op_type == "select":
-                    self._op_select(op)
+                    self._op_select_v2(op)
                 elif op_type == "blur":
                     self._op_blur(op)
                 elif op_type == "pixelate":
@@ -117,27 +128,27 @@ class EffectsPipeline:
                 elif op_type == "replace_color":
                     self._op_replace_color(op)
                 elif op_type == "remove_background":
-                    self._op_remove_background(op)
+                    self._op_remove_background_v2(op)
                 elif op_type == "replace_background":
-                    self._op_replace_background(op)
+                    self._op_replace_background_v2(op)
                 elif op_type == "greenscreen":
-                    self._op_greenscreen(op)
+                    self._op_greenscreen_v2(op)
                 elif op_type == "outline":
-                    self._op_outline(op)
+                    self._op_outline_v2(op)
                 elif op_type == "text_label":
-                    pass  # Removed: text labels are no longer supported
+                    logger.warning("text_label is deprecated and no longer supported; skipping")
                 elif op_type == "bounding_box":
-                    self._op_bounding_box(op)
+                    self._op_bounding_box_v2(op)
                 elif op_type == "spotlight":
-                    self._op_spotlight(op)
+                    self._op_spotlight_v2(op)
                 elif op_type == "bokeh":
-                    self._op_bokeh(op)
+                    self._op_bokeh_v2(op)
                 elif op_type == "glow":
-                    self._op_glow(op)
+                    self._op_glow_v2(op)
                 elif op_type == "shadow":
-                    self._op_shadow(op)
+                    self._op_shadow_v2(op)
                 elif op_type == "vignette":
-                    self._op_vignette(op)
+                    self._op_vignette_v2(op)
                 elif op_type == "grayscale":
                     self._op_grayscale(op)
                 elif op_type == "invert":
@@ -262,6 +273,93 @@ class EffectsPipeline:
             else:
                 logger.warning(f"Unknown select target: {target}, defaulting to 'mask'")
                 self.active_mask = self.combined_mask.copy()
+
+    def _op_select_v2(self, op: dict):
+        """Switch which region subsequent operations apply to with stable object routing."""
+        target = op.get("target", "mask")
+        object_id = op.get("object_id", None)
+        object_ids = op.get("object_ids", None)
+        object_index = op.get("object_index", None)
+        object_label = op.get("object_label", None)
+        object_labels = op.get("object_labels", None)
+        self.active_target = target
+
+        selected_indices = None
+        explicit_selection = any(
+            value is not None
+            for value in (object_id, object_ids, object_index, object_label, object_labels)
+        )
+
+        if object_id is not None and self._id_to_indices:
+            selected_indices = self._id_to_indices.get(int(object_id), [])
+            if not selected_indices:
+                logger.warning(f"object_id {object_id} not found. Available: {sorted(self._id_to_indices.keys())}")
+        elif object_ids is not None and self._id_to_indices:
+            selected_indices = []
+            for obj_id in object_ids:
+                selected_indices.extend(self._id_to_indices.get(int(obj_id), []))
+            if not selected_indices:
+                logger.warning(f"No objects found for object_ids {object_ids}. Available: {sorted(self._id_to_indices.keys())}")
+        elif object_label is not None and self._label_to_indices:
+            selected_indices = self._label_to_indices.get(object_label, [])
+            if not selected_indices:
+                logger.warning(f"object_label '{object_label}' not found. Available: {list(self._label_to_indices.keys())}")
+        elif object_labels is not None and self._label_to_indices:
+            selected_indices = []
+            for lbl in object_labels:
+                selected_indices.extend(self._label_to_indices.get(lbl, []))
+            if not selected_indices:
+                logger.warning(f"No objects found for labels {object_labels}. Available: {list(self._label_to_indices.keys())}")
+        elif object_index is not None and isinstance(object_index, int):
+            if 0 <= object_index < len(self.object_masks):
+                selected_indices = [object_index]
+            else:
+                logger.warning(f"object_index {object_index} out of range (have {len(self.object_masks)} objects)")
+
+        if selected_indices is not None:
+            selected_indices = list(dict.fromkeys(selected_indices))
+
+        if selected_indices is not None and selected_indices:
+            combined = np.zeros((self.height, self.width), dtype=bool)
+            for idx in selected_indices:
+                if 0 <= idx < len(self.object_masks):
+                    combined |= self.object_masks[idx]
+            self.active_object_indices = selected_indices
+            if target == "mask":
+                self.active_mask = combined
+            elif target == "background":
+                self.active_mask = ~combined
+            else:
+                self.active_mask = np.ones((self.height, self.width), dtype=bool)
+        elif explicit_selection:
+            self.active_object_indices = []
+            if target == "mask":
+                self.active_mask = np.zeros((self.height, self.width), dtype=bool)
+            else:
+                self.active_mask = np.ones((self.height, self.width), dtype=bool)
+        else:
+            self.active_object_indices = list(range(len(self.object_masks)))
+            if target == "mask":
+                self.active_mask = self.combined_mask.copy()
+            elif target == "background":
+                self.active_mask = ~self.combined_mask
+            elif target == "all":
+                self.active_mask = np.ones((self.height, self.width), dtype=bool)
+            else:
+                logger.warning(f"Unknown select target: {target}, defaulting to 'mask'")
+                self.active_mask = self.combined_mask.copy()
+
+    def _selected_subject_mask(self) -> np.ndarray:
+        """Return the currently selected subject mask for object-centric effects."""
+        if self.active_target == "mask":
+            return self.active_mask.copy()
+        if self.active_target == "background":
+            return ~self.active_mask
+        return self.combined_mask.copy()
+
+    def _iter_selected_object_indices(self) -> List[int]:
+        """Return the object indices currently selected for object-wise effects."""
+        return list(self.active_object_indices)
 
     # =========================================================================
     # Blur / Privacy
@@ -619,6 +717,201 @@ class EffectsPipeline:
             cy, cx = self.height / 2, self.width / 2
 
         # Create radial gradient
+        y_coords, x_coords = np.mgrid[0:self.height, 0:self.width]
+        max_dist = np.sqrt(self.width**2 + self.height**2) / 2
+        dist = np.sqrt((x_coords - cx)**2 + (y_coords - cy)**2)
+        vignette = np.clip(dist / max_dist * strength, 0, 1)
+
+        overlay = Image.new("RGBA", (self.width, self.height), (0, 0, 0, 0))
+        overlay_arr = np.array(overlay)
+        overlay_arr[:, :, 3] = (vignette * 255).astype(np.uint8)
+        overlay = Image.fromarray(overlay_arr)
+        self.image = Image.alpha_composite(self.image, overlay)
+
+    def _op_remove_background_v2(self, op: dict):
+        """Make everything outside the selected subject transparent."""
+        img_arr = np.array(self.image)
+        subject_mask = self._selected_subject_mask()
+        img_arr[~subject_mask, 3] = 0
+        self.image = Image.fromarray(img_arr)
+
+    def _op_replace_background_v2(self, op: dict):
+        """Replace everything outside the selected subject with a solid color or image."""
+        color = op.get("color", None)
+        bg_image_data = op.get("_bg_image_data", None)
+
+        if bg_image_data is not None:
+            bg = Image.open(io.BytesIO(bg_image_data)).convert("RGBA")
+            bg = bg.resize((self.width, self.height), Image.LANCZOS)
+        elif color is not None:
+            c = tuple(color)
+            if len(c) == 3:
+                c = c + (255,)
+            bg = Image.new("RGBA", (self.width, self.height), c)
+        else:
+            bg = Image.new("RGBA", (self.width, self.height), (0, 0, 0, 255))
+
+        img_arr = np.array(self.image)
+        bg_arr = np.array(bg)
+        bg_mask = ~self._selected_subject_mask()
+        img_arr[bg_mask] = bg_arr[bg_mask]
+        self.image = Image.fromarray(img_arr)
+
+    def _op_greenscreen_v2(self, op: dict):
+        """Replace everything outside the selected subject with standard green-screen color."""
+        img_arr = np.array(self.image)
+        bg_mask = ~self._selected_subject_mask()
+        img_arr[bg_mask] = [0, 177, 64, 255]
+        self.image = Image.fromarray(img_arr)
+
+    def _op_outline_v2(self, op: dict):
+        """Draw outlines only around the currently selected objects."""
+        color = tuple(op.get("color", [0, 255, 0, 255]))
+        if len(color) == 3:
+            color = color + (255,)
+        thickness = op.get("thickness", 3)
+        progress = max(0.0, min(1.0, op.get("progress", 1.0)))
+        smooth_radius = max(1, thickness // 2 + 1)
+
+        for idx in self._iter_selected_object_indices():
+            if not (0 <= idx < len(self.object_masks)):
+                continue
+            obj_mask = self.object_masks[idx]
+            if not np.any(obj_mask):
+                continue
+            contour = self._find_contour_pixels(obj_mask, thickness)
+            if progress < 1.0:
+                contour = self._partial_contour(contour, progress)
+
+            contour_gray = (contour.astype(np.float32) * 255).astype(np.uint8)
+            contour_img = Image.fromarray(contour_gray, "L")
+            contour_img = contour_img.filter(ImageFilter.GaussianBlur(radius=smooth_radius))
+            contour_smooth = np.array(contour_img)
+
+            overlay = Image.new("RGBA", (self.width, self.height), (0, 0, 0, 0))
+            overlay_arr = np.array(overlay)
+            mask_any = contour_smooth > 0
+            overlay_arr[mask_any, 0] = color[0]
+            overlay_arr[mask_any, 1] = color[1]
+            overlay_arr[mask_any, 2] = color[2]
+            overlay_arr[mask_any, 3] = np.minimum(contour_smooth[mask_any], color[3])
+            overlay = Image.fromarray(overlay_arr)
+            self.image = Image.alpha_composite(self.image, overlay)
+
+    def _op_bounding_box_v2(self, op: dict):
+        """Draw bounding boxes only around the currently selected objects."""
+        color = tuple(op.get("color", [255, 0, 0, 255]))
+        if len(color) == 3:
+            color = color + (255,)
+        thickness = op.get("thickness", 2)
+
+        overlay = Image.new("RGBA", (self.width, self.height), (0, 0, 0, 0))
+        draw = ImageDraw.Draw(overlay)
+
+        for idx in self._iter_selected_object_indices():
+            if not (0 <= idx < len(self.boxes)):
+                continue
+            x1, y1, x2, y2 = self.boxes[idx]
+            for t in range(thickness):
+                draw.rectangle([x1 - t, y1 - t, x2 + t, y2 + t], outline=color)
+
+        self.image = Image.alpha_composite(self.image, overlay)
+
+    def _op_spotlight_v2(self, op: dict):
+        """Darken everything except the selected subject."""
+        darkness = max(0.0, min(1.0, op.get("darkness", 0.7)))
+        subject_mask = self._selected_subject_mask()
+
+        dark_overlay = Image.new("RGBA", (self.width, self.height), (0, 0, 0, 0))
+        dark_arr = np.array(dark_overlay)
+        dark_arr[~subject_mask] = [0, 0, 0, int(darkness * 255)]
+        dark_overlay = Image.fromarray(dark_arr)
+        self.image = Image.alpha_composite(self.image, dark_overlay)
+
+    def _op_bokeh_v2(self, op: dict):
+        """Apply depth-of-field blur outside the selected subject."""
+        radius = max(1, int(op.get("strength", 15)))
+        subject_mask = self._selected_subject_mask()
+
+        blurred = self.image.filter(ImageFilter.GaussianBlur(radius=radius))
+        img_arr = np.array(self.image)
+        blur_arr = np.array(blurred)
+        bg_mask = ~subject_mask
+        mask_expanded = np.stack([bg_mask] * img_arr.shape[2], axis=-1)
+        img_arr[mask_expanded] = blur_arr[mask_expanded]
+        self.image = Image.fromarray(img_arr)
+
+    def _op_glow_v2(self, op: dict):
+        """Add glow around the selected subject."""
+        color = tuple(op.get("color", [255, 255, 255]))
+        radius = op.get("radius", 15)
+        intensity = op.get("intensity", 0.7)
+        subject_mask = self._selected_subject_mask()
+
+        mask_img = Image.fromarray((subject_mask * 255).astype(np.uint8), "L")
+        dilated = mask_img.filter(ImageFilter.GaussianBlur(radius=radius))
+        dilated_arr = np.array(dilated)
+        glow_mask = (dilated_arr > 20) & ~subject_mask
+
+        overlay = Image.new("RGBA", (self.width, self.height), (0, 0, 0, 0))
+        overlay_arr = np.array(overlay)
+        glow_intensity = dilated_arr[glow_mask].astype(float) / 255.0 * intensity
+        overlay_arr[glow_mask, 0] = color[0]
+        overlay_arr[glow_mask, 1] = color[1]
+        overlay_arr[glow_mask, 2] = color[2]
+        overlay_arr[glow_mask, 3] = (glow_intensity * 255).astype(np.uint8)
+        overlay = Image.fromarray(overlay_arr)
+        self.image = Image.alpha_composite(self.image, overlay)
+
+    def _op_shadow_v2(self, op: dict):
+        """Add a drop shadow to the selected subject."""
+        offset = op.get("offset", [5, 5])
+        blur_radius = op.get("blur", 10)
+        color = tuple(op.get("color", [0, 0, 0, 160]))
+        if len(color) == 3:
+            color = color + (160,)
+        subject_mask = self._selected_subject_mask()
+
+        shadow = Image.new("RGBA", (self.width, self.height), (0, 0, 0, 0))
+        shadow_arr = np.array(shadow)
+
+        ox, oy = int(offset[0]), int(offset[1])
+        shifted_mask = np.zeros_like(subject_mask)
+        src_y_start = max(0, -oy)
+        src_y_end = min(self.height, self.height - oy)
+        src_x_start = max(0, -ox)
+        src_x_end = min(self.width, self.width - ox)
+        dst_y_start = max(0, oy)
+        dst_y_end = min(self.height, self.height + oy)
+        dst_x_start = max(0, ox)
+        dst_x_end = min(self.width, self.width + ox)
+
+        h = min(src_y_end - src_y_start, dst_y_end - dst_y_start)
+        w = min(src_x_end - src_x_start, dst_x_end - dst_x_start)
+        if h > 0 and w > 0:
+            shifted_mask[dst_y_start:dst_y_start+h, dst_x_start:dst_x_start+w] = \
+                subject_mask[src_y_start:src_y_start+h, src_x_start:src_x_start+w]
+
+        shadow_only = shifted_mask & ~subject_mask
+        shadow_arr[shadow_only] = color
+        shadow = Image.fromarray(shadow_arr)
+
+        if blur_radius > 0:
+            shadow = shadow.filter(ImageFilter.GaussianBlur(radius=blur_radius))
+
+        self.image = Image.alpha_composite(shadow, self.image)
+
+    def _op_vignette_v2(self, op: dict):
+        """Apply vignette centered on the selected subject."""
+        strength = max(0.0, min(1.0, op.get("strength", 0.5)))
+        subject_mask = self._selected_subject_mask()
+
+        if np.any(subject_mask):
+            ys, xs = np.where(subject_mask)
+            cy, cx = ys.mean(), xs.mean()
+        else:
+            cy, cx = self.height / 2, self.width / 2
+
         y_coords, x_coords = np.mgrid[0:self.height, 0:self.width]
         max_dist = np.sqrt(self.width**2 + self.height**2) / 2
         dist = np.sqrt((x_coords - cx)**2 + (y_coords - cy)**2)
@@ -1020,6 +1313,8 @@ def apply_effects_to_frame(
     masks: List[np.ndarray],
     operations: List[Dict[str, Any]],
     boxes: Optional[List[Tuple[int, int, int, int]]] = None,
+    labels: Optional[List[str]] = None,
+    object_ids: Optional[List[int]] = None,
 ) -> np.ndarray:
     """Convenience function for video frame processing.
     
@@ -1028,6 +1323,8 @@ def apply_effects_to_frame(
         masks: List of binary masks
         operations: List of operation dicts
         boxes: Optional bounding boxes
+        labels: Optional per-object labels
+        object_ids: Optional stable per-object IDs
         
     Returns:
         Processed frame as numpy array (H, W, 3) in RGB
@@ -1035,7 +1332,7 @@ def apply_effects_to_frame(
     # Convert numpy frame to PIL
     image = Image.fromarray(frame)
 
-    pipeline = EffectsPipeline(image, masks, boxes)
+    pipeline = EffectsPipeline(image, masks, boxes, labels=labels, object_ids=object_ids)
     result = pipeline.apply(operations)
 
     # Convert back to RGB numpy array

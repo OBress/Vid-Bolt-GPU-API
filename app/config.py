@@ -113,6 +113,8 @@ class InferenceConfig:
     # SAM 3 (segmentation) settings
     SAM3_MAX_OBJECTS = 100            # Max objects to segment per request
     SAM3_VIDEO_MAX_FRAMES = 300       # Max frames to process for video segmentation
+    SAM3_IMAGE_MODEL_VERSION = "sam3.1"
+    SAM3_VIDEO_MODEL_VERSION = "sam3.1"
     
     # Job timeouts (seconds)
     IMAGE_JOB_TIMEOUT = 300      # 5 minutes for image batch jobs (large batches at 1920x1080)
@@ -453,6 +455,14 @@ class Settings(BaseSettings):
     @property
     def sam3_video_max_frames(self) -> int:
         return InferenceConfig.SAM3_VIDEO_MAX_FRAMES
+
+    @property
+    def sam3_image_model_version(self) -> str:
+        return InferenceConfig.SAM3_IMAGE_MODEL_VERSION
+
+    @property
+    def sam3_video_model_version(self) -> str:
+        return InferenceConfig.SAM3_VIDEO_MODEL_VERSION
     
     @property
     def sam3_job_timeout(self) -> int:

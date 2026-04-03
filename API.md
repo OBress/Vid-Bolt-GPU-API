@@ -844,6 +844,8 @@ Example prompts:
 
 ### Segmentation
 
+Segmentation uses deterministic prompt handling. `text_prompts` and named `object_prompts` are passed through as provided, and this stack does **not** use an LLM to rewrite, reformat, or enhance segmentation queries.
+
 Image and video segmentation powered by Meta's **SAM 3.1** (Segment Anything Model 3.1). Supports:
 
 - **Text prompts** — open-vocabulary detection ("segment all cars")
@@ -878,6 +880,10 @@ Image and video segmentation powered by Meta's **SAM 3.1** (Segment Anything Mod
 | `webhook_secret`       | string   | ❌       | HMAC signing secret                                                 | -              |
 
 > **Note:** At least one prompt type is required (`text_prompt`, `point_prompts`, `box_prompts`, `box_prompts_labeled`, or `object_prompts`).
+
+Additional metadata:
+- Image segmentation responses now include `model_version`.
+- When using `object_prompts`, image and animation metadata include `labels` aligned with the returned masks.
 
 **Prompt Types:**
 
@@ -1011,6 +1017,17 @@ Key behaviors:
 
 > **Note:** At least one prompt type is required (`text_prompt`, `point_prompts`, or `box_prompts`).
 
+Current deterministic video prompt modes:
+- `text_prompt`: legacy single-prompt tracking mode.
+- `text_prompts`: multi-prompt tracking in one request.
+- `object_prompts`: named multi-object tracking using `{label, text}` objects.
+
+Current validation rules:
+- Only one of `text_prompt`, `text_prompts`, or `object_prompts` may be provided.
+- `point_prompts` and `box_prompts` are only supported with the legacy single-`text_prompt` video mode.
+- Set `include_tracking_metadata: true` to return `{mask, box, score, label}` per tracked object instead of bare mask strings.
+- Segmentation prompts are not rewritten, reformatted, or enhanced by an LLM.
+
 **Example — Raw masks (default):**
 
 ```json
@@ -1056,6 +1073,12 @@ The `save_url` points to a JSON file with per-frame masks:
 }
 ```
 
+Current `masks_json` payloads also include:
+- `prompt_to_obj_ids`: maps each input label/prompt to the stable API-level object IDs returned for that prompt.
+- `object_id_to_prompt_label`: reverse lookup from stable object ID to the originating prompt label.
+- `model_version`: the SAM checkpoint version used for the request.
+- When `include_tracking_metadata=false`, each `frames[frame_idx][object_id]` value is the base64 mask string directly.
+
 **Result Payload (video):**
 
 The `save_url` points to the processed MP4 video with effects applied per-frame. FPS matches the source video.
@@ -1071,6 +1094,11 @@ Operations are applied sequentially. Use `select` to target which region subsequ
 | Operation | Description          | Parameters                                                                                                                                                                                                                                   |
 | --------- | -------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `select`  | Switch target region | `target`: `"mask"`, `"background"`, or `"all"`. Optional: `object_index` (int), `object_label` (string, from `object_prompts`), or `object_labels` (string[], union). Without any index/label, targets all detected objects. |
+
+Extended selectors:
+- `object_id`: target one tracked video object by stable ID.
+- `object_ids`: target multiple tracked video objects by stable IDs.
+- Selector resolution order is `object_id(s)` â†’ `object_label(s)` â†’ `object_index`.
 
 **Blur / Privacy:**
 
@@ -1096,6 +1124,10 @@ Operations are applied sequentially. Use `select` to target which region subsequ
 | `remove_background`  | Make background transparent   | _(outputs RGBA PNG)_                    |
 | `replace_background` | Replace background            | `color`: [R,G,B] or `image_url`: string |
 | `greenscreen`        | Replace background with green | _(no params)_                           |
+
+Compositing notes:
+- `replace_background.image_url` is downloaded server-side before effects are rendered.
+- `remove_background` preserves transparency for image outputs; MP4 video outputs cannot preserve alpha and are flattened during encoding.
 
 **Drawing & Annotation:**
 
@@ -1212,6 +1244,11 @@ Generate an animated video from a single image by applying animated visual effec
 | `webhook_secret`       | string   | ❌       | HMAC signing secret                                          | -       |
 
 > **Note:** At least one prompt type is required. At least one operation is required.
+
+Additional animation support:
+- `object_prompts` is also supported on `POST /api/v1/segment/animate` using the same `{label, text}` structure as image segmentation.
+- Named labels can be reused in `select` operations via `object_label` / `object_labels` for per-object animated effects.
+- Segmentation prompts are not rewritten, reformatted, or enhanced by an LLM.
 
 ---
 
@@ -1963,7 +2000,7 @@ Retry downloading any failed models. **Requires authentication.**
 - **Composable Effects Pipeline**: 20 visual operations for SAM 3 segmentation output
   - Image: `output_type: "image"` + `operations` → returns processed PNG
   - Video: `output_format: "video"` + `operations` → returns processed MP4
-  - Operations: `blur`, `pixelate`, `redact`, `color_overlay`, `color_grade`, `opacity`, `replace_color`, `remove_background`, `replace_background`, `greenscreen`, `outline`, `text_label`, `bounding_box`, `spotlight`, `bokeh`, `glow`, `shadow`, `vignette`, `select`
+  - Operations: `blur`, `pixelate`, `redact`, `color_overlay`, `color_grade`, `opacity`, `replace_color`, `remove_background`, `replace_background`, `greenscreen`, `outline`, `bounding_box`, `spotlight`, `bokeh`, `glow`, `shadow`, `vignette`, `select`
   - `select` operation targets: `mask` (objects), `background`, `all`
   - Backward compatible: default `masks_json` unchanged
 - **SAM 3 Full Feature Coverage**:
