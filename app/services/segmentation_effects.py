@@ -367,13 +367,15 @@ class EffectsPipeline:
 
     def _op_blur(self, op: dict):
         """Apply Gaussian blur to the selected region (edge-aware).
-        
+
         To prevent bleed from non-selected pixels into the blurred region,
         the non-selected area is filled with the average color of the selected
         region before blurring, then composited back.
         """
-        strength = op.get("strength", 25)
-        radius = max(1, int(strength))
+        strength = float(op.get("strength", 25))
+        radius = max(0.0, strength)
+        if radius <= 0.0:
+            return
         mask = self.active_mask
 
         # Create a copy where the non-target region is filled with the
@@ -1165,7 +1167,9 @@ class EffectsPipeline:
     def _op_motion_blur(self, op: dict):
         """Apply directional motion blur to selection."""
         angle = op.get("angle", 0) % 360
-        strength = max(1, min(50, int(op.get("strength", 15))))
+        strength = max(0, min(50, int(op.get("strength", 15))))
+        if strength <= 0:
+            return
 
         # Create motion blur kernel
         kernel_size = strength * 2 + 1

@@ -142,6 +142,22 @@ class AnimationInterpolator:
         - stagger: Per-object delay offset
     """
 
+    _NON_ANIMATABLE_KEYS = {
+        "type",
+        "animation",
+        "target",
+        "object_id",
+        "object_ids",
+        "object_index",
+        "object_label",
+        "object_labels",
+        "image_url",
+        "_bg_image_data",
+        "seed",
+        "label",
+        "text",
+    }
+
     def interpolate(
         self,
         op: Dict[str, Any],
@@ -170,6 +186,7 @@ class AnimationInterpolator:
         del result["animation"]
 
         mode = anim.get("mode", "transition")
+        resolved_start, resolved_end = self._resolve_animation_endpoints(result, anim, mode)
         easing_name = anim.get("easing", "ease_out")
         delay = anim.get("delay", 0.0)
         duration = anim.get("duration", total_duration)
@@ -179,10 +196,10 @@ class AnimationInterpolator:
         current_time = t * total_duration
         if current_time < delay:
             # Before animation starts: use start values
-            return self._apply_values(result, anim.get("start", {}))
+            return self._apply_values(result, resolved_start)
         elif current_time > delay + duration:
             # After animation ends: use end values
-            return self._apply_values(result, anim.get("end", {}))
+            return self._apply_values(result, resolved_end)
 
         # Within the animation window
         local_t = (current_time - delay) / max(0.001, duration)
@@ -190,28 +207,128 @@ class AnimationInterpolator:
 
         if mode == "transition":
             eased_t = easing_fn(local_t)
-            return self._interpolate_transition(result, anim, eased_t)
+            return self._interpolate_transition(result, resolved_start, resolved_end, eased_t)
         elif mode == "draw":
             eased_t = easing_fn(local_t)
             return self._interpolate_draw(result, eased_t)
         elif mode == "pulse":
             cycles = anim.get("cycles", 1)
-            return self._interpolate_pulse(result, anim, local_t, easing_fn, cycles)
+            return self._interpolate_pulse(result, resolved_start, resolved_end, local_t, easing_fn, cycles)
         elif mode == "reveal":
             eased_t = easing_fn(local_t)
             direction = anim.get("direction", "left")
             return self._interpolate_reveal(result, eased_t, direction)
         elif mode == "loop":
             cycles = anim.get("cycles", 2)
-            return self._interpolate_loop(result, anim, local_t, easing_fn, cycles)
+            return self._interpolate_loop(result, resolved_start, resolved_end, local_t, easing_fn, cycles)
         elif mode == "stagger":
             stagger_delay = anim.get("stagger_delay", 0.2)
             eased_t = easing_fn(local_t)
-            return self._interpolate_stagger(result, anim, eased_t, stagger_delay, total_duration)
+            return self._interpolate_stagger(
+                result,
+                resolved_start,
+                resolved_end,
+                eased_t,
+                stagger_delay,
+                total_duration,
+            )
         else:
             logger.warning(f"Unknown animation mode: {mode}, using transition")
             eased_t = easing_fn(local_t)
-            return self._interpolate_transition(result, anim, eased_t)
+            return self._interpolate_transition(result, resolved_start, resolved_end, eased_t)
+
+    def describe(self, op: Dict[str, Any]) -> Dict[str, Any]:
+        """Describe which parameters an operation will animate after default resolution."""
+        anim = op.get("animation") or {}
+        mode = anim.get("mode", "transition")
+        working_op = copy.deepcopy(op)
+        working_op.pop("animation", None)
+        resolved_start, resolved_end = self._resolve_animation_endpoints(working_op, anim, mode)
+        raw_start = anim.get("start") or {}
+        raw_end = anim.get("end") or {}
+        return {
+            "mode": mode,
+            "animated_keys": sorted(set(resolved_start.keys()) | set(resolved_end.keys())),
+            "inferred_start_keys": sorted(set(resolved_start.keys()) - set(raw_start.keys())),
+            "inferred_end_keys": sorted(set(resolved_end.keys()) - set(raw_end.keys())),
+        }
+
+    def _resolve_animation_endpoints(
+        self,
+        op: Dict[str, Any],
+        anim: Dict[str, Any],
+        mode: str,
+    ) -> Tuple[Dict[str, Any], Dict[str, Any]]:
+        """Resolve start/end animation values, inferring sensible defaults when omitted."""
+        start_vals = copy.deepcopy(anim.get("start") or {})
+        end_vals = copy.deepcopy(anim.get("end") or {})
+
+        if mode not in {"transition", "pulse", "loop", "stagger"}:
+            return start_vals, end_vals
+
+        candidate_keys = set(start_vals.keys()) | set(end_vals.keys())
+        if not candidate_keys:
+            candidate_keys = {
+                key
+                for key, value in op.items()
+                if key not in self._NON_ANIMATABLE_KEYS and self._should_infer_key(op.get("type"), key, value)
+            }
+
+        for key in candidate_keys:
+            current_value = copy.deepcopy(op.get(key))
+            if key not in end_vals and current_value is not None:
+                end_vals[key] = current_value
+            if key not in start_vals:
+                neutral_value = self._neutral_value(op.get("type"), key, current_value)
+                if neutral_value is not None:
+                    start_vals[key] = neutral_value
+
+        return start_vals, end_vals
+
+    def _should_infer_key(self, op_type: Optional[str], key: str, value: Any) -> bool:
+        """Return whether a parameter should get inferred transition endpoints."""
+        if not self._is_interpolatable_value(value):
+            return False
+        return self._neutral_value(op_type, key, value) is not None
+
+    def _is_interpolatable_value(self, value: Any) -> bool:
+        """Return whether a value can be interpolated numerically."""
+        if isinstance(value, (int, float)):
+            return True
+        if isinstance(value, (list, tuple)) and value:
+            return all(isinstance(item, (int, float)) for item in value)
+        return False
+
+    def _neutral_value(self, op_type: Optional[str], key: str, current_value: Any) -> Any:
+        """Infer a neutral baseline for common animation parameters."""
+        if current_value is None:
+            return None
+
+        if op_type == "opacity" and key == "value":
+            return 1.0
+        if key == "scale":
+            return 1.0
+        if key == "sat_scale":
+            return 1.0
+        if key == "offset" and isinstance(current_value, (list, tuple)):
+            return [0.0 for _ in current_value]
+        if key in {
+            "strength",
+            "intensity",
+            "brightness",
+            "contrast",
+            "saturation",
+            "hue_shift",
+            "radius",
+            "darkness",
+            "progress",
+            "blur",
+        }:
+            if isinstance(current_value, int):
+                return 0
+            if isinstance(current_value, float):
+                return 0.0
+        return None
 
     def _apply_values(self, op: dict, values: dict) -> dict:
         """Apply a set of parameter values to an operation."""
@@ -220,10 +337,14 @@ class AnimationInterpolator:
             result[key] = value
         return result
 
-    def _interpolate_transition(self, op: dict, anim: dict, eased_t: float) -> dict:
+    def _interpolate_transition(
+        self,
+        op: dict,
+        start_vals: dict,
+        end_vals: dict,
+        eased_t: float,
+    ) -> dict:
         """Linearly interpolate between start and end parameter values."""
-        start_vals = anim.get("start", {})
-        end_vals = anim.get("end", {})
         result = copy.deepcopy(op)
 
         all_keys = set(list(start_vals.keys()) + list(end_vals.keys()))
@@ -243,11 +364,15 @@ class AnimationInterpolator:
         return result
 
     def _interpolate_pulse(
-        self, op: dict, anim: dict, local_t: float, easing_fn, cycles: int
+        self,
+        op: dict,
+        start_vals: dict,
+        end_vals: dict,
+        local_t: float,
+        easing_fn,
+        cycles: int,
     ) -> dict:
         """Oscillate between start and end values."""
-        start_vals = anim.get("start", {})
-        end_vals = anim.get("end", {})
         result = copy.deepcopy(op)
 
         # Create oscillating t: goes 0→1→0→1→0... over cycles
@@ -277,11 +402,15 @@ class AnimationInterpolator:
         return result
 
     def _interpolate_loop(
-        self, op: dict, anim: dict, local_t: float, easing_fn, cycles: int
+        self,
+        op: dict,
+        start_vals: dict,
+        end_vals: dict,
+        local_t: float,
+        easing_fn,
+        cycles: int,
     ) -> dict:
         """Continuously loop between start and end values."""
-        start_vals = anim.get("start", {})
-        end_vals = anim.get("end", {})
         result = copy.deepcopy(op)
 
         # Sawtooth: 0→1→0→1... over cycles
@@ -299,10 +428,16 @@ class AnimationInterpolator:
         return result
 
     def _interpolate_stagger(
-        self, op: dict, anim: dict, eased_t: float, stagger_delay: float, total_duration: float
+        self,
+        op: dict,
+        start_vals: dict,
+        end_vals: dict,
+        eased_t: float,
+        stagger_delay: float,
+        total_duration: float,
     ) -> dict:
         """Add stagger metadata for per-object delay animations."""
-        result = self._interpolate_transition(op, anim, eased_t)
+        result = self._interpolate_transition(op, start_vals, end_vals, eased_t)
         result["_stagger_delay"] = stagger_delay
         result["_stagger_total_duration"] = total_duration
         return result
@@ -414,6 +549,7 @@ class AnimationPipeline:
                 "Animation request contains animated operations",
                 extra={"animated_operation_types": animated_ops, "frame_count": self.total_frames},
             )
+            self._log_animation_parameter_samples(operations)
 
         for frame_idx in range(self.total_frames):
             t = frame_idx / max(1, self.total_frames - 1)
@@ -454,8 +590,104 @@ class AnimationPipeline:
             if (frame_idx + 1) % 30 == 0 or frame_idx == self.total_frames - 1:
                 logger.debug(f"Rendered frame {frame_idx + 1}/{self.total_frames}")
 
+        self._log_motion_diagnostics(frames)
         logger.info(f"All {len(frames)} frames rendered, encoding MP4...")
         return self._encode_mp4(frames)
+
+    def _log_animation_parameter_samples(self, operations: List[Dict[str, Any]]) -> None:
+        """Log resolved start/mid/end values for animated operations."""
+        operation_samples = []
+        unresolved_operations = []
+        sample_points = [
+            ("start", 0.0, 0),
+            ("mid", 0.5, self.total_frames // 2),
+            ("end", 1.0, max(0, self.total_frames - 1)),
+        ]
+
+        for op in operations:
+            if not isinstance(op, dict) or not op.get("animation"):
+                continue
+
+            description = self.interpolator.describe(op)
+            animated_keys = description["animated_keys"]
+            if not animated_keys:
+                unresolved_operations.append(op.get("type", "unknown"))
+                continue
+
+            samples: Dict[str, Dict[str, Any]] = {}
+            for sample_name, sample_t, sample_frame in sample_points:
+                sampled_op = self.interpolator.interpolate(
+                    op,
+                    sample_t,
+                    self.duration,
+                    sample_frame,
+                    self.total_frames,
+                )
+                samples[sample_name] = {
+                    key: sampled_op.get(key)
+                    for key in animated_keys
+                }
+
+            operation_samples.append(
+                {
+                    "type": op.get("type", "unknown"),
+                    "mode": description["mode"],
+                    "animated_keys": animated_keys,
+                    "inferred_start_keys": description["inferred_start_keys"],
+                    "inferred_end_keys": description["inferred_end_keys"],
+                    "samples": samples,
+                }
+            )
+
+        if operation_samples:
+            logger.info(
+                "Animation parameter samples resolved",
+                extra={"operation_samples": operation_samples},
+            )
+
+        if unresolved_operations:
+            logger.warning(
+                "Animated operations did not resolve any animatable parameters; output may appear static",
+                extra={"operation_types": unresolved_operations},
+            )
+
+    @staticmethod
+    def _frame_delta_metrics(frame_a: np.ndarray, frame_b: np.ndarray) -> Dict[str, Any]:
+        """Compute simple visual-difference metrics between two RGB frames."""
+        diff = np.abs(frame_b.astype(np.int16) - frame_a.astype(np.int16))
+        changed_pixels = np.any(diff >= 3, axis=-1)
+        return {
+            "mean_abs_pixel_diff": round(float(diff.mean()), 6),
+            "max_abs_pixel_diff": int(diff.max()) if diff.size else 0,
+            "changed_pixel_ratio": round(float(changed_pixels.mean()), 6),
+        }
+
+    def _log_motion_diagnostics(self, frames: List[np.ndarray]) -> None:
+        """Log whether rendered frames are materially changing over time."""
+        if len(frames) < 2:
+            return
+
+        first = frames[0]
+        mid = frames[len(frames) // 2]
+        last = frames[-1]
+
+        start_to_mid = self._frame_delta_metrics(first, mid)
+        start_to_end = self._frame_delta_metrics(first, last)
+        appears_static = (
+            start_to_end["mean_abs_pixel_diff"] < 0.5
+            and start_to_end["changed_pixel_ratio"] < 0.01
+        )
+
+        log_fn = logger.warning if appears_static else logger.info
+        log_fn(
+            "Animation frame diagnostics",
+            extra={
+                "start_to_mid": start_to_mid,
+                "start_to_end": start_to_end,
+                "appears_static": appears_static,
+                "frame_count": len(frames),
+            },
+        )
 
     def _apply_camera(self, image: Image.Image, camera_ops: List[dict]) -> Image.Image:
         """Apply zoom and pan by cropping and scaling the canvas.
