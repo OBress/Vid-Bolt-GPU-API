@@ -870,7 +870,7 @@ The LTX-2 generator also rounds the frame count up to the nearest `8k + 1` value
 | ------------------ | ------ | -------- | --------------------------------------------------- | ------------- |
 | `job_id`           | string | ✅       | Unique job identifier                               | -             |
 | `prompt`           | string | ✅       | Music style/genre description                       | -             |
-| `lyrics`           | string | ❌       | Lyrics for vocal generation (omit for instrumental) | -             |
+| `lyrics`           | string or string[] | ❌       | Lyrics for vocal generation. Send either a single multiline string or an array of lyric lines/sections (omit for instrumental). | -             |
 | `duration_seconds` | float  | ❌       | Duration (10-600 seconds)                           | `30.0`        |
 | `seed`             | int    | ❌       | Random seed for reproducibility                     | -             |
 | `bpm`              | int    | ❌       | Tempo in BPM (30-300)                               | Auto-detected |
@@ -881,6 +881,8 @@ The LTX-2 generator also rounds the frame count up to the nearest `8k + 1` value
 | `webhook_url`      | string | ❌       | URL to POST when complete                           | -             |
 | `item_id`          | string | ❌       | Client identifier (returned in webhook)             | -             |
 | `webhook_secret`   | string | ❌       | HMAC signing secret                                 | -             |
+
+> **Note:** `lyrics` accepts either a single string or an array of strings. When an array is provided, the API joins the entries with newline characters before passing them to ACE-Step.
 
 > **Note:** When `bpm`, `key_scale`, `time_signature`, or `vocal_language` are omitted, the ACE-Step 1.5 LM uses Chain-of-Thought reasoning to auto-detect optimal values from the prompt and lyrics.
 

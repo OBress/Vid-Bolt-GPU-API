@@ -2,7 +2,7 @@
 
 from typing import Optional
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 
 class MusicGenerateRequest(BaseModel):
@@ -37,6 +37,31 @@ class MusicGenerateRequest(BaseModel):
     save_url: str = Field(..., description="Pre-signed URL to save audio file")
     item_id: Optional[str] = Field(None, description="Optional item ID for tracking")
     webhook_secret: Optional[str] = Field(None, description="Secret for webhook authentication")
+
+    @field_validator("lyrics", mode="before")
+    @classmethod
+    def normalize_lyrics(cls, value):
+        """Accept legacy list payloads and normalize them to ACE-Step's string format."""
+        if value is None:
+            return None
+
+        if isinstance(value, str):
+            normalized = value.strip()
+            return normalized or None
+
+        if isinstance(value, (list, tuple)):
+            normalized_lines = []
+            for line in value:
+                if line is None:
+                    continue
+                if not isinstance(line, str):
+                    raise TypeError("lyrics must be a string or a list of strings")
+                normalized_lines.append(line)
+
+            normalized = "\n".join(normalized_lines).strip()
+            return normalized or None
+
+        raise TypeError("lyrics must be a string or a list of strings")
 
     model_config = {"extra": "forbid"}
 

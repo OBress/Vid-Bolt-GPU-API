@@ -20,7 +20,7 @@ import logging
 import os
 import random
 import tempfile
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, Tuple
 
 from app.config import Settings
 from app.models.internal import MusicGenerationParams, MusicGenerationResult
@@ -44,6 +44,33 @@ class ACEStepGenerator(MusicGenerator):
     @property
     def _loaded(self) -> bool:
         return self._is_loaded
+
+    @staticmethod
+    def _resolve_llm_backend() -> Tuple[str, str]:
+        """Select the most reliable LM backend for the current CUDA runtime."""
+        try:
+            import torch
+        except ImportError:
+            return "vllm", "torch unavailable during backend detection"
+
+        cuda = getattr(torch, "cuda", None)
+        if cuda is None or not cuda.is_available():
+            return "vllm", "CUDA unavailable during backend detection"
+
+        try:
+            device_name = cuda.get_device_name(0)
+        except Exception:
+            device_name = "unknown GPU"
+
+        # nano-vllm's CUDA graph capture currently fails on Blackwell in our runtime.
+        # Prefer the PyTorch backend there so ACE-Step loads cleanly and stays usable.
+        if "blackwell" in device_name.lower():
+            return (
+                "pt",
+                f"detected Blackwell GPU ({device_name}); using PyTorch LM backend",
+            )
+
+        return "vllm", f"using nano-vllm LM backend on {device_name}"
 
     # =========================================================================
     # Model Lifecycle
@@ -88,12 +115,19 @@ class ACEStepGenerator(MusicGenerator):
             # RTX PRO 6000 Blackwell has ~96GB VRAM → use 4B model for best quality
             self._llm_handler = LLMHandler()
             lm_model_path = "acestep-5Hz-lm-4B"
+            lm_backend, lm_backend_reason = self._resolve_llm_backend()
 
-            logger.info(f"Initializing LLM handler (checkpoint_dir={checkpoint_dir}, lm_model={lm_model_path})")
+            logger.info(
+                "Initializing LLM handler (checkpoint_dir=%s, lm_model=%s, backend=%s)",
+                checkpoint_dir,
+                lm_model_path,
+                lm_backend,
+            )
+            logger.info("ACE-Step LM backend selection: %s", lm_backend_reason)
             lm_status_msg, lm_success = self._llm_handler.initialize(
                 checkpoint_dir=checkpoint_dir,
                 lm_model_path=lm_model_path,
-                backend="vllm",
+                backend=lm_backend,
                 device="cuda",
             )
             if not lm_success:
@@ -173,6 +207,11 @@ class ACEStepGenerator(MusicGenerator):
             "llm_initialized": (
                 self._llm_handler is not None
                 and getattr(self._llm_handler, "llm_initialized", False)
+            ),
+            "llm_backend": (
+                getattr(self._llm_handler, "llm_backend", None)
+                if self._llm_handler is not None
+                else None
             ),
             "dit_model": "acestep-v15-turbo",
             "lm_model": "acestep-5Hz-lm-4B",
