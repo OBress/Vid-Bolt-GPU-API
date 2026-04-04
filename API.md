@@ -7,6 +7,7 @@ A high-performance FastAPI backend for AI-powered image, video, music generation
 - [Overview](#overview)
 - [Quick Start](#quick-start)
 - [Authentication](#authentication)
+- [URL Handling & Limits](#url-handling--limits)
 - [Webhooks](#webhooks)
 - [Mode System](#mode-system)
 - [Endpoints](#endpoints)
@@ -28,7 +29,6 @@ A high-performance FastAPI backend for AI-powered image, video, music generation
   - [System Status](#system-status)
   - [Download Status](#download-status)
 - [Error Handling](#error-handling)
-- [Changelog](#changelog)
 
 ---
 
@@ -40,7 +40,7 @@ Vid-Bolt GPU API provides AI-powered generation capabilities:
 | -------------------- | -------------------- | -------------------------------------------------------- |
 | **Text-to-Image**    | Z-Image Turbo        | Generate images from text prompts                        |
 | **Image Editing**    | Qwen-Image-Edit-2511 | Edit images with AI instructions                         |
-| **Video Generation** | LTX-2 19B            | Generate videos from images (720p/1080p)                 |
+| **Video Generation** | LTX-2.3 22B          | Generate videos from images and keyframes (720p/1080p)   |
 | **Music Generation** | ACE-Step 1.5         | Generate music from text prompts                         |
 | **Segmentation**     | SAM 3.1              | Segment, track, and animate objects in images and videos |
 
@@ -51,7 +51,7 @@ Vid-Bolt GPU API provides AI-powered generation capabilities:
 │                    Vid-Bolt GPU API                      │
 ├─────────────────────────────────────────────────────────┤
 │  Queue Manager - Accepts requests (202 Accepted)         │
-│  & Schedules based on VRAM Mode (FIFO or Grouped)        │
+│  & Schedules by bucket + oldest queued work              │
 ├─────────────┬───────────────────────────────────────────┤
 │   WORKER    │  • Intelligent Job Scheduling             │
 │   THREAD    │  • Automatic Mode Switching (Dynamic)     │
@@ -59,7 +59,7 @@ Vid-Bolt GPU API provides AI-powered generation capabilities:
 ├─────────────┴───────────────────────────────────────────┤
 │   IMAGE MODE       │   VIDEO MODE    │   AUDIO MODE     │  SEG MODE    │
 │  ┌──────────────┐  │ ┌─────────────┐ │ ┌──────────────┐ │ ┌──────────┐ │
-│  │ Z-Image Turbo│  │ │ LTX-2 19B   │ │ │ ACE-Step 1.5 │ │ │  SAM 3   │ │
+│  │ Z-Image Turbo│  │ │ LTX-2.3 22B │ │ │ ACE-Step 1.5 │ │ │  SAM 3   │ │
 │  │ (text-to-img)│  │ │ (I2V, 720p/ │ │ │ (music gen)  │ │ │ (segment)│ │
 │  ├──────────────┤  │ │ 1080p)      │ │ └──────────────┘ │ └──────────┘ │
 │  │ Qwen-Image-  │  │ └─────────────┘ │                  │              │
@@ -113,16 +113,49 @@ X-API-Key: your-secure-api-key
 
 ---
 
+## URL Handling & Limits
+
+All server-fetched URLs are validated before use:
+
+- `input_*_url`, `mask_image_url`, `start_frame_url`, `end_frame_url`, webhook URLs, remote font URLs, and `replace_background.image_url` must resolve to external hosts.
+- Loopback, link-local, private, reserved, and cloud metadata endpoints are rejected.
+
+Current download behavior is shared across all remote inputs:
+
+- Any asset the API downloads into memory is limited to **10 MB** by the default configuration.
+- That limit currently applies to remote images, remote video inputs, remote fonts, and remote background images because they all use the same download helper.
+
+Current upload behavior:
+
+- Uploads are performed with HTTP `PUT` to the provided presigned `save_url`.
+- Uploads retry up to **3 times** with exponential backoff before failing.
+- Returned `save_url` values are the resolved public URL when the upload target is Cloudflare R2 and `PUBLIC_ASSET_BASE_URL` is configured; otherwise the API returns the upload URL with query parameters stripped.
+
+---
+
 ## Webhooks
 
-> **Note:** Webhook URLs are **optional** on all generation endpoints. If provided, results are delivered via webhook and job data is deleted after successful delivery. If omitted, use polling via `/api/v1/jobs/{job_id}`.
+> **Note:** Webhooks are optional only on endpoints that expose a `webhook_url` field.
+>
+> Supported polling-or-webhook endpoints:
+> - `POST /api/v1/image/generate`
+> - `POST /api/v1/image/edit`
+> - `POST /api/v1/video/generate`
+> - `POST /api/v1/ltx2/generate`
+> - `POST /api/v1/ltx2/interpolate`
+> - `POST /api/v1/music/generate`
+> - `POST /api/v1/segment/image`
+> - `POST /api/v1/segment/video`
+> - `POST /api/v1/segment/animate`
+>
+> Batch endpoints require `webhook_url`.
 
 ### How It Works
 
-1. Submit a generation request with an optional `webhook_url`
-2. Poll `/api/v1/jobs/{job_id}` for progress and results
-3. If `webhook_url` was provided, receive webhook callback when job completes
-4. Job data is automatically deleted after webhook delivery
+1. Submit a request with `webhook_url` if that endpoint supports it.
+2. Poll `GET /api/v1/jobs/{job_id}` for progress and results when the route returns a `job_id`.
+3. If `webhook_url` was provided, the API also POSTs a completion callback.
+4. Completed jobs are **not** deleted after webhook delivery. In the default in-memory job manager they remain queryable for up to 24 hours after success and 48 hours after failure, subject to the in-memory history cap.
 
 ### Webhook Payload (Success)
 
@@ -156,9 +189,17 @@ X-API-Key: your-secure-api-key
   "generation_type": "image_generation",
   "error_message": "GPU out of memory",
   "error_code": "GPU_OUT_OF_MEMORY",
-  "retry_count": 1
+  "retry_count": 0
 }
 ```
+
+`generation_type` is the internal job type string. Current values used by the app are:
+
+- `image_generation`
+- `image_editing`
+- `video_generation`
+- `music_generation`
+- `segmentation`
 
 ### Webhook Headers
 
@@ -174,6 +215,7 @@ X-API-Key: your-secure-api-key
 - **Timeout:** 10 seconds per delivery attempt
 - **Retries:** 1 retry after initial failure (30 second delay)
 - **Total attempts:** 2 (initial + 1 retry)
+- **Payload field note:** The webhook JSON currently includes `retry_count`, but the shipped implementation always sends `0` even when a batch item was retried internally.
 
 ### HMAC Signature Verification
 
@@ -190,7 +232,7 @@ def verify_signature(payload_body: bytes, signature: str, secret: str) -> bool:
 
 ---
 
-## Mode System & Scheduling
+## Mode System
 
 The API manages GPU VRAM by loading only the required models for each use case. A **Queue System** manages requests to ensure fairness and efficiency.
 
@@ -198,14 +240,14 @@ The API manages GPU VRAM by loading only the required models for each use case. 
 
 Configurable via `POST /api/v1/settings/vram-mode`:
 
-| Mode               | Models Loaded      | VRAM Usage | Best For                   |
-| ------------------ | ------------------ | ---------- | -------------------------- |
-| `image_generation` | Z-Image Turbo only | ~16GB      | Text-to-image workloads    |
-| `image_editing`    | LightX2V only      | ~40GB      | Image editing/inpainting   |
-| `video_generation` | LTX-2 only         | ~40GB      | Video generation           |
-| `audio_creation`   | ACE-Step           | ~4GB       | Music generation           |
-| `segmentation`     | SAM 3              | ~4-10GB    | Image/video segmentation   |
-| `all`              | All models         | ~76GB+     | High-VRAM GPUs (A100/H100) |
+| Mode               | Models Initially Loaded                                      | Best For                  |
+| ------------------ | ------------------------------------------------------------ | ------------------------- |
+| `image_generation` | Z-Image Turbo only                                           | Text-to-image workloads   |
+| `image_editing`    | LightX2V only                                                | Image editing/inpainting  |
+| `video_generation` | LTX-2.3 22B only                                             | Video generation          |
+| `audio_creation`   | ACE-Step only                                                | Music generation          |
+| `segmentation`     | SAM 3 only                                                   | Image/video segmentation  |
+| `all`              | LightX2V + LTX-2 immediately; Z-Image, ACE-Step, and SAM 3 load on demand | High-VRAM multi-modal use |
 
 #### Mode Behavior
 
@@ -220,9 +262,9 @@ Configurable via `POST /api/v1/settings/vram-mode`:
    - Switching time: ~15-30s
 
 3. **video_generation**:
-   - Loads **LTX-2 19B** for video generation
+   - Loads **LTX-2.3 22B** for video generation
    - Scheduling: Grouped by job type to minimize switching
-   - Switching time: ~30-60s
+   - Switching time: can take **2-3 minutes**
 
 4. **audio_creation**:
    - Loads **ACE-Step 1.5** for music generation
@@ -236,55 +278,30 @@ Configurable via `POST /api/v1/settings/vram-mode`:
    - VRAM usage: ~4-10GB
 
 6. **all**:
-   - Loads **all models simultaneously**
-   - Scheduling: Strict FIFO (no switching needed)
-   - Switching time: Instant
+   - Loads **LightX2V + LTX-2.3 22B** immediately
+   - Dynamically loads **Z-Image**, **ACE-Step**, and **SAM 3** on demand when those job types arrive
+   - May unload dynamically managed models again to recover VRAM headroom before another workload type runs
+   - Reduces same-resolution image batching to single-job selection to preserve headroom
 
-### Concurrency Limits
+### Queueing & Batching
 
-The Queue accepts jobs even if the GPU is busy.
+The current implementation uses a single in-memory queue plus one worker loop:
 
-| Resource | Limit                 | Behavior                            |
-| -------- | --------------------- | ----------------------------------- |
-| Queue    | Unbounded (in-memory) | Returns `202 Accepted` immediately. |
-| Worker   | 1 Active Job          | Processes one job at a time.        |
+- The queue is effectively unbounded in the shipped `JobManager`, so accepted requests normally return `202 Accepted` instead of rejecting because the queue is full.
+- Pending jobs are bucketed by `(width, height, job_type)`.
+- The scheduler picks the bucket whose oldest queued job has been waiting the longest.
+- `queue_position` is only populated for jobs whose status is `pending`.
 
-### Throughput & Capacity
+Current batch selection behavior:
 
-The API dynamically calculates batch sizes and concurrent processing based on **available VRAM** and **task parameters**. Jobs are automatically grouped by resolution for optimal GPU utilization.
+- `image_generation`: dynamic VRAM-based batching, capped at **10** jobs from the selected bucket
+- `image_editing`: dynamic VRAM-based batching, capped at **16** jobs from the selected bucket
+- `video_generation`: currently selects **one queued job at a time**
+- `music_generation`: currently selects **one queued job at a time**
+- `segmentation`: currently selects **one queued job at a time**
+- `all` VRAM mode: image generation and image editing are intentionally reduced to **single-job** selection to preserve headroom for dynamically loaded models
 
-#### Concurrent Capacity by Mode (96GB GPU)
-
-| Mode               | Image Gen (Z-Image)                      | Image Edit (LightX2V)             | Video Gen (LTX-2)                 |
-| ------------------ | ---------------------------------------- | --------------------------------- | --------------------------------- |
-| `image_generation` | **~29** @ 1920×1080, **~48** @ 1024×1024 | ❌ Not loaded                     | ❌ Not loaded                     |
-| `image_editing`    | ❌ Not loaded                            | **6 concurrent** (any resolution) | ❌ Not loaded                     |
-| `video_generation` | ❌ Not loaded                            | ❌ Not loaded                     | **4 concurrent** @ 3s, **3** @ 5s |
-| `all`              | **~10-15** @ 1024×1024                   | **2-3 concurrent**                | **1-2 concurrent**                |
-
-#### Resolution Scaling (Image Generation)
-
-| Resolution | VRAM per Image | Batch Size |
-| ---------- | -------------- | ---------- |
-| 512×512    | ~0.8 GB        | 64 (cap)   |
-| 1024×1024  | ~1.8 GB        | ~48        |
-| 1920×1080  | ~3.0 GB        | ~29        |
-| 2048×2048  | ~5.5 GB        | ~16        |
-
-#### Video Duration Scaling (LTX-2)
-
-| Duration   | VRAM per Video | Concurrent Videos |
-| ---------- | -------------- | ----------------- |
-| 3 seconds  | ~12 GB         | 4                 |
-| 5 seconds  | ~16 GB         | 3-4               |
-| 10 seconds | ~25 GB         | 2-3               |
-
-#### Optimization Tips
-
-1. **Batch same-resolution jobs**: Jobs with identical dimensions are grouped for vectorized processing
-2. **Use dedicated modes**: Single-model modes (`image_generation`, `video_generation`) offer 2-3x higher throughput than `all` mode
-3. **Shorter videos first**: Submit shorter-duration videos when possible for higher parallelism
-4. **Check queue position**: Poll `/api/v1/jobs/{job_id}` to see `queue_position` for pending jobs
+`GET /api/v1/system/status` also exposes configured concurrency limits, but those are configuration values, not a guarantee that the scheduler will actually run that many jobs simultaneously for every workload.
 
 ---
 
@@ -301,7 +318,7 @@ Basic health check. **No authentication required.**
 ```json
 {
   "status": "healthy",
-  "version": "0.6.0",
+  "version": "0.1.0",
   "mock_mode": false
 }
 ```
@@ -318,7 +335,7 @@ Readiness check for VM provisioning. **No authentication required.** Returns whe
 {
   "ready": true,
   "status": "ready",
-  "version": "0.6.0",
+  "version": "0.1.0",
   "mock_mode": false,
   "current_mode": "image_generation",
   "models_loaded": true
@@ -328,8 +345,8 @@ Readiness check for VM provisioning. **No authentication required.** Returns whe
 | Field           | Type         | Description                                                                             |
 | --------------- | ------------ | --------------------------------------------------------------------------------------- |
 | `ready`         | bool         | Whether the API can accept generation requests                                          |
-| `status`        | string       | `ready`, `starting`, `loading_models`, `downloading_models`, `download_failed`, `error` |
-| `current_mode`  | string\|null | Current VRAM mode (null if not yet initialized)                                         |
+| `status`        | string       | `ready`, `starting`, `loading_models`, `downloading_models (...)`, `download_failed`, or `error` |
+| `current_mode`  | string\|null | Current VRAM mode (or `"mock"` in mock mode; `null` if not yet initialized)            |
 | `models_loaded` | bool         | Whether generation models are loaded in memory                                          |
 
 ---
@@ -343,7 +360,7 @@ Detailed service status. **Requires authentication.**
 ```json
 {
   "status": "healthy",
-  "version": "0.6.0",
+  "version": "0.1.0",
   "mock_mode": false
 }
 ```
@@ -363,7 +380,7 @@ Get the current VRAM mode status including switching progress.
   "mode": "video_generation",
   "is_busy": false,
   "active_job_id": null,
-  "loaded_models": ["ltx-2-19b"],
+  "loaded_models": ["ltx-2.3-22b"],
   "is_switching": false,
   "switching_target": null,
   "switching_step": null,
@@ -397,11 +414,19 @@ Get the current VRAM mode status including switching progress.
 | `switching_step`     | string\|null | Current switching step description                                                                              |
 | `switching_progress` | float\|null  | Progress 0.0-1.0 when switching                                                                                 |
 
+Current `loaded_models` values are emitted by the app as:
+
+- `z-image-turbo`
+- `qwen-image-edit-2511`
+- `ltx-2.3-22b`
+- `ace-step-1.5`
+- `sam3`
+
 ---
 
 #### `POST /api/v1/mode/switch`
 
-Switch between Image Mode and Video Mode. Unloads current models and loads the target mode's models (~30-60 seconds).
+Switch between Image Mode and Video Mode. This endpoint only accepts `"image"` and `"video"` and maps them to the underlying `image_generation` and `video_generation` modes. Loading video mode can take **2-3 minutes**.
 
 **Request:**
 
@@ -482,6 +507,8 @@ Set the VRAM loading mode. This unloads current models and loads the target mode
 }
 ```
 
+> **Note:** In actual runtime behavior, `all` mode does **not** keep every model resident at once. It loads LightX2V + LTX-2 immediately, then dynamically loads Z-Image, ACE-Step, and SAM 3 on demand as jobs arrive.
+
 **Error Response (503 - Jobs Active):**
 
 Returned if any jobs are currently queued or processing. Wait for all jobs to complete before switching.
@@ -497,6 +524,8 @@ Returned if any jobs are currently queued or processing. Wait for all jobs to co
 ### Job Management
 
 All generation endpoints are **asynchronous**. They return a `job_id` which you use to poll for status.
+
+Submit-response `status_url` values are generated as absolute URLs from the incoming request context (`request.url_for(...)`), not relative paths.
 
 #### `GET /api/v1/jobs/{job_id}`
 
@@ -538,10 +567,24 @@ Check the status of a specific job.
   "completed_at": 1715420015.0,
   "result": {
     "save_url": "https://storage.example.com/result.png",
-    "generation_time": 10.0
+    "generation_time": 10.0,
+    "metadata": {
+      "width": 1920,
+      "height": 1080,
+      "seed": 12345
+    }
   }
 }
 ```
+
+Additional fields that may appear on job records:
+
+- `error_message` and `error_code` for failed jobs
+- `progress_percent` and `progress_stage` for in-progress jobs
+- `batch_id` and `batch_index` for jobs created through batch endpoints
+- `item_id` for webhook correlation
+- `result.duration_seconds` / `result.has_audio` for video-style outputs
+- `result.metadata` for endpoint-specific metadata such as dimensions, scores, labels, model versions, or upscale details
 
 ---
 
@@ -556,7 +599,7 @@ Check the status of a specific job.
 | Field                 | Type   | Required | Description                                   | Default  |
 | --------------------- | ------ | -------- | --------------------------------------------- | -------- |
 | `job_id`              | string | ✅       | Unique job identifier                         | -        |
-| `prompt`              | string | ✅       | Text description (max 2000 chars)             | -        |
+| `prompt`              | string | ✅       | Text description (max 10000 chars)            | -        |
 | `aspect_ratio`        | string | ❌       | `16:9`, `9:16`, `1:1`, `4:3`, `3:4`           | `16:9`   |
 | `width`               | int    | ❌       | Custom width in pixels (256-2048)             | -        |
 | `height`              | int    | ❌       | Custom height in pixels (256-2048)            | -        |
@@ -576,7 +619,7 @@ Check the status of a specific job.
 {
   "job_id": "550e8400-e29b...",
   "status": "pending",
-  "status_url": "/api/v1/jobs/550e8400-e29b...",
+  "status_url": "https://api.example.com/api/v1/jobs/550e8400-e29b...",
   "message": "Job accepted for processing"
 }
 ```
@@ -595,8 +638,8 @@ Check the status of a specific job.
 | ----------------- | ------ | -------- | ----------------------------------------- | -------- |
 | `job_id`          | string | ✅       | Unique job identifier                     | -        |
 | `input_image_url` | string | ✅       | URL of image to edit                      | -        |
-| `prompt`          | string | ✅       | Edit instruction (max 2000 chars)         | -        |
-| `aspect_ratio`    | string | ❌       | `16:9`, `9:16`, `1:1`, `4:3`, `3:4`       | `16:9`   |
+| `prompt`          | string | ✅       | Edit instruction (max 10000 chars)        | -        |
+| `aspect_ratio`    | string | ❌       | Accepted by the schema but currently ignored by the router | `16:9`   |
 | `mask_image_url`  | string | ❌       | URL of mask image for inpainting          | -        |
 | `seed`            | int    | ❌       | Random seed for reproducibility           | -        |
 | `save_url`        | string | ✅       | Presigned PUT URL for output              | -        |
@@ -605,6 +648,8 @@ Check the status of a specific job.
 | `webhook_secret`  | string | ❌       | HMAC signing secret                       | -        |
 | `lora_name`       | string | ❌       | LoRA to apply (see available LoRAs below) | -        |
 | `lora_strength`   | float  | ❌       | LoRA strength (0.0-1.0)                   | `0.9`    |
+
+> **Note:** The current image-editing route preserves the original input image resolution. `aspect_ratio` is accepted in the request model but is not used when constructing the edit job.
 
 **Available LoRAs:**
 
@@ -632,7 +677,7 @@ Example prompts:
 {
   "job_id": "550e8400-e29b...",
   "status": "pending",
-  "status_url": "/api/v1/jobs/550e8400-e29b...",
+  "status_url": "https://api.example.com/api/v1/jobs/550e8400-e29b...",
   "message": "Job accepted for processing"
 }
 ```
@@ -665,7 +710,7 @@ Example prompts:
 | ------------------ | ------ | -------- | ------------------------------------------------ | ------- |
 | `job_id`           | string | ✅       | Unique job identifier                            | -       |
 | `input_image_url`  | string | ✅       | URL of the first frame image                     | -       |
-| `prompt`           | string | ✅       | Description of motion/action (max 2000 chars)    | -       |
+| `prompt`           | string | ✅       | Description of motion/action (max 10000 chars)   | -       |
 | `duration_seconds` | float  | ❌       | Video duration (1.0-8.0 seconds)                 | `4.0`   |
 | `fps`              | int    | ❌       | Frames per second (8, 12, 16, 24, or 30)         | `24`    |
 | `aspect_ratio`     | string | ❌       | `16:9`, `9:16`, `1:1`, `4:3`, `3:4`              | `16:9`  |
@@ -674,8 +719,11 @@ Example prompts:
 | `seed`             | int    | ❌       | Random seed for reproducibility                  | -       |
 | `end_image_url`    | string | ❌       | Optional URL of end frame for interpolation      | -       |
 | `save_url`         | string | ✅       | Presigned PUT URL for output                     | -       |
+| `webhook_url`      | string | ❌       | URL to POST when complete                        | -       |
+| `item_id`          | string | ❌       | Client identifier (returned in webhook)          | `job_id` |
+| `webhook_secret`   | string | ❌       | HMAC signing secret                              | -       |
 
-> **Note:** This endpoint does not currently support `webhook_url`. Use polling via `/api/v1/jobs/{job_id}`.
+> **Note:** `width` and `height` override `aspect_ratio` only when **both** are provided. If only one is supplied, the current router falls back to the aspect-ratio dimensions.
 
 **Response (Immediate - 202 Accepted):**
 
@@ -683,7 +731,7 @@ Example prompts:
 {
   "job_id": "550e8400-e29b...",
   "status": "pending",
-  "status_url": "/api/v1/jobs/550e8400-e29b...",
+  "status_url": "https://api.example.com/api/v1/jobs/550e8400-e29b...",
   "message": "Job accepted for processing"
 }
 ```
@@ -702,7 +750,7 @@ Example prompts:
 | ------------------ | ------ | -------- | ------------------------------------------------ | -------- |
 | `job_id`           | string | ✅       | Unique job identifier                            | -        |
 | `start_frame_url`  | string | ✅       | URL of starting frame image                      | -        |
-| `prompt`           | string | ✅       | Motion description (max 2000 chars)              | -        |
+| `prompt`           | string | ✅       | Motion description (max 10000 chars)             | -        |
 | `negative_prompt`  | string | ❌       | What should not appear (max 1000 chars)          | `""`     |
 | `duration_seconds` | float  | ❌       | Video length (0.5-10.0)                          | `5.0`    |
 | `frame_rate`       | float  | ❌       | Frame rate (8.0-60.0)                            | `24.0`   |
@@ -717,16 +765,20 @@ Example prompts:
 | `item_id`          | string | ❌       | Client identifier (returned in webhook)          | `job_id` |
 | `webhook_secret`   | string | ❌       | HMAC signing secret                              | -        |
 
+> **Note:** `width` and `height` override `aspect_ratio` only when **both** are provided.
+
 **Response (Immediate - 202 Accepted):**
 
 ```json
 {
   "job_id": "550e8400-e29b...",
   "status": "pending",
-  "status_url": "/api/v1/jobs/550e8400-e29b...",
+  "status_url": "https://api.example.com/api/v1/jobs/550e8400-e29b...",
   "message": "Job accepted for processing"
 }
 ```
+
+The LTX-2 generator also rounds the frame count up to the nearest `8k + 1` value internally, pads target dimensions to model-friendly multiples, then crops back to the requested output size.
 
 ---
 
@@ -741,7 +793,7 @@ Example prompts:
 | Field              | Type            | Required | Description                                      | Default  |
 | ------------------ | --------------- | -------- | ------------------------------------------------ | -------- |
 | `job_id`           | string          | ✅       | Unique job identifier                            | -        |
-| `prompt`           | string          | ✅       | Video content description (max 2000 chars)       | -        |
+| `prompt`           | string          | ✅       | Video content description (max 10000 chars)      | -        |
 | `negative_prompt`  | string          | ❌       | What should not appear (max 1000 chars)          | `""`     |
 | `keyframes`        | KeyframeImage[] | ✅       | Keyframe images with frame indices (1-10)        | -        |
 | `duration_seconds` | float           | ❌       | Video length (0.5-10.0)                          | `5.0`    |
@@ -755,6 +807,8 @@ Example prompts:
 | `webhook_url`      | string          | ❌       | URL to POST when complete                        | -        |
 | `item_id`          | string          | ❌       | Client identifier (returned in webhook)          | `job_id` |
 | `webhook_secret`   | string          | ❌       | HMAC signing secret                              | -        |
+
+> **Note:** `width` and `height` override `aspect_ratio` only when **both** are provided.
 
 **KeyframeImage Object:**
 
@@ -795,12 +849,12 @@ Example prompts:
 {
   "job_id": "interp-001",
   "status": "pending",
-  "status_url": "/api/v1/jobs/interp-001",
+  "status_url": "https://api.example.com/api/v1/jobs/interp-001",
   "message": "Job accepted for processing"
 }
 ```
 
-> **Note:** LTX-2 requires frame counts following the pattern `frames = 8k + 1`. The API automatically rounds up to the nearest valid frame count and trims the output to the requested `duration_seconds`.
+> **Note:** LTX-2 requires frame counts following the pattern `frames = 8k + 1`. The API automatically rounds up to the nearest valid frame count and trims the output to the requested `duration_seconds`. The generator also pads dimensions to model-friendly multiples before cropping back to the target size.
 
 ---
 
@@ -839,6 +893,8 @@ Example prompts:
   "message": "Music generation job queued"
 }
 ```
+
+> **Note:** This route does **not** return a `status_url`. Poll `GET /api/v1/jobs/{job_id}` manually if you want status updates in addition to optional webhooks.
 
 ---
 
@@ -949,7 +1005,19 @@ Key behaviors:
 }
 ```
 
-**Result Payload (masks_json):**
+**Uploaded Payload at `save_url` (`output_type="masks_json"`):**
+
+The uploaded JSON file is a raw JSON array of base64-encoded PNG masks:
+
+```json
+[
+  "<base64_png_mask_1>",
+  "<base64_png_mask_2>",
+  "<base64_png_mask_3>"
+]
+```
+
+The metadata for that job is returned by `GET /api/v1/jobs/{job_id}`:
 
 ```json
 {
@@ -965,7 +1033,8 @@ Key behaviors:
       [1000, 50, 1200, 300]
     ],
     "scores": [0.98, 0.95, 0.87],
-    "output_type": "masks_json"
+    "output_type": "masks_json",
+    "model_version": "sam3.1"
   }
 }
 ```
@@ -982,7 +1051,8 @@ Key behaviors:
     "height": 1080,
     "boxes": [[200, 100, 800, 900]],
     "scores": [0.97],
-    "output_type": "image"
+    "output_type": "image",
+    "model_version": "sam3.1"
   }
 }
 ```
@@ -1000,6 +1070,8 @@ Key behaviors:
 | `job_id`                | string    | ✅       | Unique job identifier                                           | -              |
 | `input_video_url`       | string    | ✅       | URL of input video (MP4)                                        | -              |
 | `text_prompt`           | string    | ❌\*     | Objects to track (e.g., "yellow school bus")                    | -              |
+| `text_prompts`          | string[]  | ❌\*     | Multiple deterministic text prompts in one request              | -              |
+| `object_prompts`        | object[]  | ❌\*     | Named deterministic prompt objects `{label, text}`              | -              |
 | `point_prompts`         | float[][] | ❌\*     | List of `[x, y]` coordinates for point prompts on initial frame | -              |
 | `point_labels`          | int[]     | ❌       | Labels per point: `1` = positive, `0` = negative                | all `1`        |
 | `box_prompts`           | float[][] | ❌\*     | List of `[x, y, w, h]` bounding boxes for initial frame         | -              |
@@ -1009,13 +1081,14 @@ Key behaviors:
 | `confidence_threshold`  | float     | ❌       | Minimum confidence (0.0-1.0)                                    | `0.5`          |
 | `output_format`         | string    | ❌       | `"masks_json"` or `"video"`                                     | `"masks_json"` |
 | `operations`            | object[]  | ❌       | Visual operations per frame (only when `output_format="video"`) | -              |
+| `include_tracking_metadata` | bool | ❌       | Include `{mask, box, score, label}` records in `masks_json` output | `false`     |
 | `max_frames`            | int       | ❌       | Maximum frames to process (1-1000)                              | `300`          |
 | `save_url`              | string    | ✅       | Presigned PUT URL for output                                    | -              |
 | `webhook_url`           | string    | ❌       | URL to POST when complete                                       | -              |
 | `item_id`               | string    | ❌       | Client identifier                                               | -              |
 | `webhook_secret`        | string    | ❌       | HMAC signing secret                                             | -              |
 
-> **Note:** At least one prompt type is required (`text_prompt`, `point_prompts`, or `box_prompts`).
+> **Note:** At least one prompt type is required. In practice the route accepts any of `text_prompt`, `text_prompts`, `object_prompts`, `point_prompts`, or `box_prompts`, subject to the validation rules below.
 
 Current deterministic video prompt modes:
 - `text_prompt`: legacy single-prompt tracking mode.
@@ -1025,6 +1098,8 @@ Current deterministic video prompt modes:
 Current validation rules:
 - Only one of `text_prompt`, `text_prompts`, or `object_prompts` may be provided.
 - `point_prompts` and `box_prompts` are only supported with the legacy single-`text_prompt` video mode.
+- `text_prompts` cannot contain empty or duplicate values.
+- `object_prompts` labels must be non-empty and unique.
 - Set `include_tracking_metadata: true` to return `{mask, box, score, label}` per tracked object instead of bare mask strings.
 - Segmentation prompts are not rewritten, reformatted, or enhanced by an LLM.
 
@@ -1069,19 +1144,30 @@ The `save_url` points to a JSON file with per-frame masks:
   },
   "tracked_ids": [1, 2],
   "frame_count": 120,
-  "text_prompt": "yellow school bus"
+  "prompt_to_obj_ids": {
+    "yellow school bus": [1, 2]
+  },
+  "object_id_to_prompt_label": {
+    "1": "yellow school bus",
+    "2": "yellow school bus"
+  },
+  "propagation_direction": "forward",
+  "include_tracking_metadata": false,
+  "model_version": "sam3.1"
 }
 ```
 
 Current `masks_json` payloads also include:
 - `prompt_to_obj_ids`: maps each input label/prompt to the stable API-level object IDs returned for that prompt.
 - `object_id_to_prompt_label`: reverse lookup from stable object ID to the originating prompt label.
+- `propagation_direction` and `include_tracking_metadata`.
 - `model_version`: the SAM checkpoint version used for the request.
 - When `include_tracking_metadata=false`, each `frames[frame_idx][object_id]` value is the base64 mask string directly.
+- When `include_tracking_metadata=true`, each `frames[frame_idx][object_id]` value becomes an object with `mask`, `box`, `score`, and `label`.
 
 **Result Payload (video):**
 
-The `save_url` points to the processed MP4 video with effects applied per-frame. FPS matches the source video.
+The `save_url` points to the processed MP4 video with effects applied per-frame. FPS matches the source video. Job metadata still includes `prompt_to_obj_ids`, `object_id_to_prompt_label`, `model_version`, `include_tracking_metadata`, `tracked_ids`, and `frame_count`.
 
 ---
 
@@ -1098,7 +1184,7 @@ Operations are applied sequentially. Use `select` to target which region subsequ
 Extended selectors:
 - `object_id`: target one tracked video object by stable ID.
 - `object_ids`: target multiple tracked video objects by stable IDs.
-- Selector resolution order is `object_id(s)` â†’ `object_label(s)` â†’ `object_index`.
+- Selector resolution order is `object_id(s)` → `object_label(s)` → `object_index`.
 
 **Blur / Privacy:**
 
@@ -1135,7 +1221,7 @@ Compositing notes:
 | -------------- | ------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `outline`      | Draw smooth contour lines      | `color`: [R,G,B,A] (default: [0,255,0,255]), `thickness`: 1-20, `progress`: 0.0-1.0 (for draw animation)                                                                                                                                                                 |
 | `bounding_box` | Draw bounding boxes            | `color`: [R,G,B,A] (default: [255,0,0,255]), `thickness`: 1-10 (default: 2), `progress`: 0.0-1.0 (for draw animation)                                                                                                                                                   |
-| `label`        | Render one smart label per object | `text` (optional override), `font_url`, `font_size`, `color`, `background_color`, `border_color`, `stroke_color`, `stroke_width`, `shadow`, `padding`, `corner_radius`, `leader_line`, `placement_hint`, `offset`, `opacity`. Requires an object-aware `select` with `target: "mask"`. |
+| `label`        | Render one smart label per object | `text` (optional override), `font_url`, `font_size`, `color`, `background_color`, `border_color`, `stroke_color`, `stroke_width`, `shadow`, `padding`, `corner_radius`, `leader_line`, `placement_hint`, `offset`, `opacity`. Requires `select` with `target: "mask"`. |
 
 Label behavior:
 - If `text` is omitted, the renderer uses the resolved object label and falls back to `Object 1`, `Object 2`, etc.
@@ -1194,7 +1280,7 @@ Label behavior:
 | `zoom`    | Ken Burns zoom toward subject | `scale`: 1.0-4.0, `target`: `"mask"`/`"center"`/`[x,y]` |
 | `pan`     | Smooth camera pan             | `offset`: `[x, y]` pixel offset                         |
 
-> **Note:** `zoom` and `pan` only work with the animation system (`POST /segment/animate` or video operations with `animation` configs). They crop/scale the output canvas per frame.
+> **Note:** `zoom` and `pan` are implemented only in `POST /api/v1/segment/animate`. They are ignored by the normal `/api/v1/segment/video` effects pipeline, even when other operations use `animation` configs.
 
 **Common Recipes:**
 
@@ -1316,7 +1402,7 @@ Additional config notes:
 Current compatibility rules:
 - `splash` is also supported and renders an organic blob-like fill across the effect region.
 - `label` supports `transition`, `pulse`, `loop`, `reveal`, `stagger`, and `splash`; `draw` is rejected.
-- `stagger` requires an object-aware `select` with `target: "mask"`.
+- `stagger` requires `select` with `target: "mask"`. An explicit object label/index is optional; without one it staggers across all currently selected masks.
 - `reveal` and `splash` are geometry-aware effect masks; camera ops such as `zoom` and `pan` do not support them.
 
 ---
@@ -1505,7 +1591,9 @@ How to animate each of the 35 operations. Every numeric parameter listed above c
 
 #### Video Temporal Animation
 
-Operations on `POST /api/v1/segment/video` now also support `animation` configs. When present, effect parameters interpolate across the video's native frame count rather than applying statically to every frame.
+Operations on `POST /api/v1/segment/video` also support `animation` configs for effect parameters. When present, supported effect parameters interpolate across the video's native frame count rather than applying statically to every frame.
+
+`zoom` and `pan` are the exception: they are only implemented in `POST /api/v1/segment/animate` and are ignored on `POST /api/v1/segment/video`.
 
 **Example — Gradual blur on faces in video:**
 
@@ -1545,7 +1633,8 @@ Operations on `POST /api/v1/segment/video` now also support `animation` configs.
     "duration_seconds": 4.0,
     "fps": 30,
     "frame_count": 120,
-    "object_count": 1
+    "object_count": 1,
+    "model_version": "sam3.1"
   }
 }
 ```
@@ -1561,7 +1650,7 @@ Batch endpoints allow submitting multiple items in a single request, reducing AP
 - Per-item webhook callbacks (each item triggers its own webhook)
 - Client-provided `item_id` for tracking each item
 - Automatic retry-on-failure (failed items requeued once)
-- 5-minute auto-expiry (or immediate deletion on collection)
+- 5-minute auto-expiry from batch creation time (or immediate deletion on collection)
 
 #### `POST /api/v1/batch/image/generate`
 
@@ -1616,7 +1705,7 @@ Submit a batch of image generation requests (max 500 items).
   "batch_id": "batch-abc123",
   "status": "pending",
   "total_items": 2,
-  "status_url": "/api/v1/batch/batch-abc123",
+  "status_url": "https://api.example.com/api/v1/batch/batch-abc123",
   "message": "Batch accepted for processing (2 images)"
 }
 ```
@@ -1656,7 +1745,9 @@ Get batch status (non-destructive). Shows progress but not results (results deli
   "pending_items": 30,
   "processing_items": 19,
   "retrying_items": 0,
+  "cancelled_items": 0,
   "created_at": 1715420000.0,
+  "completed_at": null,
   "items": [
     {
       "item_index": 0,
@@ -1682,9 +1773,9 @@ Get batch status (non-destructive). Shows progress but not results (results deli
 
 #### `DELETE /api/v1/batch/{batch_id}`
 
-Collect batch results and immediately delete the batch. Use when done polling.
+Return the current `BatchInfo` payload and immediately delete the batch's tracking record. Use when done polling.
 
-> **Recommended:** Use DELETE instead of GET for final retrieval to prevent 5-minute auto-expiry issues.
+> **Recommended:** Use DELETE instead of GET for final retrieval to avoid the 5-minute auto-expiry window. Item results are still delivered only via per-item webhooks; DELETE does not aggregate or return completed asset payloads.
 
 **Response:** Same as GET, but batch is deleted after response.
 
@@ -1768,6 +1859,8 @@ Endpoints for managing Z-Image LoRA models. All require authentication.
 
 List available LoRA models for Z-Image generation.
 
+> **Note:** The list returns LoRA names **without** the `.safetensors` extension.
+
 **Response:**
 
 ```json
@@ -1784,7 +1877,7 @@ List available LoRA models for Z-Image generation.
 
 #### `POST /api/v1/loras/z-image/upload`
 
-Upload a new LoRA model (`.safetensors` file only).
+Upload a new LoRA model (`.safetensors` file only, max 500 MB).
 
 **Request:** Multipart file upload with `file` field.
 
@@ -1806,6 +1899,8 @@ Rename an existing LoRA model.
 | Query Param | Type   | Required | Description       |
 | ----------- | ------ | -------- | ----------------- |
 | `new_name`  | string | ✅       | New name for LoRA |
+
+> **Note:** Pass `lora_name` and `new_name` without the `.safetensors` suffix. The API appends the extension internally.
 
 **Response:**
 
@@ -1898,8 +1993,7 @@ Get comprehensive system and GPU status. **Requires authentication.**
     "os": "Linux",
     "os_version": "5.15.0",
     "python_version": "3.11.0",
-    "cpu_count": 12,
-    "hostname": "gpu-server-01"
+    "cpu_count": 12
   },
   "gpu": {
     "name": "NVIDIA A100-SXM4-80GB",
@@ -1919,8 +2013,8 @@ Get comprehensive system and GPU status. **Requires authentication.**
     "loaded_models": ["z-image-turbo"]
   },
   "concurrency_limits": {
-    "max_concurrent_image_generations": 1,
-    "max_concurrent_video_generations": 1
+    "max_concurrent_image_generations": 2,
+    "max_concurrent_video_generations": 2
   },
   "mock_mode": false
 }
@@ -1981,7 +2075,8 @@ Retry downloading any failed models. **Requires authentication.**
 | `401` | Unauthorized - Missing/invalid API key  |
 | `404` | Not Found - Job or resource not found   |
 | `409` | Conflict - System busy / already exists |
-| `429` | Too Many Requests (Queue Full)          |
+| `413` | Payload Too Large - Oversized downloaded asset or LoRA upload |
+| `429` | Too Many Requests - Documented on some routes, but the shipped in-memory queue is normally unbounded |
 | `500` | Internal Server Error                   |
 | `503` | Service Unavailable (mode switching)    |
 
@@ -1995,92 +2090,3 @@ Retry downloading any failed models. **Requires authentication.**
 | `BATCH_CANCELLED`   | Job cancelled via batch cancel.       |
 
 ---
-
-## Changelog
-
-### v0.9.0
-
-- **SAM 3.1 Upgrade**: Upgraded from SAM 3 to SAM 3.1 multiplex predictor for 2-7× faster multi-object tracking
-- **15 New Effects** (35 total): `grayscale`, `invert`, `sharpen`, `sepia`, `posterize`, `edge_detect`, `emboss`, `noise`, `sketch`, `duotone`, `halftone`, `glitch`, `motion_blur`, `glass`, `feather`
-- **Animation Engine**: Universal animation system for all effects
-  - 10 easing functions: `linear`, `ease_in`, `ease_out`, `ease_in_out`, `ease_in_cubic`, `ease_out_cubic`, `ease_in_out_cubic`, `ease_out_back`, `ease_out_elastic`, `ease_out_bounce`
-  - 7 animation modes: `transition`, `draw`, `pulse`, `reveal`, `loop`, `stagger`, `splash`
-  - Keyframe interpolation with configurable delay, duration, and cycles
-- **Image→Video Animation**: New `POST /api/v1/segment/animate` endpoint
-  - Generates MP4 from single image + animated segmentation effects
-  - Configurable `duration_seconds` (0.5-10s) and `fps` (8-60)
-  - Camera operations: `zoom` (Ken Burns) and `pan`
-- **Video Temporal Animation**: Video segmentation operations now support `animation` configs for parameter interpolation across frames
-- **Progressive Draw**: Outline operation supports `progress` parameter for contour-tracing animations
-
-### v0.8.1
-
-- **Composable Effects Pipeline**: 20 visual operations for SAM 3 segmentation output
-  - Image: `output_type: "image"` + `operations` → returns processed PNG
-  - Video: `output_format: "video"` + `operations` → returns processed MP4
-  - Operations: `blur`, `pixelate`, `redact`, `color_overlay`, `color_grade`, `opacity`, `replace_color`, `remove_background`, `replace_background`, `greenscreen`, `outline`, `bounding_box`, `spotlight`, `bokeh`, `glow`, `shadow`, `vignette`, `select`
-  - `select` operation targets: `mask` (objects), `background`, `all`
-  - Backward compatible: default `masks_json` unchanged
-- **SAM 3 Full Feature Coverage**:
-  - Labeled box prompts with positive/negative include/exclude
-  - Configurable `confidence_threshold` (0.0-1.0)
-  - Video: point prompts, box prompts, configurable `prompt_frame_index`
-  - Video: `propagation_direction`: forward/backward/both
-- **Dependency**: Added `opencv-python-headless` for video frame processing
-
-### v0.8.0
-
-- **Segmentation**: Added SAM 3 (Segment Anything Model 3) integration
-  - `POST /api/v1/segment/image` — text/box/point prompt image segmentation
-  - `POST /api/v1/segment/video` — text prompt video object tracking
-  - New `segmentation` VRAM mode (~4-10GB)
-  - Dynamic loading in `all` mode
-
-### v0.7.0
-
-- **Batch Cancellation**: Added `POST /api/v1/batch/{batch_id}/cancel` endpoint
-- **Cancellation States**: New `cancelling`/`cancelled` batch statuses and `cancelled` item state
-- **Cancellation Webhooks**: Cancelled items receive `generation.cancelled` webhook event
-- **New Error Code**: `BATCH_CANCELLED` for cancelled jobs
-
-### v0.6.0
-
-- **API Documentation**: Comprehensive update to match codebase
-- **Video Generation**: Added `/api/v1/video/generate` endpoint (simplified video generation)
-- **Keyframe Interpolation**: Added `/api/v1/ltx2/interpolate` endpoint for multi-keyframe video generation
-- **LoRA Management**: Added CRUD endpoints for Z-Image LoRA models (`/api/v1/loras/z-image`)
-- **GPU Monitoring**: Added `/api/v1/gpu/status` and `/api/v1/gpu/clear-cache` endpoints
-- **System Status**: Added `/api/v1/system/status` endpoint
-- **Download Status**: Added `/api/v1/download/status` and `/api/v1/download/retry` endpoints
-- **Readiness Check**: Added `/health/ready` endpoint for VM provisioning
-- **Settings**: Added `GET/POST /api/v1/settings/vram-mode` endpoint documentation
-- **Mode Switch**: Added `POST /api/v1/mode/switch` endpoint documentation
-
-### v0.5.0
-
-- **Music Generation**: Added `/api/v1/music/generate` endpoint using ACE-Step 1.5
-- **Audio VRAM Mode**: New `audio_creation` mode for dedicated music generation (~4GB)
-
-### v0.4.0
-
-- **Mandatory Webhooks**: All generation endpoints now require `webhook_url`
-- **Per-item Callbacks**: Results delivered via webhook for each item (single or batch)
-- **Job Cleanup**: Job data deleted after successful webhook delivery
-- **HMAC Signing**: Optional `webhook_secret` for payload verification
-- **Batch item_id**: Each batch item requires a client-provided `item_id`
-
-### v0.3.0
-
-- **Queue System**: Replaced fail-fast concurrency with a robust Job Queue.
-- **Async API**: All generation endpoints now return `202 Accepted` and require polling.
-- **Smart Scheduling**: Dynamic Mode prioritizes grouping jobs to minimize switching.
-- **VRAM Modes**: Added Static vs Dynamic VRAM settings.
-
-### v0.2.0
-
-- Removed Stream-DiffVSR upscaler
-- Native 1080p support in LTX-2
-
-### v0.1.0
-
-- Initial release

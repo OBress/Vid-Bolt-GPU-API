@@ -34,6 +34,18 @@ class VideoGenerateRequest(BaseModel):
     seed: int | None = Field(default=None, description="Random seed for reproducibility")
     end_image_url: str | None = Field(default=None, description="Optional URL of the end frame image")
     save_url: str = Field(..., description="Presigned URL (PUT) for direct storage upload")
+    webhook_url: str | None = Field(
+        default=None,
+        description="Optional: URL to POST when generation completes (success or failure). If not provided, use polling.",
+    )
+    item_id: str | None = Field(
+        default=None,
+        description="Client identifier for this item (returned in webhook, defaults to job_id)",
+    )
+    webhook_secret: str | None = Field(
+        default=None,
+        description="Secret for signing webhook payload (HMAC-SHA256)",
+    )
 
     model_config = {
         "json_schema_extra": {
@@ -43,6 +55,7 @@ class VideoGenerateRequest(BaseModel):
                     "input_image_url": "https://example.com/start.png",
                     "prompt": "Gentle waves on the beach",
                     "save_url": "https://example.com/upload/video.mp4",
+                    "webhook_url": "https://myapp.com/api/gpu-callback",
                 }
             ]
         }
