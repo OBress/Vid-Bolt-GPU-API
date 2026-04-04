@@ -9,8 +9,10 @@ Usage:
     result_bytes = pipeline.to_bytes(format="png")
 """
 
+import copy
 import io
 import logging
+import math
 from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
@@ -38,6 +40,7 @@ class EffectsPipeline:
         boxes: Optional[List[Tuple[int, int, int, int]]] = None,
         labels: Optional[List[str]] = None,
         object_ids: Optional[List[int]] = None,
+        annotation_state: Optional[Dict[str, Any]] = None,
     ):
         """Initialize pipeline with source image and segmentation masks.
         
@@ -77,7 +80,13 @@ class EffectsPipeline:
         self.active_mask = self.combined_mask.copy()
 
         # Store boxes for bounding box operations
-        self.boxes = boxes or []
+        provided_boxes = list(boxes or [])
+        self.boxes: List[Tuple[int, int, int, int]] = []
+        for idx, mask in enumerate(self.object_masks):
+            if idx < len(provided_boxes):
+                self.boxes.append(tuple(int(v) for v in provided_boxes[idx]))
+            else:
+                self.boxes.append(self._box_from_mask(mask))
 
         # Store labels for per-object targeting via object_label
         self.object_labels: Optional[List[str]] = labels
@@ -96,6 +105,9 @@ class EffectsPipeline:
                 self._id_to_indices.setdefault(int(object_id), []).append(i)
 
         self.active_object_indices: List[int] = list(range(len(self.object_masks)))
+        self.annotation_state: Dict[str, Any] = annotation_state if annotation_state is not None else {}
+        self.warnings: List[Dict[str, Any]] = []
+        self._frame_label_rects: List[Tuple[int, int, int, int]] = []
 
     def apply(self, operations: List[Dict[str, Any]]) -> Image.Image:
         """Apply a list of operations sequentially.
@@ -113,83 +125,104 @@ class EffectsPipeline:
             try:
                 if op_type == "select":
                     self._op_select_v2(op)
-                elif op_type == "blur":
-                    self._op_blur(op)
-                elif op_type == "pixelate":
-                    self._op_pixelate(op)
-                elif op_type == "redact":
-                    self._op_redact(op)
-                elif op_type == "color_overlay":
-                    self._op_color_overlay(op)
-                elif op_type == "color_grade":
-                    self._op_color_grade(op)
-                elif op_type == "opacity":
-                    self._op_opacity(op)
-                elif op_type == "replace_color":
-                    self._op_replace_color(op)
-                elif op_type == "remove_background":
-                    self._op_remove_background_v2(op)
-                elif op_type == "replace_background":
-                    self._op_replace_background_v2(op)
-                elif op_type == "greenscreen":
-                    self._op_greenscreen_v2(op)
-                elif op_type == "outline":
-                    self._op_outline_v2(op)
-                elif op_type == "text_label":
-                    logger.warning("text_label is deprecated and no longer supported; skipping")
-                elif op_type == "bounding_box":
-                    self._op_bounding_box_v2(op)
-                elif op_type == "spotlight":
-                    self._op_spotlight_v2(op)
-                elif op_type == "bokeh":
-                    self._op_bokeh_v2(op)
-                elif op_type == "glow":
-                    self._op_glow_v2(op)
-                elif op_type == "shadow":
-                    self._op_shadow_v2(op)
-                elif op_type == "vignette":
-                    self._op_vignette_v2(op)
-                elif op_type == "grayscale":
-                    self._op_grayscale(op)
-                elif op_type == "invert":
-                    self._op_invert(op)
-                elif op_type == "sharpen":
-                    self._op_sharpen(op)
-                elif op_type == "sepia":
-                    self._op_sepia(op)
-                elif op_type == "posterize":
-                    self._op_posterize(op)
-                elif op_type == "edge_detect":
-                    self._op_edge_detect(op)
-                elif op_type == "emboss":
-                    self._op_emboss(op)
-                elif op_type == "noise":
-                    self._op_noise(op)
-                elif op_type == "sketch":
-                    self._op_sketch(op)
-                elif op_type == "duotone":
-                    self._op_duotone(op)
-                elif op_type == "halftone":
-                    self._op_halftone(op)
-                elif op_type == "glitch":
-                    self._op_glitch(op)
-                elif op_type == "motion_blur":
-                    self._op_motion_blur(op)
-                elif op_type == "glass":
-                    self._op_glass(op)
-                elif op_type == "feather":
-                    self._op_feather(op)
-                elif op_type == "zoom":
-                    pass  # Handled by AnimationPipeline camera layer
-                elif op_type == "pan":
-                    pass  # Handled by AnimationPipeline camera layer
                 else:
-                    logger.warning(f"Unknown operation type: {op_type}, skipping")
+                    self._apply_effect_operation(op)
             except Exception as e:
                 logger.error(f"Error applying operation {op_type}: {e}")
                 raise
 
         return self.image
+
+    def _apply_effect_operation(self, op: Dict[str, Any]) -> None:
+        """Dispatch effect operations, including animation-aware wrappers."""
+        mode = op.get("_animation_mode")
+        op_type = op.get("type", "")
+
+        if mode == "stagger":
+            self._apply_staggered_operation(op)
+            return
+        if op_type == "label":
+            self._op_label(op)
+            return
+        if mode in {"reveal", "splash"}:
+            self._apply_clipped_animation_operation(op)
+            return
+
+        self._dispatch_operation(op)
+
+    def _dispatch_operation(self, op: Dict[str, Any]) -> None:
+        """Dispatch a single non-select operation."""
+        op_type = op.get("type", "")
+        if op_type == "blur":
+            self._op_blur(op)
+        elif op_type == "pixelate":
+            self._op_pixelate(op)
+        elif op_type == "redact":
+            self._op_redact(op)
+        elif op_type == "color_overlay":
+            self._op_color_overlay(op)
+        elif op_type == "color_grade":
+            self._op_color_grade(op)
+        elif op_type == "opacity":
+            self._op_opacity(op)
+        elif op_type == "replace_color":
+            self._op_replace_color(op)
+        elif op_type == "remove_background":
+            self._op_remove_background_v2(op)
+        elif op_type == "replace_background":
+            self._op_replace_background_v2(op)
+        elif op_type == "greenscreen":
+            self._op_greenscreen_v2(op)
+        elif op_type == "outline":
+            self._op_outline_v2(op)
+        elif op_type == "text_label":
+            logger.warning("text_label is deprecated and no longer supported; skipping")
+        elif op_type == "bounding_box":
+            self._op_bounding_box_v2(op)
+        elif op_type == "spotlight":
+            self._op_spotlight_v2(op)
+        elif op_type == "bokeh":
+            self._op_bokeh_v2(op)
+        elif op_type == "glow":
+            self._op_glow_v2(op)
+        elif op_type == "shadow":
+            self._op_shadow_v2(op)
+        elif op_type == "vignette":
+            self._op_vignette_v2(op)
+        elif op_type == "grayscale":
+            self._op_grayscale(op)
+        elif op_type == "invert":
+            self._op_invert(op)
+        elif op_type == "sharpen":
+            self._op_sharpen(op)
+        elif op_type == "sepia":
+            self._op_sepia(op)
+        elif op_type == "posterize":
+            self._op_posterize(op)
+        elif op_type == "edge_detect":
+            self._op_edge_detect(op)
+        elif op_type == "emboss":
+            self._op_emboss(op)
+        elif op_type == "noise":
+            self._op_noise(op)
+        elif op_type == "sketch":
+            self._op_sketch(op)
+        elif op_type == "duotone":
+            self._op_duotone(op)
+        elif op_type == "halftone":
+            self._op_halftone(op)
+        elif op_type == "glitch":
+            self._op_glitch(op)
+        elif op_type == "motion_blur":
+            self._op_motion_blur(op)
+        elif op_type == "glass":
+            self._op_glass(op)
+        elif op_type == "feather":
+            self._op_feather(op)
+        elif op_type in {"zoom", "pan"}:
+            return
+        else:
+            logger.warning(f"Unknown operation type: {op_type}, skipping")
 
     def to_bytes(self, format: str = "png") -> bytes:
         """Convert processed image to bytes.
@@ -360,6 +393,642 @@ class EffectsPipeline:
     def _iter_selected_object_indices(self) -> List[int]:
         """Return the object indices currently selected for object-wise effects."""
         return list(self.active_object_indices)
+
+    @staticmethod
+    def _box_from_mask(mask: np.ndarray) -> Tuple[int, int, int, int]:
+        """Derive a tight bounding box from a mask."""
+        ys, xs = np.where(mask)
+        if len(xs) == 0 or len(ys) == 0:
+            return (0, 0, 0, 0)
+        return (int(xs.min()), int(ys.min()), int(xs.max()), int(ys.max()))
+
+    def _object_centroid(self, idx: int) -> Tuple[float, float]:
+        """Return centroid coordinates for a selected object."""
+        if not (0 <= idx < len(self.object_masks)):
+            return (0.0, 0.0)
+        ys, xs = np.where(self.object_masks[idx])
+        if len(xs) and len(ys):
+            return (float(xs.mean()), float(ys.mean()))
+        x1, y1, x2, y2 = self.boxes[idx] if idx < len(self.boxes) else (0, 0, 0, 0)
+        return ((x1 + x2) / 2.0, (y1 + y2) / 2.0)
+
+    def _sorted_object_indices(self, indices: List[int]) -> List[int]:
+        """Sort objects in stable screen-space order for staggered rendering."""
+        return sorted(
+            indices,
+            key=lambda idx: (
+                round(self._object_centroid(idx)[0], 4),
+                round(self._object_centroid(idx)[1], 4),
+                idx,
+            ),
+        )
+
+    def _apply_clipped_animation_operation(self, op: Dict[str, Any]) -> None:
+        """Apply reveal/splash animations by clipping the active region per frame."""
+        base_mask = self.active_mask.copy()
+        progress = max(0.0, min(1.0, float(op.get("_animation_progress", 1.0))))
+        if progress <= 0.0:
+            return
+
+        clip_mask = self._build_animation_clip_mask(base_mask, op)
+        if not np.any(clip_mask):
+            return
+
+        original_mask = self.active_mask
+        try:
+            self.active_mask = base_mask & clip_mask
+            clipped_op = copy.deepcopy(op)
+            clipped_op["_clip_mask"] = clip_mask
+            self._dispatch_operation(clipped_op)
+        finally:
+            self.active_mask = original_mask
+
+    def _build_animation_clip_mask(self, base_mask: np.ndarray, op: Dict[str, Any]) -> np.ndarray:
+        """Build a clip mask for reveal and splash animations."""
+        mode = op.get("_animation_mode")
+        progress = max(0.0, min(1.0, float(op.get("_animation_progress", 1.0))))
+        if mode == "reveal":
+            return self._build_reveal_mask(base_mask, progress, str(op.get("_animation_direction", "left")))
+        if mode == "splash":
+            return self._build_splash_mask(base_mask, progress, int(op.get("_animation_seed", 0)))
+        return base_mask.copy()
+
+    def _build_reveal_mask(
+        self,
+        base_mask: np.ndarray,
+        progress: float,
+        direction: str,
+    ) -> np.ndarray:
+        """Create a directional wipe mask over the selected region."""
+        if progress >= 1.0:
+            return base_mask.copy()
+        if not np.any(base_mask):
+            return np.zeros_like(base_mask, dtype=bool)
+
+        ys, xs = np.where(base_mask)
+        min_x, max_x = int(xs.min()), int(xs.max())
+        min_y, max_y = int(ys.min()), int(ys.max())
+        width = max(1, max_x - min_x + 1)
+        height = max(1, max_y - min_y + 1)
+
+        y_coords, x_coords = np.mgrid[0:self.height, 0:self.width]
+        if direction == "right":
+            threshold = max_x - progress * width
+            clip = x_coords >= threshold
+        elif direction == "top":
+            threshold = min_y + progress * height
+            clip = y_coords <= threshold
+        elif direction == "bottom":
+            threshold = max_y - progress * height
+            clip = y_coords >= threshold
+        elif direction == "radial":
+            cx = (min_x + max_x) / 2.0
+            cy = (min_y + max_y) / 2.0
+            max_dist = math.sqrt((width / 2.0) ** 2 + (height / 2.0) ** 2)
+            clip = np.sqrt((x_coords - cx) ** 2 + (y_coords - cy) ** 2) <= (progress * max_dist)
+        elif direction == "clockwise":
+            cx = (min_x + max_x) / 2.0
+            cy = (min_y + max_y) / 2.0
+            angles = (np.arctan2(y_coords - cy, x_coords - cx) + math.pi / 2.0) % (2.0 * math.pi)
+            clip = angles <= (progress * 2.0 * math.pi)
+        else:
+            threshold = min_x + progress * width
+            clip = x_coords <= threshold
+
+        return clip & base_mask
+
+    def _build_splash_mask(self, base_mask: np.ndarray, progress: float, seed: int) -> np.ndarray:
+        """Create an expanding organic fill mask over the selected region."""
+        if progress >= 1.0:
+            return base_mask.copy()
+        if progress <= 0.0 or not np.any(base_mask):
+            return np.zeros_like(base_mask, dtype=bool)
+
+        ys, xs = np.where(base_mask)
+        min_x, max_x = int(xs.min()), int(xs.max())
+        min_y, max_y = int(ys.min()), int(ys.max())
+        width = max(1, max_x - min_x + 1)
+        height = max(1, max_y - min_y + 1)
+        max_radius = math.sqrt(width ** 2 + height ** 2)
+
+        rng = np.random.RandomState(seed)
+        sample_count = min(12, max(4, len(xs) // max(1, len(xs) // 8 + 1)))
+        sample_indices = rng.choice(len(xs), size=sample_count, replace=len(xs) < sample_count)
+        y_coords, x_coords = np.mgrid[0:self.height, 0:self.width]
+
+        splash = np.zeros_like(base_mask, dtype=np.uint8)
+        for sample_index in np.atleast_1d(sample_indices):
+            cx = float(xs[int(sample_index)])
+            cy = float(ys[int(sample_index)])
+            radius_x = max(4.0, progress * max_radius * rng.uniform(0.18, 0.32))
+            radius_y = max(4.0, progress * max_radius * rng.uniform(0.18, 0.32))
+            local = (((x_coords - cx) / radius_x) ** 2 + ((y_coords - cy) / radius_y) ** 2) <= 1.0
+            splash[local & base_mask] = 255
+
+        splash_img = Image.fromarray(splash).filter(
+            ImageFilter.GaussianBlur(radius=max(1.0, progress * 18.0))
+        )
+        splash_arr = np.array(splash_img)
+        return (splash_arr > 32) & base_mask
+
+    def _apply_staggered_operation(self, op: Dict[str, Any]) -> None:
+        """Apply an operation one selected object at a time with offset timing."""
+        ordered_indices = self._sorted_object_indices(self._iter_selected_object_indices())
+        if not ordered_indices:
+            return
+
+        original_target = self.active_target
+        original_mask = self.active_mask.copy()
+        original_indices = list(self.active_object_indices)
+
+        try:
+            for rank, object_index in enumerate(ordered_indices):
+                staged_op = self._resolve_staggered_operation(op, rank)
+                if staged_op is None:
+                    continue
+                self.active_target = "mask"
+                self.active_object_indices = [object_index]
+                self.active_mask = self.object_masks[object_index].copy()
+                self._apply_effect_operation(staged_op)
+        finally:
+            self.active_target = original_target
+            self.active_mask = original_mask
+            self.active_object_indices = original_indices
+
+    def _resolve_staggered_operation(self, op: Dict[str, Any], rank: int) -> Optional[Dict[str, Any]]:
+        """Resolve the per-object local values for a staggered operation."""
+        current_time = float(op.get("_animation_current_time", 0.0))
+        duration = max(0.001, float(op.get("_animation_duration", op.get("_animation_total_duration", 1.0))))
+        stagger_delay = float(op.get("_stagger_delay", 0.2))
+        start_vals = copy.deepcopy(op.get("_animation_start_values", {}))
+        end_vals = copy.deepcopy(op.get("_animation_end_values", {}))
+        delay = stagger_delay * rank
+
+        if current_time < delay and not start_vals:
+            return None
+
+        if current_time <= delay:
+            eased_t = 0.0
+        elif current_time >= delay + duration:
+            eased_t = 1.0
+        else:
+            from app.services.segmentation_animation import EasingFunctions
+
+            local_t = (current_time - delay) / duration
+            easing_name = str(op.get("_animation_easing", "ease_out"))
+            eased_t = EasingFunctions.get(easing_name)(local_t)
+
+        staged_op = {
+            key: copy.deepcopy(value)
+            for key, value in op.items()
+            if not key.startswith("_animation_") and not key.startswith("_stagger_")
+        }
+        all_keys = set(start_vals.keys()) | set(end_vals.keys())
+        for key in all_keys:
+            start_value = start_vals.get(key, staged_op.get(key))
+            end_value = end_vals.get(key, staged_op.get(key))
+            if start_value is None or end_value is None:
+                continue
+            staged_op[key] = self._lerp_value(start_value, end_value, eased_t)
+        return staged_op
+
+    def _lerp_value(self, start: Any, end: Any, t: float) -> Any:
+        """Interpolate numbers and numeric lists."""
+        if isinstance(start, (int, float)) and isinstance(end, (int, float)):
+            value = start + (end - start) * t
+            return int(value) if isinstance(start, int) and isinstance(end, int) else value
+        if isinstance(start, list) and isinstance(end, list):
+            return [self._lerp_value(s, e, t) for s, e in zip(start, end)]
+        return end if t >= 0.5 else start
+
+    def _record_warning(self, warning: Dict[str, Any]) -> None:
+        """Record a warning once per annotation state / pipeline lifetime."""
+        warning_keys = self.annotation_state.setdefault("_warning_keys", set())
+        warning_key = tuple(sorted((key, repr(value)) for key, value in warning.items()))
+        if warning_key in warning_keys:
+            return
+        warning_keys.add(warning_key)
+        self.warnings.append(warning)
+
+    @staticmethod
+    def _parse_color(value: Any, default: Tuple[int, int, int, int]) -> Tuple[int, int, int, int]:
+        """Normalize a color payload to RGBA."""
+        if value is None:
+            return default
+        if not isinstance(value, (list, tuple)):
+            return default
+        try:
+            color = tuple(int(max(0, min(255, channel))) for channel in value)
+        except Exception:
+            return default
+        if len(color) == 3:
+            return color + (255,)
+        if len(color) == 4:
+            return color
+        return default
+
+    @staticmethod
+    def _parse_offset(value: Any) -> Tuple[int, int]:
+        """Normalize label offset values."""
+        if isinstance(value, (list, tuple)) and len(value) == 2:
+            try:
+                return (int(value[0]), int(value[1]))
+            except Exception:
+                return (0, 0)
+        return (0, 0)
+
+    @staticmethod
+    def _clamp_rect(
+        rect: Tuple[int, int, int, int],
+        frame_width: int,
+        frame_height: int,
+    ) -> Tuple[int, int, int, int]:
+        """Clamp a rectangle into the frame while preserving size."""
+        x1, y1, x2, y2 = rect
+        width = max(1, x2 - x1)
+        height = max(1, y2 - y1)
+        x1 = min(max(0, x1), max(0, frame_width - width))
+        y1 = min(max(0, y1), max(0, frame_height - height))
+        return (x1, y1, min(frame_width, x1 + width), min(frame_height, y1 + height))
+
+    @staticmethod
+    def _rect_overlap_area(a: Tuple[int, int, int, int], b: Tuple[int, int, int, int]) -> int:
+        """Compute overlap area between two rectangles."""
+        overlap_x = max(0, min(a[2], b[2]) - max(a[0], b[0]))
+        overlap_y = max(0, min(a[3], b[3]) - max(a[1], b[1]))
+        return overlap_x * overlap_y
+
+    @staticmethod
+    def _rect_center(rect: Tuple[int, int, int, int]) -> Tuple[float, float]:
+        """Return rectangle center."""
+        return ((rect[0] + rect[2]) / 2.0, (rect[1] + rect[3]) / 2.0)
+
+    def _label_state_key(self, op: Dict[str, Any], idx: int) -> str:
+        """Build a stable temporal key for a label/object pair."""
+        stable_id = (
+            self.object_ids[idx]
+            if self.object_ids is not None and idx < len(self.object_ids)
+            else idx
+        )
+        return f"label:{stable_id}:{op.get('text', '')}:{op.get('placement_hint', '')}"
+
+    def _label_text_for_object(self, op: Dict[str, Any], idx: int) -> str:
+        """Resolve label text for a specific object."""
+        text = op.get("text")
+        if isinstance(text, str) and text.strip():
+            return text.strip()
+        if self.object_labels and idx < len(self.object_labels):
+            label = self.object_labels[idx]
+            if isinstance(label, str) and label.strip():
+                return label.strip()
+        return f"Object {idx + 1}"
+
+    def _auto_font_size(self, box: Tuple[int, int, int, int]) -> int:
+        """Pick a readable default font size from object geometry."""
+        box_w = max(1, box[2] - box[0])
+        box_h = max(1, box[3] - box[1])
+        return max(14, min(42, int(max(box_w, box_h) * 0.12)))
+
+    def _load_label_font(self, op: Dict[str, Any], font_size: int) -> ImageFont.ImageFont:
+        """Load a cached custom font or fall back to a bundled/default font."""
+        font_path = op.get("_font_path")
+        if font_path:
+            try:
+                return ImageFont.truetype(font_path, size=font_size)
+            except Exception as exc:
+                logger.warning("Failed to load cached label font %s: %s", font_path, exc)
+                self._record_warning(
+                    {
+                        "code": "FONT_FALLBACK",
+                        "message": f"Failed to load font '{font_path}'. Falling back to default font.",
+                        "font_path": font_path,
+                    }
+                )
+
+        try:
+            return ImageFont.truetype("DejaVuSans.ttf", size=font_size)
+        except Exception:
+            return ImageFont.load_default()
+
+    def _measure_text(
+        self,
+        text: str,
+        font: ImageFont.ImageFont,
+        stroke_width: int,
+    ) -> Tuple[int, int, Tuple[int, int, int, int]]:
+        """Measure label text bbox."""
+        measure_img = Image.new("RGBA", (1, 1), (0, 0, 0, 0))
+        measure_draw = ImageDraw.Draw(measure_img)
+        bbox = measure_draw.textbbox((0, 0), text, font=font, stroke_width=stroke_width)
+        return (max(1, bbox[2] - bbox[0]), max(1, bbox[3] - bbox[1]), bbox)
+
+    def _resolve_label_font(
+        self,
+        text: str,
+        op: Dict[str, Any],
+        box: Tuple[int, int, int, int],
+    ) -> Tuple[ImageFont.ImageFont, int, Tuple[int, int, int, int]]:
+        """Choose a font size that fits comfortably within the frame."""
+        explicit_size = op.get("font_size")
+        font_size = int(explicit_size) if explicit_size is not None else self._auto_font_size(box)
+        font_size = max(10, min(80, font_size))
+        stroke_width = max(0, int(op.get("stroke_width", 0)))
+        padding = max(4, int(op.get("padding", max(8, round(font_size * 0.4)))))
+
+        for _ in range(8):
+            font = self._load_label_font(op, font_size)
+            text_w, text_h, text_bbox = self._measure_text(text, font, stroke_width)
+            if explicit_size is not None:
+                return font, font_size, text_bbox
+            if text_w + padding * 2 <= self.width * 0.65 and text_h + padding * 2 <= self.height * 0.25:
+                return font, font_size, text_bbox
+            if font_size <= 12:
+                return font, font_size, text_bbox
+            font_size = max(12, font_size - 2)
+
+        font = self._load_label_font(op, font_size)
+        _, _, text_bbox = self._measure_text(text, font, stroke_width)
+        return font, font_size, text_bbox
+
+    def _label_candidates(
+        self,
+        box: Tuple[int, int, int, int],
+        card_size: Tuple[int, int],
+        placement_hint: Optional[str],
+        offset: Tuple[int, int],
+    ) -> List[Tuple[str, Tuple[int, int, int, int]]]:
+        """Generate candidate label rectangles around an object box."""
+        card_w, card_h = card_size
+        x1, y1, x2, y2 = box
+        cx = (x1 + x2) / 2.0
+        cy = (y1 + y2) / 2.0
+        margin = max(10, int(min(self.width, self.height) * 0.015))
+        dx, dy = offset
+
+        raw_candidates = {
+            "top": (round(cx - card_w / 2 + dx), round(y1 - margin - card_h + dy), round(cx + card_w / 2 + dx), round(y1 - margin + dy)),
+            "bottom": (round(cx - card_w / 2 + dx), round(y2 + margin + dy), round(cx + card_w / 2 + dx), round(y2 + margin + card_h + dy)),
+            "left": (round(x1 - margin - card_w + dx), round(cy - card_h / 2 + dy), round(x1 - margin + dx), round(cy + card_h / 2 + dy)),
+            "right": (round(x2 + margin + dx), round(cy - card_h / 2 + dy), round(x2 + margin + card_w + dx), round(cy + card_h / 2 + dy)),
+            "top_left": (round(x1 - card_w * 0.2 + dx), round(y1 - margin - card_h + dy), round(x1 - card_w * 0.2 + card_w + dx), round(y1 - margin + dy)),
+            "top_right": (round(x2 - card_w * 0.8 + dx), round(y1 - margin - card_h + dy), round(x2 - card_w * 0.8 + card_w + dx), round(y1 - margin + dy)),
+            "bottom_left": (round(x1 - card_w * 0.2 + dx), round(y2 + margin + dy), round(x1 - card_w * 0.2 + card_w + dx), round(y2 + margin + card_h + dy)),
+            "bottom_right": (round(x2 - card_w * 0.8 + dx), round(y2 + margin + dy), round(x2 - card_w * 0.8 + card_w + dx), round(y2 + margin + card_h + dy)),
+        }
+
+        preferred_order = list(raw_candidates.keys())
+        if placement_hint in raw_candidates:
+            preferred_order.remove(placement_hint)
+            preferred_order.insert(0, placement_hint)
+
+        return [
+            (
+                name,
+                self._clamp_rect(raw_candidates[name], self.width, self.height),
+            )
+            for name in preferred_order
+        ]
+
+    def _score_label_candidate(
+        self,
+        candidate_name: str,
+        rect: Tuple[int, int, int, int],
+        occupied_rects: List[Tuple[int, int, int, int]],
+        target_box: Tuple[int, int, int, int],
+        placement_hint: Optional[str],
+        previous_state: Optional[Dict[str, Any]],
+    ) -> float:
+        """Score candidate label placement; lower is better."""
+        score = 0.0
+        target_center = self._rect_center(target_box)
+        rect_center = self._rect_center(rect)
+        score += math.dist(target_center, rect_center) * 0.08
+        score += self._rect_overlap_area(rect, target_box) * 12.0
+        score += sum(self._rect_overlap_area(rect, other) * 30.0 for other in occupied_rects)
+
+        if placement_hint and candidate_name != placement_hint:
+            score += 18.0
+
+        if previous_state:
+            prev_rect_raw = previous_state.get("rect")
+            prev_candidate = previous_state.get("placement")
+            if isinstance(prev_rect_raw, (list, tuple)) and len(prev_rect_raw) == 4:
+                prev_rect = tuple(int(v) for v in prev_rect_raw)
+                score += math.dist(self._rect_center(prev_rect), rect_center) * 0.2
+            if prev_candidate == candidate_name:
+                score -= 10.0
+
+        frame_margin_penalty = (
+            (0 if rect[0] > 0 else 4)
+            + (0 if rect[1] > 0 else 4)
+            + (0 if rect[2] < self.width else 4)
+            + (0 if rect[3] < self.height else 4)
+        )
+        score += frame_margin_penalty
+        return score
+
+    def _choose_label_layout(
+        self,
+        op: Dict[str, Any],
+        idx: int,
+        box: Tuple[int, int, int, int],
+        card_size: Tuple[int, int],
+    ) -> Tuple[str, Tuple[int, int, int, int]]:
+        """Select the best label placement with temporal stability."""
+        placement_hint = op.get("placement_hint")
+        offset = self._parse_offset(op.get("offset"))
+        candidates = self._label_candidates(box, card_size, placement_hint, offset)
+        state_key = self._label_state_key(op, idx)
+        previous_positions = self.annotation_state.setdefault("label_positions", {})
+        previous_state = previous_positions.get(state_key)
+        best_name = "top"
+        best_rect = candidates[0][1]
+        best_score = float("inf")
+
+        for candidate_name, rect in candidates:
+            score = self._score_label_candidate(
+                candidate_name,
+                rect,
+                self._frame_label_rects,
+                box,
+                placement_hint,
+                previous_state,
+            )
+            if score < best_score:
+                best_score = score
+                best_name = candidate_name
+                best_rect = rect
+
+        if previous_state:
+            prev_rect_raw = previous_state.get("rect")
+            if isinstance(prev_rect_raw, (list, tuple)) and len(prev_rect_raw) == 4:
+                prev_rect = tuple(int(v) for v in prev_rect_raw)
+                blended_rect = tuple(
+                    int(round(prev_rect[i] * 0.55 + best_rect[i] * 0.45))
+                    for i in range(4)
+                )
+                best_rect = self._clamp_rect(blended_rect, self.width, self.height)
+
+        previous_positions[state_key] = {
+            "rect": list(best_rect),
+            "placement": best_name,
+        }
+        self._frame_label_rects.append(best_rect)
+        return best_name, best_rect
+
+    @staticmethod
+    def _anchor_between_rects(
+        source_rect: Tuple[int, int, int, int],
+        target_rect: Tuple[int, int, int, int],
+    ) -> Tuple[Tuple[int, int], Tuple[int, int]]:
+        """Choose leader-line anchor points between two rectangles."""
+        source_center = EffectsPipeline._rect_center(source_rect)
+        target_center = EffectsPipeline._rect_center(target_rect)
+
+        source_anchor = (
+            int(round(min(max(target_center[0], source_rect[0]), source_rect[2]))),
+            int(round(min(max(target_center[1], source_rect[1]), source_rect[3]))),
+        )
+        target_anchor = (
+            int(round(min(max(source_center[0], target_rect[0]), target_rect[2]))),
+            int(round(min(max(source_center[1], target_rect[1]), target_rect[3]))),
+        )
+        return source_anchor, target_anchor
+
+    @staticmethod
+    def _apply_clip_to_overlay(overlay: Image.Image, clip_mask: np.ndarray) -> Image.Image:
+        """Clip an RGBA overlay by a boolean mask."""
+        overlay_arr = np.array(overlay)
+        overlay_arr[~clip_mask, 3] = 0
+        return Image.fromarray(overlay_arr)
+
+    def _build_label_overlay(
+        self,
+        op: Dict[str, Any],
+        box: Tuple[int, int, int, int],
+        rect: Tuple[int, int, int, int],
+        text: str,
+        font: ImageFont.ImageFont,
+        text_bbox: Tuple[int, int, int, int],
+        font_size: int,
+    ) -> Image.Image:
+        """Render the label card, text, and optional leader line."""
+        overlay = Image.new("RGBA", (self.width, self.height), (0, 0, 0, 0))
+        draw = ImageDraw.Draw(overlay, "RGBA")
+
+        opacity = max(0.0, min(1.0, float(op.get("opacity", 1.0))))
+        text_color = self._parse_color(op.get("color"), (255, 255, 255, 255))
+        background_color = self._parse_color(op.get("background_color"), (20, 28, 38, 210))
+        border_color = self._parse_color(op.get("border_color"), (255, 255, 255, 160))
+        stroke_color = self._parse_color(op.get("stroke_color"), (0, 0, 0, 255))
+        stroke_width = max(0, int(op.get("stroke_width", 0)))
+        padding = max(4, int(op.get("padding", max(8, round(font_size * 0.4)))))
+        corner_radius = max(0, int(op.get("corner_radius", max(8, round(font_size * 0.45)))))
+
+        shadow_cfg = op.get("shadow", True)
+        if shadow_cfg:
+            if isinstance(shadow_cfg, dict):
+                shadow_color = self._parse_color(shadow_cfg.get("color"), (0, 0, 0, 110))
+                shadow_offset = self._parse_offset(shadow_cfg.get("offset", [3, 4]))
+                shadow_blur = max(0, int(shadow_cfg.get("blur", 8)))
+            else:
+                shadow_color = (0, 0, 0, 110)
+                shadow_offset = (3, 4)
+                shadow_blur = 8
+            shadow_overlay = Image.new("RGBA", (self.width, self.height), (0, 0, 0, 0))
+            shadow_draw = ImageDraw.Draw(shadow_overlay, "RGBA")
+            shadow_rect = (
+                rect[0] + shadow_offset[0],
+                rect[1] + shadow_offset[1],
+                rect[2] + shadow_offset[0],
+                rect[3] + shadow_offset[1],
+            )
+            shadow_draw.rounded_rectangle(shadow_rect, radius=corner_radius, fill=shadow_color)
+            overlay = Image.alpha_composite(
+                overlay,
+                shadow_overlay.filter(ImageFilter.GaussianBlur(radius=shadow_blur)),
+            )
+            draw = ImageDraw.Draw(overlay, "RGBA")
+
+        leader_line = bool(op.get("leader_line", True))
+        if leader_line:
+            source_anchor, target_anchor = self._anchor_between_rects(box, rect)
+            line_width = max(2, int(round(font_size * 0.12)))
+            draw.line([source_anchor, target_anchor], fill=border_color, width=line_width)
+            dot_radius = max(2, line_width)
+            draw.ellipse(
+                [
+                    source_anchor[0] - dot_radius,
+                    source_anchor[1] - dot_radius,
+                    source_anchor[0] + dot_radius,
+                    source_anchor[1] + dot_radius,
+                ],
+                fill=border_color,
+            )
+
+        draw.rounded_rectangle(rect, radius=corner_radius, fill=background_color)
+        if border_color[3] > 0:
+            draw.rounded_rectangle(rect, radius=corner_radius, outline=border_color, width=max(1, stroke_width or 1))
+
+        text_pos = (
+            rect[0] + padding - text_bbox[0],
+            rect[1] + padding - text_bbox[1],
+        )
+        draw.text(
+            text_pos,
+            text,
+            font=font,
+            fill=text_color,
+            stroke_width=stroke_width,
+            stroke_fill=stroke_color,
+        )
+
+        if opacity < 1.0:
+            overlay_arr = np.array(overlay, dtype=np.uint8)
+            overlay_arr[:, :, 3] = np.clip(
+                overlay_arr[:, :, 3].astype(np.float32) * opacity,
+                0,
+                255,
+            ).astype(np.uint8)
+            overlay = Image.fromarray(overlay_arr)
+
+        if op.get("_animation_mode") in {"reveal", "splash"}:
+            overlay_mask = np.array(overlay)[:, :, 3] > 0
+            clip_mask = self._build_animation_clip_mask(overlay_mask, op)
+            overlay = self._apply_clip_to_overlay(overlay, clip_mask)
+
+        return overlay
+
+    def _op_label(self, op: Dict[str, Any]) -> None:
+        """Render a smart label for each selected object."""
+        selected_indices = self._sorted_object_indices(self._iter_selected_object_indices())
+        if not selected_indices:
+            return
+
+        combined_overlay = Image.new("RGBA", (self.width, self.height), (0, 0, 0, 0))
+        for idx in selected_indices:
+            if not (0 <= idx < len(self.boxes)):
+                continue
+            box = self.boxes[idx]
+            if box[2] <= box[0] or box[3] <= box[1]:
+                box = self._box_from_mask(self.object_masks[idx])
+            if box[2] <= box[0] or box[3] <= box[1]:
+                continue
+
+            text = self._label_text_for_object(op, idx)
+            font, font_size, text_bbox = self._resolve_label_font(text, op, box)
+            stroke_width = max(0, int(op.get("stroke_width", 0)))
+            text_w, text_h, _ = self._measure_text(text, font, stroke_width)
+            padding = max(4, int(op.get("padding", max(8, round(font_size * 0.4)))))
+            card_size = (
+                min(self.width, text_w + padding * 2),
+                min(self.height, text_h + padding * 2),
+            )
+            _, rect = self._choose_label_layout(op, idx, box, card_size)
+            overlay = self._build_label_overlay(op, box, rect, text, font, text_bbox, font_size)
+            combined_overlay = Image.alpha_composite(combined_overlay, overlay)
+
+        self.image = Image.alpha_composite(self.image, combined_overlay)
 
     # =========================================================================
     # Blur / Privacy
@@ -774,6 +1443,7 @@ class EffectsPipeline:
         thickness = op.get("thickness", 3)
         progress = max(0.0, min(1.0, op.get("progress", 1.0)))
         smooth_radius = max(1, thickness // 2 + 1)
+        clip_mask = op.get("_clip_mask")
 
         for idx in self._iter_selected_object_indices():
             if not (0 <= idx < len(self.object_masks)):
@@ -789,6 +1459,8 @@ class EffectsPipeline:
             contour_img = Image.fromarray(contour_gray, "L")
             contour_img = contour_img.filter(ImageFilter.GaussianBlur(radius=smooth_radius))
             contour_smooth = np.array(contour_img)
+            if isinstance(clip_mask, np.ndarray):
+                contour_smooth = np.where(clip_mask, contour_smooth, 0)
 
             overlay = Image.new("RGBA", (self.width, self.height), (0, 0, 0, 0))
             overlay_arr = np.array(overlay)
@@ -806,6 +1478,8 @@ class EffectsPipeline:
         if len(color) == 3:
             color = color + (255,)
         thickness = op.get("thickness", 2)
+        progress = max(0.0, min(1.0, float(op.get("progress", 1.0))))
+        clip_mask = op.get("_clip_mask")
 
         overlay = Image.new("RGBA", (self.width, self.height), (0, 0, 0, 0))
         draw = ImageDraw.Draw(overlay)
@@ -815,7 +1489,14 @@ class EffectsPipeline:
                 continue
             x1, y1, x2, y2 = self.boxes[idx]
             for t in range(thickness):
-                draw.rectangle([x1 - t, y1 - t, x2 + t, y2 + t], outline=color)
+                inset_box = [x1 - t, y1 - t, x2 + t, y2 + t]
+                if progress >= 1.0:
+                    draw.rectangle(inset_box, outline=color)
+                elif progress > 0.0:
+                    self._draw_partial_rectangle(draw, inset_box, color, progress)
+
+        if isinstance(clip_mask, np.ndarray):
+            overlay = self._apply_clip_to_overlay(overlay, clip_mask)
 
         self.image = Image.alpha_composite(self.image, overlay)
 
@@ -1279,6 +1960,39 @@ class EffectsPipeline:
         blended = mod_arr * alpha_expanded + img_arr * (1.0 - alpha_expanded)
         self.image = Image.fromarray(blended.astype(np.uint8))
 
+    @staticmethod
+    def _draw_partial_rectangle(
+        draw: ImageDraw.ImageDraw,
+        box: List[int],
+        color: Tuple[int, int, int, int],
+        progress: float,
+    ) -> None:
+        """Draw a rectangle progressively around its perimeter."""
+        x1, y1, x2, y2 = box
+        width = max(1, x2 - x1)
+        height = max(1, y2 - y1)
+        perimeter = (2 * width) + (2 * height)
+        remaining = perimeter * max(0.0, min(1.0, progress))
+        if remaining <= 0:
+            return
+
+        segments = [
+            ((x1, y1), (x2, y1), width),
+            ((x2, y1), (x2, y2), height),
+            ((x2, y2), (x1, y2), width),
+            ((x1, y2), (x1, y1), height),
+        ]
+        for start, end, length in segments:
+            if remaining <= 0:
+                break
+            segment_fraction = min(1.0, remaining / max(1.0, length))
+            partial_end = (
+                int(round(start[0] + (end[0] - start[0]) * segment_fraction)),
+                int(round(start[1] + (end[1] - start[1]) * segment_fraction)),
+            )
+            draw.line([start, partial_end], fill=color, width=1)
+            remaining -= length * segment_fraction
+
     def _find_contour_pixels(self, mask: np.ndarray, thickness: int = 3) -> np.ndarray:
         """Find contour pixels of a binary mask using morphological operations."""
         from scipy import ndimage
@@ -1319,6 +2033,8 @@ def apply_effects_to_frame(
     boxes: Optional[List[Tuple[int, int, int, int]]] = None,
     labels: Optional[List[str]] = None,
     object_ids: Optional[List[int]] = None,
+    annotation_state: Optional[Dict[str, Any]] = None,
+    warnings_out: Optional[List[Dict[str, Any]]] = None,
 ) -> np.ndarray:
     """Convenience function for video frame processing.
     
@@ -1336,8 +2052,17 @@ def apply_effects_to_frame(
     # Convert numpy frame to PIL
     image = Image.fromarray(frame)
 
-    pipeline = EffectsPipeline(image, masks, boxes, labels=labels, object_ids=object_ids)
+    pipeline = EffectsPipeline(
+        image,
+        masks,
+        boxes,
+        labels=labels,
+        object_ids=object_ids,
+        annotation_state=annotation_state,
+    )
     result = pipeline.apply(operations)
+    if warnings_out is not None:
+        warnings_out.extend(pipeline.warnings)
 
     # Convert back to RGB numpy array
     return np.array(result.convert("RGB"))

@@ -19,6 +19,7 @@ from app.models.segmentation_animation import AnimateSegmentRequest
 from app.models.job import AsyncJobResponse, JobResult
 from app.models.internal import ImageSegmentationParams, VideoSegmentationParams, ImageAnimationParams
 from app.services.model_manager import JobType
+from app.services.segmentation_operation_prep import prepare_segmentation_operations
 
 logger = logging.getLogger(__name__)
 
@@ -55,25 +56,9 @@ def _validate_video_magic_bytes(data: bytes) -> bool:
 
 
 async def _hydrate_segmentation_operations(storage: StorageDep, operations):
-    """Download any external assets referenced by operations."""
-    if not operations:
-        return operations
-
-    hydrated = copy.deepcopy(operations)
-    for op in hydrated:
-        if not isinstance(op, dict) or op.get("type") != "replace_background":
-            continue
-
-        image_url = op.get("image_url")
-        if not image_url:
-            continue
-
-        bg_image_data = await storage.download_from_url(image_url)
-        if not _validate_image_magic_bytes(bg_image_data):
-            raise ValidationError("replace_background.image_url is not a valid image")
-        op["_bg_image_data"] = bg_image_data
-
-    return hydrated
+    """Backward-compatible helper returning only hydrated operations."""
+    prepared = await prepare_segmentation_operations(storage, operations, validate_animations=False)
+    return prepared.operations
 
 
 def _normalize_video_object_prompts(body: VideoSegmentRequest):
@@ -152,7 +137,11 @@ async def segment_image(
     if body.object_prompts:
         object_prompts = [{"label": op.label, "text": op.text} for op in body.object_prompts]
 
-    operations = await _hydrate_segmentation_operations(storage, body.operations)
+    prepared_operations = await prepare_segmentation_operations(
+        storage,
+        body.operations,
+        validate_animations=False,
+    )
 
     params = ImageSegmentationParams(
         job_id=body.job_id,
@@ -165,7 +154,8 @@ async def segment_image(
         confidence_threshold=body.confidence_threshold,
         max_objects=body.max_objects,
         output_type=body.output_type,
-        operations=operations,
+        operations=prepared_operations.operations,
+        operation_warnings=prepared_operations.warnings,
     )
 
     submitted = await job_manager.try_submit_job(
@@ -220,6 +210,11 @@ async def _run_image_segment(
     }
     if result.labels:
         metadata["labels"] = result.labels
+    warnings = list(params.operation_warnings or [])
+    if result.warnings:
+        warnings.extend(result.warnings)
+    if warnings:
+        metadata["warnings"] = warnings
 
     return JobResult(
         save_url=final_url,
@@ -280,7 +275,11 @@ async def segment_video(
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
 
-    operations = await _hydrate_segmentation_operations(storage, body.operations)
+    prepared_operations = await prepare_segmentation_operations(
+        storage,
+        body.operations,
+        validate_animations=body.output_format == "video",
+    )
 
     params = VideoSegmentationParams(
         job_id=body.job_id,
@@ -296,9 +295,10 @@ async def segment_video(
         propagation_direction=body.propagation_direction,
         confidence_threshold=body.confidence_threshold,
         output_format=body.output_format,
-        operations=operations,
+        operations=prepared_operations.operations,
         max_frames=body.max_frames,
         include_tracking_metadata=body.include_tracking_metadata,
+        operation_warnings=prepared_operations.warnings,
     )
 
     submitted = await job_manager.try_submit_job(
@@ -343,19 +343,26 @@ async def _run_video_segment(
         content_type=content_type,
     )
 
+    metadata = {
+        "frame_count": result.frame_count,
+        "object_count": result.object_count,
+        "tracked_ids": result.tracked_ids,
+        "output_format": result.output_format,
+        "prompt_to_obj_ids": result.prompt_to_obj_ids,
+        "object_id_to_prompt_label": {str(k): v for k, v in result.object_id_to_prompt_label.items()},
+        "model_version": result.model_version,
+        "include_tracking_metadata": params.include_tracking_metadata,
+    }
+    warnings = list(params.operation_warnings or [])
+    if result.warnings:
+        warnings.extend(result.warnings)
+    if warnings:
+        metadata["warnings"] = warnings
+
     return JobResult(
         save_url=final_url,
         generation_time=round(time.time() - start_time, 2),
-        metadata={
-            "frame_count": result.frame_count,
-            "object_count": result.object_count,
-            "tracked_ids": result.tracked_ids,
-            "output_format": result.output_format,
-            "prompt_to_obj_ids": result.prompt_to_obj_ids,
-            "object_id_to_prompt_label": {str(k): v for k, v in result.object_id_to_prompt_label.items()},
-            "model_version": result.model_version,
-            "include_tracking_metadata": params.include_tracking_metadata,
-        },
+        metadata=metadata,
     )
 
 
@@ -438,7 +445,11 @@ async def animate_segment(
     if body.object_prompts:
         object_prompts = [{"label": op.label, "text": op.text} for op in body.object_prompts]
 
-    operations = await _hydrate_segmentation_operations(storage, body.operations)
+    prepared_operations = await prepare_segmentation_operations(
+        storage,
+        body.operations,
+        validate_animations=True,
+    )
 
     params = ImageAnimationParams(
         job_id=body.job_id,
@@ -452,7 +463,8 @@ async def animate_segment(
         max_objects=body.max_objects,
         duration_seconds=body.duration_seconds,
         fps=body.fps,
-        operations=operations,
+        operations=prepared_operations.operations,
+        operation_warnings=prepared_operations.warnings,
     )
 
     submitted = await job_manager.try_submit_job(
@@ -506,6 +518,11 @@ async def _run_animate_segment(
     }
     if result.labels:
         metadata["labels"] = result.labels
+    warnings = list(params.operation_warnings or [])
+    if result.warnings:
+        warnings.extend(result.warnings)
+    if warnings:
+        metadata["warnings"] = warnings
 
     return JobResult(
         save_url=final_url,

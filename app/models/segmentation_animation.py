@@ -13,7 +13,7 @@ class AnimationConfig(BaseModel):
     All numeric parameters in the parent operation can be animated
     by specifying their start and end values.
     """
-    mode: Literal["transition", "draw", "pulse", "reveal", "loop", "stagger"] = Field(
+    mode: Literal["transition", "draw", "pulse", "reveal", "loop", "stagger", "splash"] = Field(
         "transition",
         description=(
             "Animation mode. "
@@ -22,7 +22,8 @@ class AnimationConfig(BaseModel):
             "'pulse': oscillate min→max→min. "
             "'reveal': directional wipe. "
             "'loop': continuous start→end→start. "
-            "'stagger': per-object delay offset."
+            "'stagger': per-object delay offset. "
+            "'splash': organic blob-like fill across the selected region."
         ),
     )
     start: Optional[dict] = Field(

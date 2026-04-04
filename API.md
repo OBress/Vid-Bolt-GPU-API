@@ -853,7 +853,7 @@ Image and video segmentation powered by Meta's **SAM 3.1** (Segment Anything Mod
 - **Box prompts** — bounding regions (with positive/negative labels)
 - **Composable effects pipeline** — apply visual operations and get processed images/videos
 - **Video tracking** — track objects across frames with text, point, or box prompts
-- **Image→Video animation** — animate effects with easing, draw-on, pulse, and zoom to create videos from images
+- **Image→Video animation** — animate effects with easing, draw-on, reveal, stagger, splash, labels, and camera motion
 
 #### `POST /api/v1/segment/image`
 
@@ -1131,10 +1131,16 @@ Compositing notes:
 
 **Drawing & Annotation:**
 
-| Operation      | Description               | Parameters                                                                                               |
-| -------------- | ------------------------- | -------------------------------------------------------------------------------------------------------- |
-| `outline`      | Draw smooth contour lines | `color`: [R,G,B,A] (default: [0,255,0,255]), `thickness`: 1-20, `progress`: 0.0-1.0 (for draw animation) |
-| `bounding_box` | Draw bounding boxes       | `color`: [R,G,B,A] (default: [255,0,0,255]), `thickness`: 1-10 (default: 2)                              |
+| Operation      | Description                    | Parameters                                                                                                                                                                                                                                                                 |
+| -------------- | ------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `outline`      | Draw smooth contour lines      | `color`: [R,G,B,A] (default: [0,255,0,255]), `thickness`: 1-20, `progress`: 0.0-1.0 (for draw animation)                                                                                                                                                                 |
+| `bounding_box` | Draw bounding boxes            | `color`: [R,G,B,A] (default: [255,0,0,255]), `thickness`: 1-10 (default: 2), `progress`: 0.0-1.0 (for draw animation)                                                                                                                                                   |
+| `label`        | Render one smart label per object | `text` (optional override), `font_url`, `font_size`, `color`, `background_color`, `border_color`, `stroke_color`, `stroke_width`, `shadow`, `padding`, `corner_radius`, `leader_line`, `placement_hint`, `offset`, `opacity`. Requires an object-aware `select` with `target: "mask"`. |
+
+Label behavior:
+- If `text` is omitted, the renderer uses the resolved object label and falls back to `Object 1`, `Object 2`, etc.
+- Custom fonts are loaded from `font_url` (`.ttf` / `.otf`), cached on disk, and reused across jobs.
+- If a custom font cannot be downloaded or parsed, the request still succeeds with the default font and adds a warning entry to job metadata.
 
 **Creative Effects:**
 
@@ -1214,7 +1220,7 @@ Generate an animated video from a single image by applying animated visual effec
 
 - Every numeric parameter on any operation can be animated
 - 10 easing functions control the rate of change
-- 6 animation modes (transition, draw, pulse, reveal, loop, stagger)
+- 7 animation modes (transition, draw, pulse, reveal, loop, stagger, splash)
 - Camera operations (zoom/pan) for Ken Burns effects
 - Output is always MP4 video
 - CPU-only rendering after initial GPU segmentation (~5-15s for 90 frames)
@@ -1248,6 +1254,7 @@ Generate an animated video from a single image by applying animated visual effec
 Additional animation support:
 - `object_prompts` is also supported on `POST /api/v1/segment/animate` using the same `{label, text}` structure as image segmentation.
 - Named labels can be reused in `select` operations via `object_label` / `object_labels` for per-object animated effects.
+- Invalid mode/effect combinations fail fast with HTTP 400 instead of silently producing a static MP4. For example, `draw` is only valid on `outline` and `bounding_box`.
 - Segmentation prompts are not rewritten, reformatted, or enhanced by an LLM.
 
 ---
@@ -1269,6 +1276,11 @@ Every operation can include an `animation` key to animate its parameters over ti
 | `cycles`        | int    | ❌       | Oscillation count for pulse/loop modes (1-20)    | `1`            |
 | `direction`     | string | ❌       | Reveal direction (for `reveal` mode)             | `"left"`       |
 | `stagger_delay` | float  | ❌       | Seconds between each object (for `stagger` mode) | `0.2`          |
+
+Additional config notes:
+- Current runtime modes are `transition`, `draw`, `pulse`, `reveal`, `loop`, `stagger`, and `splash`.
+- `direction` supports `left`, `right`, `top`, `bottom`, `radial`, and `clockwise`.
+- `draw` is only valid on `outline` and `bounding_box`.
 
 **Schema (operation with animation):**
 
@@ -1300,6 +1312,12 @@ Every operation can include an `animation` key to animate its parameters over ti
 | `reveal`     | Progressive directional wipe (set `direction`)                  | Effect appearing via wipe from left/right/radial      |
 | `loop`       | Sawtooth: value goes `start` → `end` repeatedly over `cycles`   | Hue cycling, continuous color shifting                |
 | `stagger`    | Like transition, but each detected object starts with an offset | Objects outlining one-by-one, sequential highlighting |
+
+Current compatibility rules:
+- `splash` is also supported and renders an organic blob-like fill across the effect region.
+- `label` supports `transition`, `pulse`, `loop`, `reveal`, `stagger`, and `splash`; `draw` is rejected.
+- `stagger` requires an object-aware `select` with `target: "mask"`.
+- `reveal` and `splash` are geometry-aware effect masks; camera ops such as `zoom` and `pan` do not support them.
 
 ---
 
@@ -1986,7 +2004,7 @@ Retry downloading any failed models. **Requires authentication.**
 - **15 New Effects** (35 total): `grayscale`, `invert`, `sharpen`, `sepia`, `posterize`, `edge_detect`, `emboss`, `noise`, `sketch`, `duotone`, `halftone`, `glitch`, `motion_blur`, `glass`, `feather`
 - **Animation Engine**: Universal animation system for all effects
   - 10 easing functions: `linear`, `ease_in`, `ease_out`, `ease_in_out`, `ease_in_cubic`, `ease_out_cubic`, `ease_in_out_cubic`, `ease_out_back`, `ease_out_elastic`, `ease_out_bounce`
-  - 6 animation modes: `transition`, `draw`, `pulse`, `reveal`, `loop`, `stagger`
+  - 7 animation modes: `transition`, `draw`, `pulse`, `reveal`, `loop`, `stagger`, `splash`
   - Keyframe interpolation with configurable delay, duration, and cycles
 - **Image→Video Animation**: New `POST /api/v1/segment/animate` endpoint
   - Generates MP4 from single image + animated segmentation effects

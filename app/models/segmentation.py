@@ -35,7 +35,7 @@ SEGMENTATION_OPERATION_TYPES = (
     "replace_color, remove_background, replace_background, greenscreen, outline, "
     "bounding_box, spotlight, bokeh, glow, shadow, vignette, grayscale, invert, "
     "sharpen, sepia, posterize, edge_detect, emboss, noise, sketch, duotone, "
-    "halftone, glitch, motion_blur, glass, feather, zoom, pan"
+    "halftone, glitch, motion_blur, glass, feather, zoom, pan, label"
 )
 
 

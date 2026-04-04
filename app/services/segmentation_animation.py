@@ -13,6 +13,7 @@ Usage:
 """
 
 import copy
+import hashlib
 import logging
 import math
 from typing import Any, Dict, List, Optional, Tuple
@@ -133,13 +134,14 @@ class EasingFunctions:
 class AnimationInterpolator:
     """Interpolates operation parameters over time using easing functions.
     
-    Supports 6 animation modes:
+    Supports 7 animation modes:
         - transition: Linear A→B interpolation
         - draw: Progressive contour tracing (sets 'progress' param)
         - pulse: Oscillating min→max→min with configurable cycles
         - reveal: Directional mask reveal (left/right/top/bottom/radial/clockwise)
         - loop: Continuous oscillation (start→end→start→end...)
         - stagger: Per-object delay offset
+        - splash: Organic blob-like fill across the selected region
     """
 
     _NON_ANIMATABLE_KEYS = {
@@ -156,6 +158,11 @@ class AnimationInterpolator:
         "seed",
         "label",
         "text",
+        "font_url",
+        "_font_path",
+        "placement_hint",
+        "leader_line",
+        "shadow",
     }
 
     def interpolate(
@@ -192,45 +199,60 @@ class AnimationInterpolator:
         duration = anim.get("duration", total_duration)
         easing_fn = EasingFunctions.get(easing_name)
 
-        # Calculate local progress within this animation's window
         current_time = t * total_duration
-        if current_time < delay:
-            # Before animation starts: use start values
-            return self._apply_values(result, resolved_start)
-        elif current_time > delay + duration:
-            # After animation ends: use end values
-            return self._apply_values(result, resolved_end)
-
-        # Within the animation window
         local_t = (current_time - delay) / max(0.001, duration)
         local_t = max(0.0, min(1.0, local_t))
 
         if mode == "transition":
+            if current_time < delay:
+                return self._apply_values(result, resolved_start)
+            if current_time > delay + duration:
+                return self._apply_values(result, resolved_end)
             eased_t = easing_fn(local_t)
             return self._interpolate_transition(result, resolved_start, resolved_end, eased_t)
         elif mode == "draw":
             eased_t = easing_fn(local_t)
             return self._interpolate_draw(result, eased_t)
         elif mode == "pulse":
+            if current_time < delay:
+                return self._apply_values(result, resolved_start)
+            if current_time > delay + duration:
+                return self._apply_values(result, resolved_end)
             cycles = anim.get("cycles", 1)
             return self._interpolate_pulse(result, resolved_start, resolved_end, local_t, easing_fn, cycles)
         elif mode == "reveal":
             eased_t = easing_fn(local_t)
             direction = anim.get("direction", "left")
-            return self._interpolate_reveal(result, eased_t, direction)
+            return self._interpolate_reveal(
+                self._apply_values(result, resolved_end),
+                eased_t,
+                direction,
+            )
         elif mode == "loop":
+            if current_time < delay:
+                return self._apply_values(result, resolved_start)
+            if current_time > delay + duration:
+                return self._apply_values(result, resolved_end)
             cycles = anim.get("cycles", 2)
             return self._interpolate_loop(result, resolved_start, resolved_end, local_t, easing_fn, cycles)
         elif mode == "stagger":
             stagger_delay = anim.get("stagger_delay", 0.2)
-            eased_t = easing_fn(local_t)
             return self._interpolate_stagger(
                 result,
                 resolved_start,
                 resolved_end,
-                eased_t,
+                current_time,
+                duration,
                 stagger_delay,
                 total_duration,
+                easing_name,
+            )
+        elif mode == "splash":
+            eased_t = easing_fn(local_t)
+            return self._interpolate_splash(
+                self._apply_values(result, resolved_end),
+                eased_t,
+                self._stable_animation_seed(op, anim),
             )
         else:
             logger.warning(f"Unknown animation mode: {mode}, using transition")
@@ -246,9 +268,15 @@ class AnimationInterpolator:
         resolved_start, resolved_end = self._resolve_animation_endpoints(working_op, anim, mode)
         raw_start = anim.get("start") or {}
         raw_end = anim.get("end") or {}
+        if mode == "draw":
+            animated_keys = ["progress"]
+        elif mode in {"reveal", "splash"}:
+            animated_keys = ["_animation_progress"]
+        else:
+            animated_keys = sorted(set(resolved_start.keys()) | set(resolved_end.keys()))
         return {
             "mode": mode,
-            "animated_keys": sorted(set(resolved_start.keys()) | set(resolved_end.keys())),
+            "animated_keys": animated_keys,
             "inferred_start_keys": sorted(set(resolved_start.keys()) - set(raw_start.keys())),
             "inferred_end_keys": sorted(set(resolved_end.keys()) - set(raw_end.keys())),
         }
@@ -323,12 +351,30 @@ class AnimationInterpolator:
             "darkness",
             "progress",
             "blur",
+            "amount",
+            "rgb_shift",
+            "stroke_width",
+            "padding",
+            "corner_radius",
+            "thickness",
+            "font_size",
+            "opacity",
+            "dot_size",
         }:
             if isinstance(current_value, int):
                 return 0
             if isinstance(current_value, float):
                 return 0.0
         return None
+
+    @staticmethod
+    def _stable_animation_seed(op: Dict[str, Any], anim: Dict[str, Any]) -> int:
+        """Build a deterministic splash seed when one is not explicitly provided."""
+        explicit_seed = anim.get("seed", op.get("seed"))
+        if explicit_seed is not None:
+            return int(explicit_seed)
+        payload = f"{op.get('type', 'unknown')}|{op.get('object_id')}|{op.get('object_label')}|{op.get('text')}"
+        return int(hashlib.sha256(payload.encode("utf-8")).hexdigest()[:8], 16)
 
     def _apply_values(self, op: dict, values: dict) -> dict:
         """Apply a set of parameter values to an operation."""
@@ -397,8 +443,9 @@ class AnimationInterpolator:
     def _interpolate_reveal(self, op: dict, eased_t: float, direction: str) -> dict:
         """Add reveal mask info for directional wipe animation."""
         result = copy.deepcopy(op)
-        result["_reveal_progress"] = eased_t
-        result["_reveal_direction"] = direction
+        result["_animation_mode"] = "reveal"
+        result["_animation_progress"] = eased_t
+        result["_animation_direction"] = direction
         return result
 
     def _interpolate_loop(
@@ -432,14 +479,30 @@ class AnimationInterpolator:
         op: dict,
         start_vals: dict,
         end_vals: dict,
-        eased_t: float,
+        current_time: float,
+        duration: float,
         stagger_delay: float,
         total_duration: float,
+        easing_name: str,
     ) -> dict:
         """Add stagger metadata for per-object delay animations."""
-        result = self._interpolate_transition(op, start_vals, end_vals, eased_t)
+        result = copy.deepcopy(op)
+        result["_animation_mode"] = "stagger"
+        result["_animation_current_time"] = current_time
+        result["_animation_duration"] = duration
+        result["_animation_total_duration"] = total_duration
+        result["_animation_easing"] = easing_name
+        result["_animation_start_values"] = copy.deepcopy(start_vals)
+        result["_animation_end_values"] = copy.deepcopy(end_vals)
         result["_stagger_delay"] = stagger_delay
-        result["_stagger_total_duration"] = total_duration
+        return result
+
+    def _interpolate_splash(self, op: dict, eased_t: float, seed: int) -> dict:
+        """Add splash-fill metadata for organic region reveals."""
+        result = copy.deepcopy(op)
+        result["_animation_mode"] = "splash"
+        result["_animation_progress"] = eased_t
+        result["_animation_seed"] = seed
         return result
 
     def _lerp(self, start, end, t: float):
@@ -498,6 +561,8 @@ class AnimationPipeline:
         self.duration = duration
         self.total_frames = min(int(fps * duration), self.MAX_FRAMES)
         self.interpolator = AnimationInterpolator()
+        self.annotation_state: Dict[str, Any] = {}
+        self.warnings: List[Dict[str, Any]] = []
 
         # Pre-compute mask centroid for camera targeting
         combined = np.zeros((self.height, self.width), dtype=bool)
@@ -529,6 +594,8 @@ class AnimationPipeline:
             MP4 video as bytes
         """
         frames: List[np.ndarray] = []
+        self.warnings = []
+        warning_keys = set()
         animated_ops = [
             op.get("type", "unknown")
             for op in operations
@@ -570,18 +637,28 @@ class AnimationPipeline:
             working_image = self.source_image.copy()
 
             # Apply camera transformations (zoom/pan via crop + scale)
-            working_image = self._apply_camera(working_image, camera_ops)
+            camera_transform = self._compute_camera_transform(camera_ops)
+            working_image = self._apply_camera(working_image, camera_transform)
+            working_masks = self._transform_masks(self.masks, camera_transform)
+            working_boxes = self._transform_boxes(self.boxes, camera_transform)
 
             # Apply visual effects using the existing EffectsPipeline
             from app.services.segmentation_effects import EffectsPipeline
             pipeline = EffectsPipeline(
                 working_image,
-                self.masks,
-                self.boxes,
+                working_masks,
+                working_boxes,
                 labels=self.labels,
                 object_ids=self.object_ids,
+                annotation_state=self.annotation_state,
             )
             pipeline.apply(frame_ops)
+            for warning in pipeline.warnings:
+                warning_key = tuple(sorted((key, repr(value)) for key, value in warning.items()))
+                if warning_key in warning_keys:
+                    continue
+                warning_keys.add(warning_key)
+                self.warnings.append(warning)
 
             # Convert to RGB numpy array for video encoding
             frame_rgb = np.array(pipeline.image.convert("RGB"))
@@ -689,14 +766,9 @@ class AnimationPipeline:
             },
         )
 
-    def _apply_camera(self, image: Image.Image, camera_ops: List[dict]) -> Image.Image:
-        """Apply zoom and pan by cropping and scaling the canvas.
-        
-        Zoom: crop a smaller region centered on the mask centroid, then scale up.
-        Pan: offset the crop region.
-        """
-        w, h = image.size
-        # Start with the full canvas
+    def _compute_camera_transform(self, camera_ops: List[dict]) -> Optional[Dict[str, float]]:
+        """Compute crop/scale transform for zoom and pan operations."""
+        w, h = self.width, self.height
         crop_cx, crop_cy = w / 2.0, h / 2.0
         scale = 1.0
         pan_x, pan_y = 0.0, 0.0
@@ -711,34 +783,107 @@ class AnimationPipeline:
                     crop_cx, crop_cy = w / 2.0, h / 2.0
                 elif isinstance(target, list) and len(target) == 2:
                     crop_cx, crop_cy = float(target[0]), float(target[1])
-
             elif op["type"] == "pan":
                 offset = op.get("offset", [0, 0])
                 if isinstance(offset, list) and len(offset) == 2:
                     pan_x, pan_y = float(offset[0]), float(offset[1])
 
-        if scale <= 1.0 and pan_x == 0 and pan_y == 0:
-            return image
+        if scale <= 1.0 and pan_x == 0.0 and pan_y == 0.0:
+            return None
 
-        # Calculate crop region
         crop_w = w / scale
         crop_h = h / scale
         cx = max(crop_w / 2, min(w - crop_w / 2, crop_cx + pan_x))
         cy = max(crop_h / 2, min(h - crop_h / 2, crop_cy + pan_y))
 
-        left = int(cx - crop_w / 2)
-        top = int(cy - crop_h / 2)
-        right = int(cx + crop_w / 2)
-        bottom = int(cy + crop_h / 2)
+        left = max(0, int(cx - crop_w / 2))
+        top = max(0, int(cy - crop_h / 2))
+        right = min(w, int(cx + crop_w / 2))
+        bottom = min(h, int(cy + crop_h / 2))
 
-        # Clamp
-        left = max(0, left)
-        top = max(0, top)
-        right = min(w, right)
-        bottom = min(h, bottom)
+        return {
+            "left": left,
+            "top": top,
+            "right": right,
+            "bottom": bottom,
+            "crop_width": max(1, right - left),
+            "crop_height": max(1, bottom - top),
+        }
 
-        cropped = image.crop((left, top, right, bottom))
-        return cropped.resize((w, h), Image.LANCZOS)
+    def _apply_camera(self, image: Image.Image, transform: Optional[Dict[str, float]]) -> Image.Image:
+        """Apply zoom and pan by cropping and scaling the canvas.
+        
+        Zoom: crop a smaller region centered on the mask centroid, then scale up.
+        Pan: offset the crop region.
+        """
+        if transform is None:
+            return image
+        cropped = image.crop(
+            (
+                int(transform["left"]),
+                int(transform["top"]),
+                int(transform["right"]),
+                int(transform["bottom"]),
+            )
+        )
+        return cropped.resize((self.width, self.height), Image.LANCZOS)
+
+    def _transform_masks(
+        self,
+        masks: List[np.ndarray],
+        transform: Optional[Dict[str, float]],
+    ) -> List[np.ndarray]:
+        """Apply the camera crop/scale to segmentation masks."""
+        transformed_masks: List[np.ndarray] = []
+        if transform is None:
+            for mask in masks:
+                mask_np = mask.cpu().numpy() if hasattr(mask, "cpu") else np.array(mask)
+                while mask_np.ndim > 2:
+                    mask_np = mask_np.squeeze(0)
+                transformed_masks.append(mask_np > 0.5)
+            return transformed_masks
+
+        crop_box = (
+            int(transform["left"]),
+            int(transform["top"]),
+            int(transform["right"]),
+            int(transform["bottom"]),
+        )
+        for mask in masks:
+            mask_np = mask.cpu().numpy() if hasattr(mask, "cpu") else np.array(mask)
+            while mask_np.ndim > 2:
+                mask_np = mask_np.squeeze(0)
+            mask_img = Image.fromarray(((mask_np > 0.5).astype(np.uint8) * 255), mode="L")
+            cropped = mask_img.crop(crop_box)
+            resized = cropped.resize((self.width, self.height), Image.NEAREST)
+            transformed_masks.append(np.array(resized) > 127)
+        return transformed_masks
+
+    def _transform_boxes(
+        self,
+        boxes: List[Tuple[int, int, int, int]],
+        transform: Optional[Dict[str, float]],
+    ) -> List[Tuple[int, int, int, int]]:
+        """Apply the camera crop/scale to object bounding boxes."""
+        if transform is None or not boxes:
+            return list(boxes)
+
+        left = float(transform["left"])
+        top = float(transform["top"])
+        crop_width = max(1.0, float(transform["crop_width"]))
+        crop_height = max(1.0, float(transform["crop_height"]))
+        scale_x = self.width / crop_width
+        scale_y = self.height / crop_height
+        transformed_boxes: List[Tuple[int, int, int, int]] = []
+
+        for x1, y1, x2, y2 in boxes:
+            tx1 = max(0.0, min(self.width, (x1 - left) * scale_x))
+            ty1 = max(0.0, min(self.height, (y1 - top) * scale_y))
+            tx2 = max(0.0, min(self.width, (x2 - left) * scale_x))
+            ty2 = max(0.0, min(self.height, (y2 - top) * scale_y))
+            transformed_boxes.append((int(tx1), int(ty1), int(tx2), int(ty2)))
+
+        return transformed_boxes
 
     def _encode_mp4(self, frames: List[np.ndarray]) -> bytes:
         """Encode a list of RGB numpy frames to H.264 MP4 bytes."""

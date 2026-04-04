@@ -10,11 +10,13 @@ from PIL import Image
 from pydantic import ValidationError as PydanticValidationError
 
 from app.config import Settings, get_settings
+from app.exceptions import ValidationError
 from app.models.job import JobInfo, JobStatus
 from app.models.internal import VideoSegmentationParams
 from app.models.segmentation import ImageSegmentRequest, VideoSegmentRequest
 from app.routers.segmentation import _hydrate_segmentation_operations
 from app.services.job_manager import JobManager
+from app.services.segmentation_operation_prep import prepare_segmentation_operations
 from app.services.sam3_generator import SAM3Generator
 from app.services.segmentation_effects import EffectsPipeline
 
@@ -139,6 +141,49 @@ async def test_hydrate_segmentation_operations_downloads_background_image(sample
 
     assert "_bg_image_data" not in operations[0]
     assert hydrated[0]["_bg_image_data"] == sample_image_bytes
+
+
+@pytest.mark.asyncio
+async def test_prepare_segmentation_operations_warns_and_falls_back_for_invalid_font():
+    storage = AsyncMock()
+    storage.download_from_url = AsyncMock(return_value=b"not-a-real-font")
+    operations = [{"type": "label", "font_url": "https://example.com/custom-font.ttf"}]
+
+    prepared = await prepare_segmentation_operations(storage, operations)
+
+    assert prepared.operations[0].get("_font_path") is None
+    assert prepared.warnings[0]["code"] == "FONT_FALLBACK"
+    assert "font" in prepared.warnings[0]["message"].lower()
+
+
+@pytest.mark.asyncio
+async def test_prepare_segmentation_operations_rejects_draw_for_label():
+    storage = AsyncMock()
+
+    with pytest.raises(ValidationError, match="draw animation is only supported for outline and bounding_box"):
+        await prepare_segmentation_operations(
+            storage,
+            [
+                {"type": "select", "target": "mask"},
+                {"type": "label", "animation": {"mode": "draw"}},
+            ],
+            validate_animations=True,
+        )
+
+
+@pytest.mark.asyncio
+async def test_prepare_segmentation_operations_rejects_draw_for_blur():
+    storage = AsyncMock()
+
+    with pytest.raises(ValidationError, match="draw animation is only supported for outline and bounding_box"):
+        await prepare_segmentation_operations(
+            storage,
+            [
+                {"type": "select", "target": "background"},
+                {"type": "blur", "strength": 12, "animation": {"mode": "draw"}},
+            ],
+            validate_animations=True,
+        )
 
 
 @pytest.mark.asyncio

@@ -153,6 +153,7 @@ class ImageSegmentationParams:
     max_objects: int = 100
     output_type: str = "masks_json"    # "masks_json" or "image"
     operations: Optional[List[Dict]] = None  # Ordered visual operations
+    operation_warnings: Optional[List[Dict[str, Any]]] = None
 
 @dataclass
 class ImageSegmentationResult:
@@ -166,6 +167,7 @@ class ImageSegmentationResult:
     content_type: str = "application/json"  # "application/json" or "image/png"
     raw_masks: Optional[List[Any]] = None   # Raw mask tensors for effects pipeline
     labels: Optional[List[str]] = None  # Object labels from object_prompts
+    warnings: Optional[List[Dict[str, Any]]] = None
     model_version: str = "sam3.1"
 
 @dataclass
@@ -187,6 +189,7 @@ class VideoSegmentationParams:
     operations: Optional[List[Dict]] = None  # Ordered visual operations per frame
     max_frames: int = 300         # Max frames to process
     include_tracking_metadata: bool = False
+    operation_warnings: Optional[List[Dict[str, Any]]] = None
 
 @dataclass
 class VideoSegmentationResult:
@@ -198,6 +201,7 @@ class VideoSegmentationResult:
     tracked_ids: List[int]        # Unique IDs for tracked objects
     prompt_to_obj_ids: Dict[str, List[int]]
     object_id_to_prompt_label: Dict[int, str]
+    warnings: Optional[List[Dict[str, Any]]] = None
     model_version: str = "sam3.1"
 
 
@@ -218,6 +222,7 @@ class ImageAnimationParams:
     duration_seconds: float = 3.0
     fps: int = 30
     operations: Optional[List[Dict]] = None
+    operation_warnings: Optional[List[Dict[str, Any]]] = None
 
 @dataclass
 class ImageAnimationResult:
@@ -230,6 +235,7 @@ class ImageAnimationResult:
     frame_count: int
     object_count: int
     labels: Optional[List[str]] = None
+    warnings: Optional[List[Dict[str, Any]]] = None
     model_version: str = "sam3.1"
 
 

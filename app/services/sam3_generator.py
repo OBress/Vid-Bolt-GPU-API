@@ -207,6 +207,22 @@ class SAM3Generator(Segmenter):
             "video_attention_backend": "fa3" if self._video_use_fa3 else "torch_sdpa",
         }
 
+    @staticmethod
+    def _merge_warnings(*warning_lists: Optional[List[Dict[str, Any]]]) -> Optional[List[Dict[str, Any]]]:
+        """Combine warning lists while preserving order."""
+        merged: List[Dict[str, Any]] = []
+        seen = set()
+        for warnings in warning_lists:
+            if not warnings:
+                continue
+            for warning in warnings:
+                warning_key = tuple(sorted((key, repr(value)) for key, value in warning.items()))
+                if warning_key in seen:
+                    continue
+                seen.add(warning_key)
+                merged.append(warning)
+        return merged or None
+
     # --- Image Segmentation ---
 
     async def segment_image(self, params: ImageSegmentationParams) -> ImageSegmentationResult:
@@ -346,9 +362,16 @@ class SAM3Generator(Segmenter):
             if params.object_prompts:
                 raw_masks = self._get_raw_masks_multi_prompt(params, image, inference_state)
 
-            pipeline = EffectsPipeline(image, raw_masks, boxes=boxes_list, labels=labels_list if labels_list else None)
+            pipeline = EffectsPipeline(
+                image,
+                raw_masks,
+                boxes=boxes_list,
+                labels=labels_list if labels_list else None,
+                annotation_state={},
+            )
             pipeline.apply(params.operations)
             processed_bytes = pipeline.to_bytes(format="png")
+            warnings = self._merge_warnings(params.operation_warnings, pipeline.warnings)
 
             logger.info(f"Effects applied: {len(processed_bytes)} bytes processed image")
             return ImageSegmentationResult(
@@ -360,6 +383,7 @@ class SAM3Generator(Segmenter):
                 height=height,
                 content_type="image/png",
                 labels=labels_list if labels_list else None,
+                warnings=warnings,
                 model_version=self._image_model_version,
             )
         else:
@@ -380,6 +404,7 @@ class SAM3Generator(Segmenter):
                 height=height,
                 content_type="application/json",
                 labels=labels_list if labels_list else None,
+                warnings=self._merge_warnings(params.operation_warnings),
                 model_version=self._image_model_version,
             )
 
@@ -1005,6 +1030,8 @@ class SAM3Generator(Segmenter):
                 )
                 total_video_frames = len(source_frames)
                 video_duration = total_video_frames / max(1, source_fps)
+                annotation_state: Dict[str, Any] = {}
+                collected_warnings: List[Dict[str, Any]] = []
 
                 def iter_processed_frames():
                     for fi in sorted(source_frames.keys()):
@@ -1032,11 +1059,14 @@ class SAM3Generator(Segmenter):
                                 boxes=boxes,
                                 labels=labels,
                                 object_ids=ordered_ids,
+                                annotation_state=annotation_state,
+                                warnings_out=collected_warnings,
                             )
                         else:
                             yield frame_rgb
 
                 result_data, encode_info = encode_mp4_h264(iter_processed_frames(), source_fps)
+                warnings = self._merge_warnings(params.operation_warnings, collected_warnings)
 
                 logger.info(
                     f"Video effects applied with stable object routing: "
@@ -1056,6 +1086,7 @@ class SAM3Generator(Segmenter):
                     tracked_ids=tracked_ids_sorted,
                     prompt_to_obj_ids=prompt_to_obj_ids,
                     object_id_to_prompt_label=object_id_to_prompt_label,
+                    warnings=warnings,
                     model_version=self._video_model_version,
                 )
 
@@ -1094,6 +1125,7 @@ class SAM3Generator(Segmenter):
                 tracked_ids=tracked_ids_sorted,
                 prompt_to_obj_ids=prompt_to_obj_ids,
                 object_id_to_prompt_label=object_id_to_prompt_label,
+                warnings=self._merge_warnings(params.operation_warnings),
                 model_version=self._video_model_version,
             )
 
@@ -1225,6 +1257,7 @@ class SAM3Generator(Segmenter):
 
         operations = params.operations or []
         mp4_bytes = pipeline.render(operations)
+        warnings = self._merge_warnings(params.operation_warnings, getattr(pipeline, "warnings", None))
 
         total_frames = min(int(params.fps * params.duration_seconds), 600)
         logger.info(
@@ -1241,6 +1274,7 @@ class SAM3Generator(Segmenter):
             frame_count=total_frames,
             object_count=object_count,
             labels=labels_list if labels_list else None,
+            warnings=warnings,
             model_version=self._image_model_version,
         )
 
@@ -1262,6 +1296,7 @@ class SAM3Generator(Segmenter):
             frame_count=total_frames,
             object_count=object_count,
             labels=labels,
+            warnings=self._merge_warnings(params.operation_warnings),
             model_version=self._image_model_version,
         )
 
@@ -1299,6 +1334,7 @@ class SAM3Generator(Segmenter):
                 raw_masks,
                 boxes=boxes,
                 labels=labels,
+                annotation_state={},
             )
             pipeline.apply(params.operations)
             result_bytes = pipeline.to_bytes(format="png")
@@ -1311,6 +1347,7 @@ class SAM3Generator(Segmenter):
                 height=height,
                 content_type="image/png",
                 labels=labels,
+                warnings=self._merge_warnings(params.operation_warnings, pipeline.warnings),
                 model_version=self._image_model_version,
             )
 
@@ -1325,6 +1362,7 @@ class SAM3Generator(Segmenter):
             width=width,
             height=height,
             labels=labels,
+            warnings=self._merge_warnings(params.operation_warnings),
             model_version=self._image_model_version,
         )
 
@@ -1354,6 +1392,7 @@ class SAM3Generator(Segmenter):
                 tracked_ids=sorted(object_id_to_prompt_label.keys()),
                 prompt_to_obj_ids=prompt_to_obj_ids,
                 object_id_to_prompt_label=object_id_to_prompt_label,
+                warnings=self._merge_warnings(params.operation_warnings),
                 model_version=self._video_model_version,
             )
 
@@ -1391,5 +1430,6 @@ class SAM3Generator(Segmenter):
             tracked_ids=sorted(object_id_to_prompt_label.keys()),
             prompt_to_obj_ids=prompt_to_obj_ids,
             object_id_to_prompt_label=object_id_to_prompt_label,
+            warnings=self._merge_warnings(params.operation_warnings),
             model_version=self._video_model_version,
         )
