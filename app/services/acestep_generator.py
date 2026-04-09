@@ -5,8 +5,9 @@ music generation. Supports text-to-music with optional lyrics, Chain-of-Thought
 reasoning via the 5Hz Language Model, and metadata control (BPM, key, time sig).
 
 Target hardware: NVIDIA RTX PRO 6000 Blackwell (~96GB VRAM)
-- Uses acestep-5Hz-lm-4B (best quality LM, fits easily in VRAM)
-- No CPU offloading needed
+- Uses acestep-v15-xl-sft DiT (4B parameters, highest quality)
+- Uses acestep-5Hz-lm-4B LM (best quality planner)
+- No CPU offloading needed (~20GB total VRAM)
 - Flash attention enabled
 
 Ref: https://github.com/ace-step/ACE-Step-1.5
@@ -97,8 +98,9 @@ class ACEStepGenerator(MusicGenerator):
             # --- Initialize DiT Handler ---
             self._dit_handler = AceStepHandler()
 
-            # acestep-v15-turbo: 8-step turbo distilled model (best speed/quality)
-            config_path = "acestep-v15-turbo"
+            # acestep-v15-xl-sft: 4B parameter SFT model (highest quality, CFG + ADG support)
+            # Weights downloaded separately into checkpoints/acestep-v15-xl-sft/ by model_downloader
+            config_path = "acestep-v15-xl-sft"
 
             logger.info(f"Initializing DiT handler (project_root={project_root}, config={config_path})")
             status_msg, success = self._dit_handler.initialize_service(
@@ -149,7 +151,7 @@ class ACEStepGenerator(MusicGenerator):
         if not self._is_loaded:
             return
         logger.info("Unloading ACE-Step 1.5 models...")
-        
+
         try:
             import torch
             if torch.cuda.is_available():
@@ -157,45 +159,45 @@ class ACEStepGenerator(MusicGenerator):
                 logger.info(f"  VRAM before ACE-Step unload: {vram_before:.2f}GB")
         except ImportError:
             torch = None
-        
+
         # CRITICAL: Explicitly destroy vLLM/nanovllm engine to free GPU memory.
-        # Without this, nanovllm's model runner + KV cache (~17.5GB) persist as zombie 
+        # Without this, nanovllm's model runner + KV cache (~17.5GB) persist as zombie
         # allocations because atexit.register(self.exit) only fires at process exit,
         # not when the Python reference is dropped.
         if self._llm_handler is not None:
             try:
-                if (hasattr(self._llm_handler, 'llm') 
-                    and self._llm_handler.llm is not None
-                    and hasattr(self._llm_handler.llm, 'exit')):
+                if (hasattr(self._llm_handler, 'llm')
+                        and self._llm_handler.llm is not None
+                        and hasattr(self._llm_handler.llm, 'exit')):
                     logger.info("  Destroying nanovllm engine (freeing model runner + KV cache)...")
                     self._llm_handler.llm.exit()
             except Exception as e:
                 logger.warning(f"  Failed to exit nanovllm engine: {e}")
-            
+
             # Call LLMHandler's own unload (cleans up tokenizer, distributed state, etc.)
             try:
                 if hasattr(self._llm_handler, 'unload'):
                     self._llm_handler.unload()
             except Exception as e:
                 logger.warning(f"  Failed to unload LLM handler: {e}")
-            
+
             del self._llm_handler
             self._llm_handler = None
-        
+
         # Clean up DiT handler
         if self._dit_handler is not None:
             del self._dit_handler
             self._dit_handler = None
-        
+
         self._is_loaded = False
         gc.collect()
-        
+
         if torch is not None and torch.cuda.is_available():
             torch.cuda.empty_cache()
             torch.cuda.synchronize()
             vram_after = torch.cuda.memory_allocated() / (1024**3)
             logger.info(f"  VRAM after ACE-Step unload: {vram_after:.2f}GB")
-        
+
         logger.info("ACE-Step 1.5 models unloaded successfully")
 
     def get_status(self) -> Dict[str, Any]:
@@ -213,7 +215,7 @@ class ACEStepGenerator(MusicGenerator):
                 if self._llm_handler is not None
                 else None
             ),
-            "dit_model": "acestep-v15-turbo",
+            "dit_model": "acestep-v15-xl-sft",
             "lm_model": "acestep-5Hz-lm-4B",
             "default_duration": self._settings.acestep_default_duration,
             "max_duration": self._settings.acestep_max_duration,
@@ -252,8 +254,13 @@ class ACEStepGenerator(MusicGenerator):
             keyscale=params.key_scale or "",
             timesignature=params.time_signature or "",
             vocal_language=params.vocal_language or "unknown",
-            # Generation settings (turbo model defaults)
-            inference_steps=8,
+            # Generation settings (XL SFT model — max quality configuration)
+            # Turbo used a fixed 8-step schedule; SFT benefits from more steps (32-64 recommended)
+            inference_steps=60,
+            guidance_scale=7.0,     # CFG active on non-turbo models; 7.0 is recommended default
+            use_adg=True,           # Adaptive Dual Guidance: improves prompt adherence on SFT
+            shift=3.0,              # Timestep shift recommended for all ACE-Step 1.5 models
+            infer_method="ode",     # ODE (Euler): faster and deterministic
             seed=seed,
             # Enable Chain-of-Thought reasoning for better quality
             thinking=True,

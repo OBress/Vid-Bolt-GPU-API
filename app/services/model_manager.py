@@ -178,7 +178,7 @@ class ModelManager:
         if ltx2_loaded:
             loaded_models.append("ltx-2.3-22b")
         if self._acestep_generator and self._acestep_generator._loaded:
-            loaded_models.append("ace-step-1.5")
+            loaded_models.append("ace-step-xl-sft")
         if self._sam3_generator and self._sam3_generator._loaded:
             loaded_models.append("sam3")
             
@@ -474,7 +474,7 @@ class ModelManager:
         """Switch to Audio Creation mode (ACE-Step only).
         
         This mode is optimized for music generation.
-        Uses ~4GB (ACE-Step) VRAM.
+        Uses ~20GB VRAM (XL SFT DiT ~9GB + 4B LM ~8-10GB + activations).
         """
         if self._is_busy:
             raise RuntimeError("Cannot switch modes while a job is in progress")

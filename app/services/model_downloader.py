@@ -124,6 +124,16 @@ class ModelDownloader:
             "indicator_file": "config.json",
             "optional": True,  # Gated model - skip if HF access not granted yet
         },
+        {
+            # XL models are standalone repos — NOT bundled in the ACE-Step/Ace-Step1.5 mono-repo.
+            # Must be downloaded into the checkpoints/ subdirectory so that
+            # AceStepHandler.initialize_service(config_path="acestep-v15-xl-sft") can find it.
+            "name": "ace-step-xl-sft",
+            "repo": "ACE-Step/acestep-v15-xl-sft",
+            "local_dir": "repos/ACE-Step-1.5/checkpoints/acestep-v15-xl-sft",
+            "type": "full",
+            "indicator_file": "config.json",
+        },
     ]
 
     def __init__(self, base_path: Path):
