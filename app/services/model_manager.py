@@ -351,15 +351,11 @@ class ModelManager:
         if self._mode == required_mode:
             return True
         
-        # VIDEO_GENERATION mode: dynamically load SAM 3 for segmentation jobs
-        # SAM 3 is lightweight (~4GB) and can coexist with LTX-2 (~66GB) on 80GB GPU
-        if self._mode == VRAMLoadMode.VIDEO_GENERATION and job_type == JobType.SEGMENTATION:
-            if not self._sam3_dynamic_loaded:
-                logger.info("VIDEO mode: Dynamically loading SAM 3 for segmentation (~4GB)...")
-                await self._load_sam3()
-                self._sam3_dynamic_loaded = True
-                logger.info("VIDEO mode: SAM 3 loaded dynamically alongside LTX-2")
-            return True
+        # NOTE: VIDEO_GENERATION + SEGMENTATION co-load was removed.
+        # SAM 3 requires ~20GB of activation VRAM during propagate_in_video, which causes
+        # OOM when LTX-2's full cache (~66.74GB) is resident on a 95GB GPU.
+        # Segmentation now falls through to the mode-switch path below, which correctly
+        # unloads LTX-2 before loading SAM 3 (same as the orchestrator's /mode/switch call).
         
         # Need to switch - check if busy
         if self._is_busy:
@@ -720,6 +716,7 @@ class ModelManager:
             logger.info("Unloading SAM 3 models...")
             await asyncio.to_thread(self._sam3_generator.unload_models)
         self._sam3_generator = None  # Drop all references to allow GC
+        self._sam3_dynamic_loaded = False  # Reset dynamic flag so load-guard works after any unload
         self._force_gc()
 
     def _force_gc(self) -> None:

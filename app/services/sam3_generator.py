@@ -184,8 +184,9 @@ class SAM3Generator(Segmenter):
         try:
             import torch
             if torch.cuda.is_available():
+                torch.cuda.synchronize()   # Drain any in-flight kernels before releasing cache
                 torch.cuda.empty_cache()
-                torch.cuda.synchronize()
+                torch.cuda.synchronize()   # Confirm all memory is returned
         except ImportError:
             pass
 
